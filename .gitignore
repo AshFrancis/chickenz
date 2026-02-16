@@ -10,6 +10,9 @@ target/
 # Prover artifacts
 proof_artifacts.json
 services/prover/test_combat.json
+services/prover/test_short.json
+*.log
+services/prover/bench-noir/
 
 # Soroban
 contracts/chickenz/target/
