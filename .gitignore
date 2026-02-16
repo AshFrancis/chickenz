@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.DS_Store
+*.tsbuildinfo
+
+# Rust
+target/
+*.wasm
+
+# Prover artifacts
+proof_artifacts.json
+services/prover/test_combat.json
+
+# Soroban
+contracts/chickenz/target/
+contracts/chickenz/test_snapshots/
+.soroban/
+
+# IDE
+.idea/
+.vscode/
+
+# Env
+.env
+.env.local

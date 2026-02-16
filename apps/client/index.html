@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chickenz</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        background: #111;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+        font-family: monospace;
+        color: #ccc;
+        padding-top: 16px;
+      }
+
+      /* Top bar */
+      #top-bar {
+        width: 800px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 0;
+        margin-bottom: 8px;
+      }
+      #top-bar h1 {
+        font-size: 20px;
+        color: #ffee58;
+        letter-spacing: 2px;
+      }
+      #wallet-section {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #wallet-addr {
+        font-size: 12px;
+        color: #888;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* Game container */
+      #game-container { width: 800px; height: 600px; }
+
+      /* Bottom panel */
+      #bottom-panel {
+        width: 800px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 0;
+        gap: 12px;
+      }
+      #status-text {
+        font-size: 13px;
+        color: #888;
+        flex: 1;
+      }
+
+      /* Buttons */
+      .btn {
+        background: #333;
+        color: #ccc;
+        border: 1px solid #555;
+        padding: 8px 16px;
+        font-family: monospace;
+        font-size: 13px;
+        cursor: pointer;
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+      .btn:hover { background: #444; color: #fff; }
+      .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+      .btn-primary {
+        background: #1a6b3c;
+        border-color: #2a9d5c;
+        color: #fff;
+      }
+      .btn-primary:hover { background: #228b4a; }
+      .btn-warn {
+        background: #6b3a1a;
+        border-color: #9d5c2a;
+        color: #fff;
+      }
+      .btn-warn:hover { background: #8b5a28; }
+    </style>
+  </head>
+  <body>
+    <div id="top-bar">
+      <h1>CHICKENZ</h1>
+      <div id="wallet-section">
+        <span id="wallet-addr"></span>
+        <button id="btn-wallet" class="btn">Connect Wallet</button>
+      </div>
+    </div>
+
+    <div id="game-container"></div>
+
+    <div id="bottom-panel">
+      <span id="status-text">Play a match, then settle on-chain.</span>
+      <button id="btn-new-match" class="btn btn-primary">New Match</button>
+      <button id="btn-download" class="btn" disabled>Download Transcript</button>
+      <button id="btn-settle" class="btn btn-warn" disabled>Settle On-Chain</button>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

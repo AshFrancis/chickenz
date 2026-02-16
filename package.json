@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "scripts": {
+    "test": "bun test packages/sim",
+    "typecheck": "tsc -b packages/sim apps/client",
+    "dev:client": "pnpm --filter @chickenz/client dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

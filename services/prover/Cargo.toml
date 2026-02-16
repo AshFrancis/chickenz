@@ -1,0 +1,8 @@
+[workspace]
+members = ["core", "guest", "chunk-guest", "match-guest", "methods", "host"]
+# Only build core by default; guest/methods/host need RISC Zero toolchain
+default-members = ["core"]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
