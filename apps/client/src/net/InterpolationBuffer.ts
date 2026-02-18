@@ -1,3 +1,5 @@
+import { GRAVITY } from "@chickenz/sim";
+
 export interface RemoteSnapshot {
   time: number; // performance.now() when received
   x: number;
@@ -9,7 +11,7 @@ export interface RemoteSnapshot {
 }
 
 const MAX_BUFFER_SIZE = 20;
-const MAX_EXTRAPOLATION_MS = 100;
+const MAX_EXTRAPOLATION_MS = 60;
 
 export class InterpolationBuffer {
   private buffer: RemoteSnapshot[] = [];
@@ -46,17 +48,17 @@ export class InterpolationBuffer {
       }
     }
 
-    // renderTime is beyond newest snapshot — extrapolate from the last one
+    // renderTime is beyond newest snapshot — extrapolate with gravity
     const last = buf[buf.length - 1]!;
     const dt = renderTime - last.time;
     if (dt > 0 && dt <= MAX_EXTRAPOLATION_MS) {
-      const dtSec = dt / 1000;
+      const ticks = dt / 1000 * 60; // convert ms to tick-fractions (60Hz)
       return {
         time: renderTime,
-        x: last.x + last.vx * dtSec * 60, // vx is per-tick at 60Hz
-        y: last.y + last.vy * dtSec * 60,
+        x: last.x + last.vx * ticks,
+        y: last.y + last.vy * ticks + 0.5 * GRAVITY * ticks * ticks,
         vx: last.vx,
-        vy: last.vy,
+        vy: last.vy + GRAVITY * ticks,
         facing: last.facing,
         stateFlags: last.stateFlags,
       };

@@ -404,8 +404,8 @@ function connectToServer(url: string) {
       networkManager?.resetThrottle();
       scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds);
       scene.setMuted(isMuted);
-      scene.onLocalInput = (input, player) => {
-        networkManager?.sendInput(input, player);
+      scene.onLocalInput = (input) => {
+        networkManager?.sendInput(input);
       };
     },
 

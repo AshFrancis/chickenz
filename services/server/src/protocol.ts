@@ -26,12 +26,6 @@ export interface InputMessage {
   buttons: number;
   aimX: number;
   aimY: number;
-  x?: number;
-  y?: number;
-  vx?: number;
-  vy?: number;
-  grounded?: boolean;
-  facing?: number;
 }
 
 export interface ListRoomsMessage {

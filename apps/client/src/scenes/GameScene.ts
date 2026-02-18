@@ -22,7 +22,7 @@ import { PredictionManager } from "../net/PredictionManager";
 import { InterpolationBuffer } from "../net/InterpolationBuffer";
 import { DPR } from "../game";
 
-const INTERP_DELAY = 100; // ms — render remote player 100ms behind real-time
+const INTERP_DELAY = 120; // ms — render remote player 120ms behind real-time
 
 interface TranscriptInput {
   buttons: number;
@@ -80,6 +80,11 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
+/** Frame-rate independent smoothing: factor is the convergence rate at 60fps (16.667ms). */
+function smoothLerp(a: number, b: number, factor: number, dt: number): number {
+  return a + (b - a) * (1 - Math.pow(1 - factor, dt / 16.667));
+}
+
 export class GameScene extends Phaser.Scene {
   private prevState: GameState | null = null;
   private currState: GameState | null = null;
@@ -90,7 +95,7 @@ export class GameScene extends Phaser.Scene {
   private localPlayerId = 0;
   private prediction: PredictionManager | null = null;
   private predictionAccum = 0;
-  onLocalInput?: (input: PlayerInput, player: { x: number; y: number; vx: number; vy: number; grounded: boolean; facing: number }) => void;
+  onLocalInput?: (input: PlayerInput) => void;
 
   // Player usernames
   private playerUsernames: [string, string] = ["", ""];
@@ -127,6 +132,12 @@ export class GameScene extends Phaser.Scene {
   private cameraX = 480;
   private cameraY = 270;
   private hudCamera!: Phaser.Cameras.Scene2D.Camera;
+
+  // Netcode: tick ordering + synthetic interp timestamps
+  private lastServerTick = 0;
+  private interpTimeBase = 0;
+  private interpTickBase = 0;
+  private interpTimeReady = false;
 
   // Audio
   private _muted = false;
@@ -442,6 +453,22 @@ export class GameScene extends Phaser.Scene {
     this.localSmooth = { x: 0, y: 0, initialized: false };
     this.remoteInterp.clear();
     this.bulletCache.clear();
+    this.lastServerTick = 0;
+    this.interpTimeReady = false;
+
+    // Pre-seed interp buffer so remote player doesn't snap on first server state
+    const remoteP = initial.players[1 - this.localPlayerId];
+    if (remoteP) {
+      this.remoteInterp.push({
+        time: performance.now(),
+        x: remoteP.x,
+        y: remoteP.y,
+        vx: 0,
+        vy: 0,
+        facing: remoteP.facing,
+        stateFlags: remoteP.stateFlags,
+      });
+    }
   }
 
   startReplay(transcript: TickInputPair[], seed: number) {
@@ -510,6 +537,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   receiveState(state: GameState) {
+    // Drop out-of-order packets — prevents old states from overwriting newer ones
+    if (state.tick <= this.lastServerTick) return;
+    this.lastServerTick = state.tick;
+
     // Detect rocket explosions
     if (this.currState) {
       for (const prev of this.currState.projectiles) {
@@ -536,13 +567,21 @@ export class GameScene extends Phaser.Scene {
       this.prediction.applyServerState(state, state.tick);
     }
 
-    // Push remote player snapshot into interpolation buffer
+    // Push remote player snapshot into interpolation buffer using synthetic
+    // tick-derived timestamps for even spacing (immune to event-loop batching)
     if (!this.replayMode) {
+      if (!this.interpTimeReady) {
+        this.interpTimeBase = performance.now();
+        this.interpTickBase = state.tick;
+        this.interpTimeReady = true;
+      }
+      const syntheticTime = this.interpTimeBase + (state.tick - this.interpTickBase) * TICK_DT_MS;
+
       const remoteId = 1 - this.localPlayerId;
       const remoteP = state.players[remoteId];
       if (remoteP) {
         this.remoteInterp.push({
-          time: performance.now(),
+          time: syntheticTime,
           x: remoteP.x,
           y: remoteP.y,
           vx: remoteP.vx,
@@ -651,7 +690,7 @@ export class GameScene extends Phaser.Scene {
             player.x + PLAYER_WIDTH / 2,
             player.y + PLAYER_HEIGHT / 2,
           );
-          this.onLocalInput?.(input, player);
+          this.onLocalInput?.(input);
           this.prediction.predictTick(input);
         }
       }
@@ -675,10 +714,10 @@ export class GameScene extends Phaser.Scene {
     const predicted = this.replayMode ? null : this.prediction?.predictedState;
     const displayState = predicted ?? curr;
 
-    this.updateCamera(curr, predicted);
+    this.updateCamera(curr, predicted, delta);
     this.drawArena(g, displayState);
     this.drawPickups(g, displayState);
-    this.drawPlayers(g, curr, predicted);
+    this.drawPlayers(g, curr, predicted, delta);
     this.drawProjectiles(g, curr, predicted, delta);
     this.drawExplosions(g);
     this.drawHUD(curr, displayState, predicted);
@@ -740,6 +779,7 @@ export class GameScene extends Phaser.Scene {
     g: Phaser.GameObjects.Graphics,
     curr: GameState,
     predicted: GameState | null | undefined,
+    delta?: number,
   ) {
     for (let i = 0; i < curr.players.length; i++) {
       // Hide player 1 during warmup
@@ -791,8 +831,8 @@ export class GameScene extends Phaser.Scene {
             smooth.x = cp.x;
             smooth.y = cp.y;
           } else {
-            smooth.x = lerp(smooth.x, cp.x, 0.7);
-            smooth.y = lerp(smooth.y, cp.y, 0.7);
+            smooth.x = smoothLerp(smooth.x, cp.x, 0.7, delta ?? 16.667);
+            smooth.y = smoothLerp(smooth.y, cp.y, 0.7, delta ?? 16.667);
           }
         } else {
           // Remote: interpolation buffer — smooth movement between known server positions
@@ -971,7 +1011,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private updateCamera(curr: GameState, predicted: GameState | null | undefined) {
+  private updateCamera(curr: GameState, predicted: GameState | null | undefined, delta: number) {
     const cam = this.cameras.main;
 
     // Use predicted position for local player, interpolated position for remote
@@ -992,9 +1032,9 @@ export class GameScene extends Phaser.Scene {
         const aliveLocal = !!(localP.stateFlags & PlayerStateFlag.Alive);
         const targetX = aliveLocal ? localP.x + PLAYER_WIDTH / 2 : 480;
         const targetY = aliveLocal ? localP.y + PLAYER_HEIGHT / 2 : 270;
-        this.currentZoom = lerp(this.currentZoom, 1.0, 0.05);
-        this.cameraX = lerp(this.cameraX, targetX, 0.15);
-        this.cameraY = lerp(this.cameraY, targetY, 0.15);
+        this.currentZoom = smoothLerp(this.currentZoom, 1.0, 0.05, delta);
+        this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
+        this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
         cam.setZoom(this.currentZoom * DPR);
         cam.centerOn(this.cameraX, this.cameraY);
       }
@@ -1030,9 +1070,9 @@ export class GameScene extends Phaser.Scene {
       targetY = 270;
     }
 
-    this.currentZoom = lerp(this.currentZoom, targetZoom, 0.05);
-    this.cameraX = lerp(this.cameraX, targetX, 0.15);
-    this.cameraY = lerp(this.cameraY, targetY, 0.15);
+    this.currentZoom = smoothLerp(this.currentZoom, targetZoom, 0.05, delta);
+    this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
+    this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
     cam.setZoom(this.currentZoom * DPR);
     cam.centerOn(this.cameraX, this.cameraY);
   }

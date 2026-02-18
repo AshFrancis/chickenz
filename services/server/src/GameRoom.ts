@@ -46,7 +46,6 @@ export class GameRoom {
   private transcript: [PlayerInput, PlayerInput][] = [];
   private lastButtonState: [number, number] = [0, 0];
   private inputChanges: [number, number] = [0, 0];
-  private reportedState: [{ x: number; y: number; vx: number; vy: number; grounded: boolean; facing: number } | null, { x: number; y: number; vx: number; vy: number; grounded: boolean; facing: number } | null] = [null, null];
   private timer: ReturnType<typeof setInterval> | null = null;
   private seed = 0;
   private _status: "waiting" | "playing" | "ended" = "waiting";
@@ -100,15 +99,6 @@ export class GameRoom {
     if (playerId !== 0 && playerId !== 1) return;
     const incoming = inputFromMessage(msg);
     this.rawInput[playerId] = incoming;
-    // Store client-reported physics state for broadcast to other player
-    if (msg.x != null && msg.y != null) {
-      this.reportedState[playerId] = {
-        x: msg.x, y: msg.y,
-        vx: msg.vx ?? 0, vy: msg.vy ?? 0,
-        grounded: msg.grounded ?? false,
-        facing: msg.facing ?? 1,
-      };
-    }
     // Track button state changes for activity detection
     if (incoming.buttons !== this.lastButtonState[playerId]) {
       this.inputChanges[playerId]++;
@@ -230,7 +220,6 @@ export class GameRoom {
     this.prevInputs = new Map();
     this.rawInput = [NULL_INPUT, NULL_INPUT];
     this.accInput = [NULL_INPUT, NULL_INPUT];
-    this.reportedState = [null, null];
     this.transcript = [];
 
     // Start game loop at 60Hz
@@ -254,43 +243,6 @@ export class GameRoom {
 
     this.state = step(this.state, inputs, this.prevInputs, this.config);
     this.prevInputs = inputs;
-
-    // Grace period: first 12 ticks (~200ms) of each round, ignore position
-    // reports and skip nudging. Stale reports from the previous round may
-    // still be arriving (120ms RTT means client hasn't processed round_start
-    // yet and is still sending old positions). Without this, the nudge
-    // pushes fresh spawn positions toward last round's end-of-match positions.
-    const NUDGE_GRACE = 12;
-    if (this.state.tick <= NUDGE_GRACE) {
-      this.reportedState = [null, null];
-    } else {
-      // Nudge sim positions toward client-reported positions each tick.
-      // The sim runs from inputs (smooth physics) but drifts from reality
-      // due to input latency (~60ms). Aggressive lerp keeps it accurate
-      // without the stutter of hard overwrites. Hard-snap only for very
-      // large divergences (respawns, different platform landings).
-      const NUDGE = 0.5;
-      const SNAP = 150;
-      for (let i = 0; i < 2; i++) {
-        const rep = this.reportedState[i];
-        if (rep && this.state.players[i]) {
-          const p = this.state.players[i];
-          const dx = rep.x - p.x;
-          const dy = rep.y - p.y;
-          if (Math.abs(dx) > SNAP || Math.abs(dy) > SNAP) {
-            p.x = rep.x;
-            p.y = rep.y;
-            p.vx = rep.vx;
-            p.vy = rep.vy;
-          } else {
-            p.x += dx * NUDGE;
-            p.y += dy * NUDGE;
-            p.vx += (rep.vx - p.vx) * NUDGE;
-            p.vy += (rep.vy - p.vy) * NUDGE;
-          }
-        }
-      }
-    }
 
     // Reset accumulated to last raw input (not NULL) so held keys persist
     this.accInput[0] = { ...this.rawInput[0] };

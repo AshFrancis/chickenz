@@ -182,27 +182,20 @@ export class NetworkManager {
     this.send({ type: "join_code", code });
   }
 
-  private posSendAccum = 0;
-
   /** Reset throttle state so next input sends immediately. Call on round/match start. */
   resetThrottle() {
     this.lastSentButtons = -1;
     this.lastSentAimX = -999;
     this.lastSentAimY = -999;
-    this.posSendAccum = 0;
   }
 
-  sendInput(input: PlayerInput, pos?: { x: number; y: number; vx: number; vy: number; grounded: boolean; facing: number }) {
-    // Send on input change OR every 2nd call (30Hz) to keep position fresh
-    // for the server-side nudge correction
-    this.posSendAccum++;
+  sendInput(input: PlayerInput) {
     const inputChanged =
       input.buttons !== this.lastSentButtons ||
       input.aimX !== this.lastSentAimX ||
       input.aimY !== this.lastSentAimY;
-    if (!inputChanged && this.posSendAccum < 2) return;
+    if (!inputChanged) return;
 
-    this.posSendAccum = 0;
     this.lastSentButtons = input.buttons;
     this.lastSentAimX = input.aimX;
     this.lastSentAimY = input.aimY;
@@ -211,14 +204,6 @@ export class NetworkManager {
       buttons: input.buttons,
       aimX: input.aimX,
       aimY: input.aimY,
-      ...(pos ? {
-        x: pos.x,
-        y: pos.y,
-        vx: pos.vx,
-        vy: pos.vy,
-        grounded: pos.grounded,
-        facing: pos.facing,
-      } : {}),
     });
   }
 
