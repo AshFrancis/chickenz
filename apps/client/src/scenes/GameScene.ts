@@ -974,10 +974,17 @@ export class GameScene extends Phaser.Scene {
   private updateCamera(curr: GameState, predicted: GameState | null | undefined) {
     const cam = this.cameras.main;
 
-    // Use predicted position for local player, server state for remote
+    // Use predicted position for local player, interpolated position for remote
     // This matches how drawPlayers renders each player
     const localP = (predicted ?? curr).players[this.localPlayerId];
-    const remoteP = curr.players[1 - this.localPlayerId];
+    const remoteRaw = curr.players[1 - this.localPlayerId];
+    // Use interpolated position for remote player so camera doesn't jitter
+    const remoteSnap = this.replayMode ? null : this.remoteInterp.sample(performance.now() - INTERP_DELAY);
+    const remoteP = remoteRaw ? {
+      ...remoteRaw,
+      x: remoteSnap?.x ?? remoteRaw.x,
+      y: remoteSnap?.y ?? remoteRaw.y,
+    } : remoteRaw;
 
     // Warmup or single-player: follow local player only
     if (!localP || !remoteP) {

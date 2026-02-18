@@ -255,18 +255,6 @@ export class GameRoom {
     this.state = step(this.state, inputs, this.prevInputs, this.config);
     this.prevInputs = inputs;
 
-    // Snap sim positions toward client-reported positions so that game events
-    // (pickups, hit detection) use where the player actually is, not where
-    // the server ghost drifted to. The ZK proof independently replays inputs.
-    for (let i = 0; i < 2; i++) {
-      const rep = this.reportedState[i];
-      if (rep && this.state.players[i]) {
-        const p = this.state.players[i];
-        p.x = rep.x;
-        p.y = rep.y;
-      }
-    }
-
     // Reset accumulated to last raw input (not NULL) so held keys persist
     this.accInput[0] = { ...this.rawInput[0] };
     this.accInput[1] = { ...this.rawInput[1] };
@@ -282,30 +270,28 @@ export class GameRoom {
   }
 
   private broadcastState() {
-    // Use client-reported physics state when available so the other player
-    // sees accurate positions. Server sim stays unchanged for hit detection.
+    // Broadcast authoritative sim state — positions come from the server sim
+    // (smooth, consistent 30Hz updates) rather than relayed client reports
+    // which arrive intermittently and cause interpolation stutter.
     const msg: StateMessage = {
       type: "state",
       tick: this.state.tick,
-      players: this.state.players.map((p) => {
-        const rep = this.reportedState[p.id];
-        return {
-          id: p.id,
-          x: rep?.x ?? p.x,
-          y: rep?.y ?? p.y,
-          vx: rep?.vx ?? p.vx,
-          vy: rep?.vy ?? p.vy,
-          facing: rep?.facing ?? (p.facing as number),
-          health: p.health,
-          lives: p.lives,
-          shootCooldown: p.shootCooldown,
-          grounded: p.grounded,
-          stateFlags: p.stateFlags,
-          respawnTimer: p.respawnTimer,
-          weapon: p.weapon,
-          ammo: p.ammo,
-        };
-      }),
+      players: this.state.players.map((p) => ({
+        id: p.id,
+        x: p.x,
+        y: p.y,
+        vx: p.vx,
+        vy: p.vy,
+        facing: p.facing as number,
+        health: p.health,
+        lives: p.lives,
+        shootCooldown: p.shootCooldown,
+        grounded: p.grounded,
+        stateFlags: p.stateFlags,
+        respawnTimer: p.respawnTimer,
+        weapon: p.weapon,
+        ammo: p.ammo,
+      })),
       projectiles: this.state.projectiles.map((proj) => ({
         id: proj.id,
         ownerId: proj.ownerId,

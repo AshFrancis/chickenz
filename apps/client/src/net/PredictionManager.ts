@@ -84,10 +84,18 @@ export class PredictionManager {
       const players = this.predictedState.players.map((p, i) =>
         i === this.localPlayerId ? corrected : serverState.players[i] ?? p,
       );
+      // Keep local player's projectiles that haven't been confirmed by server yet.
+      // Without this, bullets flicker: they appear in prediction, vanish when
+      // reconciliation replaces projectiles with server state (which hasn't
+      // received the input yet at 120ms RTT), then reappear ~100ms later.
+      const serverProjIds = new Set(serverState.projectiles.map(p => p.id));
+      const pendingLocal = this.predictedState.projectiles.filter(
+        p => p.ownerId === this.localPlayerId && !serverProjIds.has(p.id),
+      );
       this.predictedState = {
         ...this.predictedState,
         players,
-        projectiles: serverState.projectiles,
+        projectiles: [...serverState.projectiles, ...pendingLocal],
         weaponPickups: serverState.weaponPickups,
         score: serverState.score,
         matchOver: serverState.matchOver,
