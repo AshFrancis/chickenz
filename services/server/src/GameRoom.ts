@@ -255,29 +255,39 @@ export class GameRoom {
     this.state = step(this.state, inputs, this.prevInputs, this.config);
     this.prevInputs = inputs;
 
-    // Nudge sim positions toward client-reported positions each tick.
-    // The sim runs from inputs (smooth physics) but drifts from reality
-    // due to input latency (~60ms). Gentle lerp keeps it accurate without
-    // the stutter of hard overwrites. Hard-snap for large divergences
-    // (e.g., landing on different platforms).
-    const NUDGE = 0.3;
-    const SNAP = 50;
-    for (let i = 0; i < 2; i++) {
-      const rep = this.reportedState[i];
-      if (rep && this.state.players[i]) {
-        const p = this.state.players[i];
-        const dx = rep.x - p.x;
-        const dy = rep.y - p.y;
-        if (Math.abs(dx) > SNAP || Math.abs(dy) > SNAP) {
-          p.x = rep.x;
-          p.y = rep.y;
-          p.vx = rep.vx;
-          p.vy = rep.vy;
-        } else {
-          p.x += dx * NUDGE;
-          p.y += dy * NUDGE;
-          p.vx += (rep.vx - p.vx) * NUDGE;
-          p.vy += (rep.vy - p.vy) * NUDGE;
+    // Grace period: first 12 ticks (~200ms) of each round, ignore position
+    // reports and skip nudging. Stale reports from the previous round may
+    // still be arriving (120ms RTT means client hasn't processed round_start
+    // yet and is still sending old positions). Without this, the nudge
+    // pushes fresh spawn positions toward last round's end-of-match positions.
+    const NUDGE_GRACE = 12;
+    if (this.state.tick <= NUDGE_GRACE) {
+      this.reportedState = [null, null];
+    } else {
+      // Nudge sim positions toward client-reported positions each tick.
+      // The sim runs from inputs (smooth physics) but drifts from reality
+      // due to input latency (~60ms). Aggressive lerp keeps it accurate
+      // without the stutter of hard overwrites. Hard-snap only for very
+      // large divergences (respawns, different platform landings).
+      const NUDGE = 0.5;
+      const SNAP = 150;
+      for (let i = 0; i < 2; i++) {
+        const rep = this.reportedState[i];
+        if (rep && this.state.players[i]) {
+          const p = this.state.players[i];
+          const dx = rep.x - p.x;
+          const dy = rep.y - p.y;
+          if (Math.abs(dx) > SNAP || Math.abs(dy) > SNAP) {
+            p.x = rep.x;
+            p.y = rep.y;
+            p.vx = rep.vx;
+            p.vy = rep.vy;
+          } else {
+            p.x += dx * NUDGE;
+            p.y += dy * NUDGE;
+            p.vx += (rep.vx - p.vx) * NUDGE;
+            p.vy += (rep.vy - p.vy) * NUDGE;
+          }
         }
       }
     }

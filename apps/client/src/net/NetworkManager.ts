@@ -184,6 +184,14 @@ export class NetworkManager {
 
   private posSendAccum = 0;
 
+  /** Reset throttle state so next input sends immediately. Call on round/match start. */
+  resetThrottle() {
+    this.lastSentButtons = -1;
+    this.lastSentAimX = -999;
+    this.lastSentAimY = -999;
+    this.posSendAccum = 0;
+  }
+
   sendInput(input: PlayerInput, pos?: { x: number; y: number; vx: number; vy: number; grounded: boolean; facing: number }) {
     // Send on input change OR every 2nd call (30Hz) to keep position fresh
     // for the server-side nudge correction

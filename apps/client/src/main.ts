@@ -401,6 +401,7 @@ function connectToServer(url: string) {
         closeLobby();
       }
 
+      networkManager?.resetThrottle();
       scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds);
       scene.setMuted(isMuted);
       scene.onLocalInput = (input, player) => {
@@ -419,6 +420,7 @@ function connectToServer(url: string) {
     },
 
     onRoundStart(round, seed, mapIndex) {
+      networkManager?.resetThrottle();
       const scene = getGameScene();
       if (scene) scene.startNewRound(seed, mapIndex, round);
     },
