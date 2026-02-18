@@ -99,6 +99,9 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     lobbySockets.add(ws);
     sendLobby(ws);
   }
+
+  // Schedule room cleanup (keeps transcript accessible for 2 minutes)
+  cleanupRoom(roomId);
   broadcastLobby();
 }
 
@@ -106,8 +109,8 @@ function cleanupRoom(roomId: string) {
   const room = rooms.get(roomId);
   if (room?.isEnded()) {
     broadcastLobby();
-    // Keep transcript for 5 minutes
-    setTimeout(() => rooms.delete(roomId), 5 * 60 * 1000);
+    // Keep transcript accessible for 2 minutes, then delete
+    setTimeout(() => rooms.delete(roomId), 2 * 60 * 1000);
   }
 }
 
@@ -441,5 +444,19 @@ setInterval(() => {
     }
   }
 }, 30_000);
+
+// Periodic sweep: clean up stale rooms (waiting rooms with no players,
+// ended rooms that missed cleanup, etc.)
+setInterval(() => {
+  for (const [id, room] of rooms) {
+    if (room.isEnded()) {
+      // Ended rooms that slipped through cleanupRoom — delete after 2 min
+      // (cleanupRoom already schedules this, but this catches any misses)
+      rooms.delete(id);
+    } else if (room.isWaiting() && room.playerCount === 0) {
+      rooms.delete(id);
+    }
+  }
+}, 60_000);
 
 console.log(`Chickenz server running on http://localhost:${server.port}`);
