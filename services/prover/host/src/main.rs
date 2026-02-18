@@ -287,6 +287,119 @@ fn run_chunked(fp_input: &FpProverInput, use_groth16: bool) {
 }
 
 // ============================================================================
+// Boundless remote proving (enabled with --features boundless)
+// ============================================================================
+
+#[cfg(feature = "boundless")]
+async fn run_boundless(fp_input: &FpProverInput) {
+    use std::time::Duration;
+    use boundless_market::storage::{StorageUploaderConfig, StorageUploaderType};
+    use boundless_market::contracts::FulfillmentData;
+    use boundless_market::Client;
+
+    // 1. Encode input as raw bytes (same encoding as monolithic)
+    let raw_bytes = fp::encode_raw_input(fp_input);
+    let byte_len = raw_bytes.len() as u32;
+    let words = bytes_to_words(&raw_bytes);
+
+    // Build stdin byte stream matching ExecutorEnv::write_slice layout
+    let mut stdin_bytes: Vec<u8> = Vec::new();
+    stdin_bytes.extend_from_slice(&byte_len.to_le_bytes());
+    for word in &words {
+        stdin_bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    eprintln!("Input encoded: {} raw bytes → {} stdin bytes", raw_bytes.len(), stdin_bytes.len());
+
+    // 2. Read env vars
+    let rpc_url: url::Url = std::env::var("RPC_URL")
+        .expect("RPC_URL env var required (e.g. https://sepolia.base.org)")
+        .parse()
+        .expect("Invalid RPC_URL");
+    let private_key: alloy::signers::local::PrivateKeySigner = std::env::var("PRIVATE_KEY")
+        .expect("PRIVATE_KEY env var required (hex with 0x prefix)")
+        .parse()
+        .expect("Invalid PRIVATE_KEY");
+    let pinata_jwt = std::env::var("PINATA_JWT")
+        .expect("PINATA_JWT env var required for uploading ELF/input to IPFS");
+
+    // 3. Build storage config for Pinata (IPFS)
+    let storage_config = StorageUploaderConfig::builder()
+        .storage_uploader(StorageUploaderType::Pinata)
+        .pinata_jwt(pinata_jwt)
+        .build()
+        .expect("Failed to build storage config");
+
+    // 4. Build Boundless client
+    eprintln!("Connecting to Boundless market...");
+    let client = Client::builder()
+        .with_rpc_url(rpc_url)
+        .with_uploader_config(&storage_config)
+        .await
+        .expect("Failed to configure storage uploader")
+        .with_private_key(private_key)
+        .build()
+        .await
+        .expect("Failed to build Boundless client");
+
+    // 5. Submit proof request (monolithic guest, standalone Groth16)
+    eprintln!("Submitting proof request to Boundless...");
+    let request = client
+        .new_request()
+        .with_program(CHICKENZ_GUEST_ELF)
+        .with_stdin(stdin_bytes)
+        .with_groth16_proof();
+
+    let (request_id, expires_at) = client
+        .submit(request)
+        .await
+        .expect("Failed to submit proof request");
+    eprintln!("Submitted! Request ID: {:x}", request_id);
+    eprintln!("Expires at block: {}", expires_at);
+    eprintln!("Waiting for proof generation (polling every 5s)...");
+
+    // 6. Wait for fulfillment
+    let fulfillment = client
+        .wait_for_request_fulfillment(request_id, Duration::from_secs(5), expires_at)
+        .await
+        .expect("Proof generation failed or timed out");
+
+    // 7. Extract seal and journal
+    let seal = fulfillment.seal.to_vec();
+    let fulfillment_data = fulfillment
+        .data()
+        .expect("Failed to decode fulfillment data");
+    let journal_bytes: Vec<u8> = match fulfillment_data {
+        FulfillmentData::ImageIdAndJournal(_, journal) => journal.to_vec(),
+        _ => panic!("Unexpected fulfillment data type (expected ImageIdAndJournal)"),
+    };
+
+    let output = ProverOutput::from_journal_bytes(&journal_bytes);
+
+    eprintln!("Proof received! Seal: {} bytes, Journal: {} bytes", seal.len(), journal_bytes.len());
+    print_result(&output);
+
+    // 8. Write proof_artifacts.json (same format as local proving)
+    let image_id_hex = hex::encode(
+        CHICKENZ_GUEST_ID.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<_>>()
+    );
+    let artifacts = serde_json::json!({
+        "seal": hex::encode(&seal),
+        "image_id": image_id_hex,
+        "journal": hex::encode(&journal_bytes),
+        "output": {
+            "winner": output.winner,
+            "scores": output.scores,
+            "transcript_hash": hex::encode(output.transcript_hash),
+            "seed_commit": hex::encode(output.seed_commit),
+        }
+    });
+    std::fs::write("proof_artifacts.json", serde_json::to_string_pretty(&artifacts).unwrap())
+        .expect("Failed to write artifacts");
+    eprintln!("Artifacts written to proof_artifacts.json");
+    println!("\n=== Ready for Soroban submission ===");
+}
+
+// ============================================================================
 // Output helpers
 // ============================================================================
 
@@ -363,6 +476,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let use_groth16 = !args.iter().any(|a| a == "--local");
     let use_chunked = args.iter().any(|a| a == "--chunked");
+    let use_boundless = args.iter().any(|a| a == "--boundless");
 
     eprintln!("Loading transcript...");
     let input = load_input();
@@ -374,7 +488,19 @@ fn main() {
 
     let fp_input = to_fp_input(&input);
 
-    if use_chunked {
+    if use_boundless {
+        #[cfg(feature = "boundless")]
+        {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(run_boundless(&fp_input));
+        }
+        #[cfg(not(feature = "boundless"))]
+        {
+            eprintln!("ERROR: Boundless feature not enabled.");
+            eprintln!("Build with: cargo build -p chickenz-host --features boundless");
+            std::process::exit(1);
+        }
+    } else if use_chunked {
         run_chunked(&fp_input, use_groth16);
     } else {
         run_monolithic(&fp_input, use_groth16);

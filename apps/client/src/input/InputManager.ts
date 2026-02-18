@@ -17,6 +17,9 @@ export class InputManager {
     window.addEventListener("keyup", (e) => {
       this.keys[e.code] = false;
     });
+    window.addEventListener("blur", () => {
+      this.keys = {};
+    });
   }
 
   /** P1: WASD + Space, aims in movement/facing direction */

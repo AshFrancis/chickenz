@@ -1,169 +1,513 @@
 import Phaser from "phaser";
 import { gameConfig } from "./game";
 import { GameScene } from "./scenes/GameScene";
-import {
-  connectWallet,
-  disconnectWallet,
-  getConnectedAddress,
-  startMatch as contractStartMatch,
-  settleMatch as contractSettleMatch,
-  hashSeed,
-  CHICKENZ_CONTRACT,
-} from "./stellar";
 
-// DOM elements
-const walletBtn = document.getElementById("btn-wallet") as HTMLButtonElement;
-const walletAddr = document.getElementById("wallet-addr") as HTMLSpanElement;
-const newMatchBtn = document.getElementById("btn-new-match") as HTMLButtonElement;
-const downloadBtn = document.getElementById("btn-download") as HTMLButtonElement;
-const settleBtn = document.getElementById("btn-settle") as HTMLButtonElement;
-const statusText = document.getElementById("status-text") as HTMLSpanElement;
+import { NetworkManager, type RoomInfo } from "./net/NetworkManager";
 
-// Create Phaser game
+interface MatchRecord {
+  id: string;
+  roomName: string;
+  player1: string;
+  player2: string;
+  winner: number;
+  scores: [number, number];
+  timestamp: number;
+  proofStatus: "pending" | "proving" | "verified" | "settled";
+  roomId: string;
+}
+
+// ── DOM elements ───────────────────────────────────────────────────────────────
+
+// Top bar (read-only after gate)
+const topBarAddress = document.getElementById("top-bar-address") as HTMLSpanElement;
+const topBarUsername = document.getElementById("top-bar-username") as HTMLSpanElement;
+const muteBtn = document.getElementById("btn-mute") as HTMLButtonElement;
+
+// Gate overlay elements
+const gateOverlay = document.getElementById("gate-overlay") as HTMLDivElement;
+const gateWalletSection = document.getElementById("gate-wallet-section") as HTMLDivElement;
+const gateStep2 = document.getElementById("gate-step2") as HTMLDivElement;
+const gateAddress = document.getElementById("gate-address") as HTMLDivElement;
+const gateUsernameInput = document.getElementById("gate-username-input") as HTMLInputElement;
+const gatePlayBtn = document.getElementById("gate-play-btn") as HTMLButtonElement;
+const gateError = document.getElementById("gate-error") as HTMLDivElement;
+
+// Lobby elements
+const lobbyOverlay = document.getElementById("lobby-overlay") as HTMLDivElement;
+const quickplayBtn = document.getElementById("btn-quickplay") as HTMLButtonElement;
+const createPublicBtn = document.getElementById("btn-create-public") as HTMLButtonElement;
+const createPrivateBtn = document.getElementById("btn-create-private") as HTMLButtonElement;
+const joinCodeInput = document.getElementById("input-join-code") as HTMLInputElement;
+const joinCodeBtn = document.getElementById("btn-join-code") as HTMLButtonElement;
+const roomListEl = document.getElementById("room-list") as HTMLDivElement;
+const lobbyStatus = document.getElementById("lobby-status") as HTMLDivElement;
+const matchHistoryList = document.getElementById("match-history-list") as HTMLDivElement;
+const leaderboardContent = document.getElementById("leaderboard-content") as HTMLDivElement;
+
+// ── Phaser ─────────────────────────────────────────────────────────────────────
+
 const game = new Phaser.Game(gameConfig);
 
 function getGameScene(): GameScene | null {
   return game.scene.getScene("GameScene") as GameScene | null;
 }
 
-function setStatus(msg: string) {
-  statusText.textContent = msg;
-}
+// ── Session state ──────────────────────────────────────────────────────────────
 
-function shortenAddr(addr: string): string {
-  return addr.slice(0, 6) + "..." + addr.slice(-4);
-}
+let networkManager: NetworkManager | null = null;
+let onlineRoomId: string | null = null;
+let currentUsername = "";
 
-// Track session ID for on-chain settlement
-let currentSessionId = 0;
-let matchRegisteredOnChain = false;
+// Auto-detect server: same host in production, localhost in dev
+const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+const DEFAULT_SERVER = location.port === "5173" || location.port === "5174"
+  ? "ws://localhost:3000/ws"
+  : `${wsProto}//${location.host}/ws`;
 
-// ── Wallet ──────────────────────────────────────────────────────────────────
+// ── Gate: username-only flow (wallet not required) ────────────────────────────
 
-walletBtn.addEventListener("click", async () => {
-  if (getConnectedAddress()) {
-    await disconnectWallet();
-    walletBtn.textContent = "Connect Wallet";
-    walletAddr.textContent = "";
-    setStatus("Wallet disconnected.");
-    return;
-  }
-
-  try {
-    walletBtn.disabled = true;
-    walletBtn.textContent = "Connecting...";
-    const addr = await connectWallet();
-    walletBtn.textContent = "Disconnect";
-    walletAddr.textContent = shortenAddr(addr);
-    setStatus(`Connected: ${shortenAddr(addr)}`);
-  } catch (err: any) {
-    walletBtn.textContent = "Connect Wallet";
-    setStatus(`Wallet error: ${err.message}`);
-  } finally {
-    walletBtn.disabled = false;
-  }
-});
-
-// ── New Match ───────────────────────────────────────────────────────────────
-
-newMatchBtn.addEventListener("click", async () => {
-  const scene = getGameScene();
-  if (!scene) return;
-
-  const seed = Date.now() >>> 0;
-  currentSessionId = seed; // Use seed as session ID for simplicity
-  matchRegisteredOnChain = false;
-
-  // Register on-chain if wallet connected
-  const addr = getConnectedAddress();
-  if (addr) {
-    try {
-      newMatchBtn.disabled = true;
-      setStatus("Registering match on-chain...");
-      const seedCommit = await hashSeed(seed);
-      // For local 2-player, both players use same address
-      await contractStartMatch(currentSessionId, addr, addr, seedCommit);
-      matchRegisteredOnChain = true;
-      setStatus("Match registered on-chain. Playing...");
-    } catch (err: any) {
-      setStatus(`On-chain registration failed: ${err.message}. Playing locally.`);
-    } finally {
-      newMatchBtn.disabled = false;
-    }
+// Auto-reconnect: if saved username exists, skip gate
+{
+  const savedName = localStorage.getItem("chickenz-username");
+  if (savedName) {
+    currentUsername = savedName;
+    topBarUsername.textContent = savedName;
+    gateOverlay.classList.add("hidden");
+    connectToServer(DEFAULT_SERVER);
   } else {
-    setStatus("Playing locally (connect wallet for on-chain settlement).");
+    // Show step 2 immediately (no wallet gate)
+    gateStep2.classList.add("visible");
+    gateUsernameInput.focus();
   }
+}
 
-  scene.startMatch(seed);
-  downloadBtn.disabled = true;
-  settleBtn.disabled = true;
-});
-
-// ── Match End ───────────────────────────────────────────────────────────────
-
-window.addEventListener("matchEnd", ((e: CustomEvent) => {
-  const { winner, scores, ticks, seed } = e.detail;
-  const winnerStr = winner === -1 ? "Draw" : `Player ${winner + 1}`;
-  setStatus(
-    `Match over! ${winnerStr} wins. ${scores[0]}-${scores[1]}, ${ticks} ticks, seed=${seed}`,
-  );
-  downloadBtn.disabled = false;
-  settleBtn.disabled = !matchRegisteredOnChain;
-}) as EventListener);
-
-// ── Download Transcript ─────────────────────────────────────────────────────
-
-downloadBtn.addEventListener("click", () => {
-  const scene = getGameScene();
-  if (!scene) return;
-  scene.transcript.download();
-  setStatus("Transcript downloaded. Run the prover, then settle on-chain.");
-});
-
-// ── Settle On-Chain ─────────────────────────────────────────────────────────
-
-settleBtn.addEventListener("click", async () => {
-  if (!matchRegisteredOnChain) {
-    setStatus("Match not registered on-chain.");
+function submitGateUsername() {
+  const name = gateUsernameInput.value.trim();
+  if (!name || name.length > 7) {
+    gateError.textContent = "Username must be 1-7 characters.";
+    return;
+  }
+  if (!/^[a-zA-Z0-9_]+$/.test(name)) {
+    gateError.textContent = "Letters, numbers, underscore only.";
     return;
   }
 
-  // For the hackathon MVP, settlement requires proof artifacts from the prover.
-  // Prompt user to upload proof_artifacts.json.
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".json";
-  input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
+  gateError.textContent = "";
+  currentUsername = name;
+  topBarUsername.textContent = name;
+  localStorage.setItem("chickenz-username", name);
 
-    try {
-      settleBtn.disabled = true;
-      setStatus("Reading proof artifacts...");
-      const text = await file.text();
-      const artifacts = JSON.parse(text);
+  // Hide gate, connect to server, open lobby
+  gateOverlay.classList.add("hidden");
+  connectToServer(DEFAULT_SERVER);
+}
 
-      const seal = hexToBytes(artifacts.seal);
-      const journal = hexToBytes(artifacts.journal);
+// Pre-fill saved username
+const savedUsername = localStorage.getItem("chickenz-username");
+if (savedUsername) {
+  gateUsernameInput.value = savedUsername;
+}
 
-      setStatus("Submitting proof to Soroban...");
-      await contractSettleMatch(currentSessionId, seal, journal);
-      setStatus(
-        `Match settled on-chain! Contract: ${CHICKENZ_CONTRACT}`,
-      );
-      matchRegisteredOnChain = false;
-    } catch (err: any) {
-      setStatus(`Settlement failed: ${err.message}`);
-      settleBtn.disabled = false;
-    }
-  };
-  input.click();
+gatePlayBtn.addEventListener("click", submitGateUsername);
+gateUsernameInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitGateUsername();
 });
 
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return bytes;
+// ── Mute ──────────────────────────────────────────────────────────────────────
+
+let isMuted = localStorage.getItem("chickenz-muted") === "true";
+function updateMuteButton() {
+  muteBtn.innerHTML = isMuted ? "&#128264;" : "&#128266;";
+  muteBtn.title = isMuted ? "Unmute" : "Mute";
 }
+updateMuteButton();
+
+muteBtn.addEventListener("click", () => {
+  isMuted = !isMuted;
+  localStorage.setItem("chickenz-muted", String(isMuted));
+  updateMuteButton();
+  const scene = getGameScene();
+  if (scene) scene.setMuted(isMuted);
+});
+
+// ── Lobby tabs ────────────────────────────────────────────────────────────────
+
+let activeTab = "rooms";
+
+document.querySelectorAll(".lobby-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const tabName = (tab as HTMLElement).dataset.tab!;
+    switchTab(tabName);
+  });
+});
+
+function switchTab(tabName: string) {
+  activeTab = tabName;
+  document.querySelectorAll(".lobby-tab").forEach((t) => {
+    t.classList.remove("active");
+    t.setAttribute("aria-selected", "false");
+  });
+  document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("visible"));
+  const activeTabEl = document.querySelector(`.lobby-tab[data-tab="${tabName}"]`);
+  activeTabEl?.classList.add("active");
+  activeTabEl?.setAttribute("aria-selected", "true");
+  document.getElementById(`tab-${tabName}`)?.classList.add("visible");
+
+  if (tabName === "leaderboard") fetchLeaderboard();
+  if (tabName === "history") fetchMatchHistory();
+}
+
+// ── Lobby UI ───────────────────────────────────────────────────────────────────
+
+function openLobby() {
+  lobbyOverlay.classList.add("visible");
+  lobbyStatus.textContent = "";
+  joinCodeInput.value = "";
+  setLobbyButtons(true);
+
+  if (networkManager?.connected) {
+    networkManager.sendListRooms();
+  }
+
+  if (activeTab === "leaderboard") fetchLeaderboard();
+  if (activeTab === "history") fetchMatchHistory();
+}
+
+function closeLobby() {
+  lobbyOverlay.classList.remove("visible");
+}
+
+function setLobbyButtons(enabled: boolean) {
+  quickplayBtn.disabled = !enabled;
+  createPublicBtn.disabled = !enabled;
+  createPrivateBtn.disabled = !enabled;
+  joinCodeBtn.disabled = !enabled;
+}
+
+function renderRoomList(rooms: RoomInfo[]) {
+  roomListEl.innerHTML = "";
+
+  const joinable = rooms.filter((r) => r.status === "waiting");
+  const playing = rooms.filter((r) => r.status === "playing");
+
+  if (joinable.length === 0 && playing.length === 0) {
+    roomListEl.innerHTML = `<div id="lobby-empty">No public rooms yet. Create one or hit Quick Play!</div>`;
+    return;
+  }
+
+  for (const room of joinable) {
+    roomListEl.appendChild(createRoomElement(room));
+  }
+  for (const room of playing) {
+    roomListEl.appendChild(createRoomElement(room));
+  }
+}
+
+function createRoomElement(room: RoomInfo): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = "room-item";
+  el.innerHTML = `
+    <span>
+      <span class="room-name">${escapeHtml(room.name)}</span>
+      <span class="room-code">${room.joinCode}</span>
+    </span>
+    <div class="room-info">
+      <span class="room-status ${room.status}">${room.status === "waiting" ? "Waiting (1/2)" : "In Progress (2/2)"}</span>
+      ${room.status === "waiting" ? `<button class="btn btn-primary btn-join" data-room-id="${room.id}">Join</button>` : ""}
+    </div>
+  `;
+
+  const joinBtn = el.querySelector(".btn-join");
+  if (joinBtn) {
+    joinBtn.addEventListener("click", () => {
+      if (!networkManager?.connected) return;
+    
+      networkManager.sendJoinRoom(room.id);
+      lobbyStatus.textContent = "Joining...";
+      setLobbyButtons(false);
+    });
+  }
+
+  return el;
+}
+
+function escapeHtml(s: string): string {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+// ── Leaderboard ──────────────────────────────────────────────────────────────
+
+function fetchLeaderboard() {
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+  fetch(`${origin}/api/leaderboard`)
+    .then((r) => r.json())
+    .then((data: { name: string; elo: number; wins: number; losses: number }[]) => {
+      renderLeaderboard(data);
+    })
+    .catch(() => {
+      leaderboardContent.innerHTML = `<div class="empty-state">Failed to load leaderboard</div>`;
+    });
+}
+
+function renderLeaderboard(data: { name: string; elo: number; wins: number; losses: number }[]) {
+  if (data.length === 0) {
+    leaderboardContent.innerHTML = `<div class="empty-state">No ranked players yet</div>`;
+    return;
+  }
+  let html = `<table><tr><th>#</th><th>Name</th><th>ELO</th><th>W</th><th>L</th></tr>`;
+  data.forEach((entry, i) => {
+    const highlight = entry.name === currentUsername ? ' class="highlight"' : "";
+    html += `<tr${highlight}><td>${i + 1}</td><td>${escapeHtml(entry.name)}</td><td>${entry.elo}</td><td>${entry.wins}</td><td>${entry.losses}</td></tr>`;
+  });
+  html += `</table>`;
+  leaderboardContent.innerHTML = html;
+}
+
+// ── Match History ──────────────────────────────────────────────────────────────
+
+function fetchMatchHistory() {
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+  fetch(`${origin}/api/matches`)
+    .then((r) => r.json())
+    .then((data: MatchRecord[]) => {
+      renderMatchHistory(data);
+    })
+    .catch(() => {
+      matchHistoryList.innerHTML = `<div class="empty-state">Failed to load match history</div>`;
+    });
+}
+
+function proofStatusLabel(status: string): string {
+  switch (status) {
+    case "pending":
+    case "proving":
+      return "Generating Proof";
+    case "verified":
+      return "Proof Verified";
+    case "settled":
+      return "Settled";
+    default:
+      return status;
+  }
+}
+
+function renderMatchHistory(matches: MatchRecord[]) {
+  if (matches.length === 0) {
+    matchHistoryList.innerHTML = `<div class="empty-state">No matches played yet</div>`;
+    return;
+  }
+  matchHistoryList.innerHTML = "";
+  for (const m of matches) {
+    const el = document.createElement("div");
+    el.className = "match-item";
+    const ago = formatTimeAgo(m.timestamp);
+    el.innerHTML = `
+      <div>
+        <span class="match-players">${escapeHtml(m.player1)} vs ${escapeHtml(m.player2)}</span>
+        <span class="match-score">${m.scores[0]}-${m.scores[1]}</span>
+      </div>
+      <div class="match-item-meta">
+        <span class="match-time">${ago}</span>
+        <span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span>
+        <button class="btn btn-sm btn-replay" data-room-id="${m.roomId}">Replay</button>
+      </div>
+    `;
+    const replayBtn = el.querySelector(".btn-replay");
+    if (replayBtn) {
+      replayBtn.addEventListener("click", () => {
+        startReplay(m.roomId);
+      });
+    }
+    matchHistoryList.appendChild(el);
+  }
+}
+
+function formatTimeAgo(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+interface TranscriptInput {
+  buttons: number;
+  aimX?: number;
+  aimY?: number;
+  aim_x?: number;
+  aim_y?: number;
+}
+
+interface TranscriptResponse {
+  transcript: [TranscriptInput, TranscriptInput][];
+  config: { seed: number };
+}
+
+function startReplay(roomId: string) {
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+  fetch(`${origin}/transcript/${roomId}`)
+    .then((r) => r.json())
+    .then((data: TranscriptResponse) => {
+      closeLobby();
+      const scene = getGameScene();
+      if (scene) {
+        scene.startReplay(data.transcript, data.config.seed);
+      }
+    })
+    .catch(() => {
+      lobbyStatus.textContent = "Failed to load transcript for replay.";
+    });
+}
+
+// ── Network ────────────────────────────────────────────────────────────────────
+
+function connectToServer(url: string) {
+  if (networkManager) {
+    networkManager.disconnect();
+  }
+
+  lobbyStatus.textContent = "Connecting...";
+
+  networkManager = new NetworkManager({
+    onLobby(rooms) {
+      renderRoomList(rooms);
+    },
+
+    onWaiting(roomId, roomName, joinCode) {
+      closeLobby();
+      const scene = getGameScene();
+      if (scene) {
+        scene.startWarmup(joinCode, currentUsername);
+        scene.setMuted(isMuted);
+      }
+    },
+
+    onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds) {
+      onlineRoomId = roomId;
+
+      const scene = getGameScene();
+      if (!scene) return;
+
+      if (scene.isWarmup) {
+        scene.stopWarmup();
+      } else {
+        closeLobby();
+      }
+
+      scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds);
+      scene.setMuted(isMuted);
+      scene.onLocalInput = (input, player) => {
+        networkManager?.sendInput(input, player);
+      };
+    },
+
+    onState(state) {
+      const scene = getGameScene();
+      if (scene) scene.receiveState(state);
+    },
+
+    onRoundEnd(round, winner, roundWins) {
+      const scene = getGameScene();
+      if (scene) scene.handleRoundEnd(round, winner, roundWins);
+    },
+
+    onRoundStart(round, seed, mapIndex) {
+      const scene = getGameScene();
+      if (scene) scene.startNewRound(seed, mapIndex, round);
+    },
+
+    onEnded(winner, scores, roundWins, roomId) {
+      onlineRoomId = roomId;
+      const scene = getGameScene();
+      if (scene) scene.endOnlineMatch(winner);
+
+      // Re-open lobby so they can play again
+      setTimeout(() => openLobby(), 2000);
+    },
+
+    onError(message) {
+      lobbyStatus.textContent = `Error: ${message}`;
+      setLobbyButtons(true);
+    },
+
+    onDisconnect() {
+      lobbyStatus.textContent = "Disconnected from server.";
+      setLobbyButtons(true);
+      networkManager = null;
+    },
+  });
+
+  networkManager.connect(url);
+
+  // Once connected, set username and open lobby
+  const waitForConnect = setInterval(() => {
+    if (networkManager?.connected) {
+      clearInterval(waitForConnect);
+      if (currentUsername) {
+        networkManager.sendSetUsername(currentUsername);
+      }
+      openLobby();
+    }
+  }, 100);
+
+  // Safety timeout: stop polling after 10s
+  setTimeout(() => clearInterval(waitForConnect), 10000);
+}
+
+// ── Button handlers ────────────────────────────────────────────────────────────
+
+quickplayBtn.addEventListener("click", () => {
+  if (!networkManager?.connected) return;
+
+  networkManager.sendQuickplay();
+  lobbyStatus.textContent = "Finding a match...";
+  setLobbyButtons(false);
+});
+
+createPublicBtn.addEventListener("click", () => {
+  if (!networkManager?.connected) return;
+
+  networkManager.sendCreate(false);
+  lobbyStatus.textContent = "Creating public match...";
+  setLobbyButtons(false);
+});
+
+createPrivateBtn.addEventListener("click", () => {
+  if (!networkManager?.connected) return;
+
+  networkManager.sendCreate(true);
+  lobbyStatus.textContent = "Creating private match...";
+  setLobbyButtons(false);
+});
+
+joinCodeBtn.addEventListener("click", () => {
+  if (!networkManager?.connected) return;
+
+  const code = joinCodeInput.value.trim().toUpperCase();
+  if (code.length !== 5) {
+    lobbyStatus.textContent = "Join code must be 5 letters.";
+    return;
+  }
+  networkManager.sendJoinByCode(code);
+  lobbyStatus.textContent = `Joining with code ${code}...`;
+  setLobbyButtons(false);
+});
+
+joinCodeInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    joinCodeBtn.click();
+  }
+});
+
+// ── Replay exit handler ──────────────────────────────────────────────────────
+
+window.addEventListener("replayEnded", () => {
+  openLobby();
+});

@@ -2,7 +2,7 @@
 
 risc0_zkvm::guest::entry!(main);
 
-use chickenz_core::fp::{self, ChunkProof, FpInput, CHUNK_PROOF_WORDS};
+use chickenz_core::fp::{self, ChunkProof, FpInput};
 use sha2::{Digest, Sha256};
 
 /// Chunk guest: replays N ticks from a given state, commits state hash chain.

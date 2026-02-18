@@ -40,7 +40,7 @@ mod tests {
         let mut state = 42u32;
         for _ in 0..1000 {
             let (value, next) = prng_next(state);
-            assert!(value >= 0.0 && value < 1.0, "value out of range: {}", value);
+            assert!((0.0..1.0).contains(&value), "value out of range: {}", value);
             state = next;
         }
     }
@@ -50,7 +50,7 @@ mod tests {
         let mut state = 99u32;
         for _ in 0..1000 {
             let (value, next) = prng_int_range(state, 0, 3);
-            assert!(value >= 0 && value <= 3, "value out of range: {}", value);
+            assert!((0..=3).contains(&value), "value out of range: {}", value);
             state = next;
         }
     }

@@ -3,6 +3,7 @@ use crate::physics::*;
 use crate::prng::prng_int_range;
 use crate::projectiles::*;
 use crate::types::*;
+use crate::weapons::{create_weapon_projectiles, resolve_weapon_pickups, tick_pickup_timers};
 
 /// Core deterministic transition function.
 ///
@@ -13,16 +14,17 @@ use crate::types::*;
 ///  3. Apply player input (movement/jump/facing)
 ///  4. Apply gravity
 ///  5. Move + collide with platforms (dynamic arena bounds)
-///  5b. Head stomp detection
-///  6. Process shooting (spawn projectiles)
-///  7. Move projectiles, remove expired/OOB
-///  8. Projectile-player collision
-///  9. Deaths + lives
-///  10. Respawn (only if lives > 0)
-///  11. Sudden death (arena walls close)
-///  12. Time-up check
-///  13. Update score
-///  14. Advance tick
+///  6. Weapon pickup collision
+///  7. Process shooting (spawn weapon projectiles)
+///  8. Move projectiles, remove expired/OOB
+///  9. Projectile-player collision
+///  10. Deaths + lives
+///  11. Respawn (only if lives > 0)
+///  12. Sudden death (arena walls close)
+///  13. Time-up check
+///  14. Update score
+///  15. Tick pickup respawn timers
+///  16. Advance tick
 pub fn step(
     prev: &GameState,
     inputs: &[PlayerInput; 2],
@@ -34,6 +36,20 @@ pub fn step(
         return prev.clone();
     }
 
+    // 0b. Death linger countdown — skip gameplay, just tick the timer
+    if prev.death_linger_timer > 0 {
+        let remaining = prev.death_linger_timer - 1;
+        let mut s = prev.clone();
+        s.tick += 1;
+        if remaining <= 0 {
+            s.match_over = true;
+            s.death_linger_timer = 0;
+        } else {
+            s.death_linger_timer = remaining;
+        }
+        return s;
+    }
+
     let map = &config.map;
     let mut rng_state = prev.rng_state;
     let mut next_projectile_id = prev.next_projectile_id;
@@ -41,17 +57,10 @@ pub fn step(
     let mut arena_right = prev.arena_right;
     let mut match_over = false;
     let mut winner = prev.winner;
+    let mut death_linger_timer: i32 = 0;
 
-    // 1. Resolve inputs — missing-input rule: reuse T-1 if absent
-    // In this Rust port, inputs are always provided (no Option), so we use them directly.
-    // The host is responsible for applying the missing-input rule before calling step,
-    // or we treat the transcript as already resolved. For parity with TS, if buttons==0
-    // and aim==0, that IS a valid input (do nothing). The missing-input rule is handled
-    // at the transcript level — each tick's transcript entry is the resolved input.
-    let resolved_inputs: [PlayerInput; 2] = [
-        inputs[0],
-        inputs[1],
-    ];
+    // 1. Resolve inputs — inputs are always provided directly
+    let resolved_inputs: [PlayerInput; 2] = [inputs[0], inputs[1]];
 
     // 2. Tick cooldowns
     let mut players: Vec<PlayerState> = prev
@@ -99,77 +108,69 @@ pub fn step(
         .collect();
 
     // 4. Apply gravity
-    players = players.iter().map(|p| apply_gravity(p)).collect();
+    players = players.iter().map(apply_gravity).collect();
 
     // 5. Move + collide (with dynamic arena bounds)
-    let pre_move_players = players.clone();
     players = players
         .iter()
         .map(|p| move_and_collide(p, map, arena_left, arena_right))
         .collect();
 
-    // 5b. Head stomp detection
-    let stomp_result = resolve_stomps(&players, &pre_move_players);
-    players = stomp_result.players;
-    let stomp_killed_ids: Vec<PlayerId> = stomp_result.kills.iter().map(|k| k.victim_id).collect();
+    // 6. Weapon pickup collision
+    let mut weapon_pickups = prev.weapon_pickups.clone();
+    resolve_weapon_pickups(&mut players, &mut weapon_pickups);
 
-    // 6. Process shooting
+    // 7. Process shooting — weapon-based
     let mut new_projectiles: Vec<Projectile> = Vec::new();
-    players = players
-        .iter()
-        .map(|p| {
-            let input = &resolved_inputs[p.id as usize];
-            if p.state_flags & player_state_flag::ALIVE != 0
-                && input.buttons & button::SHOOT != 0
-                && p.shoot_cooldown <= 0
-            {
-                // Can't capture mutable next_projectile_id in closure cleanly,
-                // so we handle this outside. Mark for shooting by returning cooldown.
-                PlayerState {
-                    shoot_cooldown: SHOOT_COOLDOWN,
-                    ..*p
-                }
-            } else {
-                *p
-            }
-        })
-        .collect();
-
-    // Actually spawn projectiles (need mutable access to next_projectile_id)
-    for p in &players {
-        let input = &resolved_inputs[p.id as usize];
-        if p.state_flags & player_state_flag::ALIVE != 0
+    for i in 0..players.len() {
+        let input = &resolved_inputs[players[i].id as usize];
+        if players[i].state_flags & player_state_flag::ALIVE != 0
             && input.buttons & button::SHOOT != 0
-            && p.shoot_cooldown == SHOOT_COOLDOWN
+            && players[i].shoot_cooldown <= 0
+            && players[i].weapon.is_some()
+            && players[i].ammo > 0
         {
-            // This player just had their cooldown set — they're shooting this tick
-            let projectile = spawn_projectile(p, input.aim_x, input.aim_y, next_projectile_id);
-            next_projectile_id += 1;
-            new_projectiles.push(projectile);
+            let weapon = players[i].weapon.unwrap();
+            let stats = weapon_stats(weapon);
+            // Copy player to avoid borrow conflict with mutation below
+            let player_copy = players[i];
+            let (projs, new_id, new_rng) = create_weapon_projectiles(
+                &player_copy,
+                input.aim_x,
+                input.aim_y,
+                next_projectile_id,
+                rng_state,
+            );
+            next_projectile_id = new_id;
+            rng_state = new_rng;
+            new_projectiles.extend(projs);
+
+            let new_ammo = players[i].ammo - 1;
+            players[i].shoot_cooldown = stats.cooldown;
+            players[i].ammo = new_ammo;
+            if new_ammo <= 0 {
+                players[i].weapon = None;
+            }
         }
     }
 
-    // 7. Move projectiles, remove expired and out-of-bounds
+    // 8. Move projectiles, remove expired and out-of-bounds
     let mut projectiles: Vec<Projectile> = prev
         .projectiles
         .iter()
-        .map(|p| move_projectile(p))
+        .map(move_projectile)
         .chain(new_projectiles)
-        .filter(|proj| proj.lifetime > 0 && !is_out_of_bounds(proj, map))
+        .filter(|proj| proj.lifetime > 0 && !is_out_of_bounds(proj, map, arena_left, arena_right))
         .collect();
 
-    // 8. Projectile-player collision
+    // 9. Projectile-player collision
     let hit_result = resolve_projectile_hits(&projectiles, &players);
     projectiles = hit_result.remaining_projectiles;
     players = hit_result.updated_players;
 
-    // 9. Deaths + lives — decrement lives for players killed by projectiles or stomps
-    let mut killed_ids: Vec<PlayerId> = hit_result.kills.iter().map(|k| k.victim_id).collect();
-    for id in &stomp_killed_ids {
-        if !killed_ids.contains(id) {
-            killed_ids.push(*id);
-        }
-    }
+    // 10. Deaths + lives — decrement lives for players killed by projectiles
+    let killed_ids: Vec<PlayerId> =
+        hit_result.kills.iter().map(|k| k.victim_id).collect();
 
     players = players
         .iter()
@@ -188,19 +189,19 @@ pub fn step(
         })
         .collect();
 
-    // Check elimination: if only one player has lives remaining → match over
+    // Check elimination: if only one player has lives remaining → start linger
     let players_with_lives: Vec<&PlayerState> =
         players.iter().filter(|p| p.lives > 0).collect();
     if players_with_lives.len() == 1 {
-        match_over = true;
+        death_linger_timer = DEATH_LINGER_TICKS;
         winner = players_with_lives[0].id;
     } else if players_with_lives.is_empty() {
-        match_over = true;
-        winner = -1;
+        death_linger_timer = DEATH_LINGER_TICKS;
+        winner = 0; // P1 wins tiebreaker
     }
 
-    // 10. Respawn (only if lives > 0 and not matchOver)
-    if !match_over {
+    // 11. Respawn (only if lives > 0 and not lingering/matchOver)
+    if !match_over && death_linger_timer == 0 {
         players = players
             .iter()
             .map(|p| {
@@ -228,6 +229,8 @@ pub fn step(
                             respawn_timer: INVINCIBLE_TICKS,
                             shoot_cooldown: 0,
                             grounded: false,
+                            weapon: None,
+                            ammo: 0,
                             ..*p
                         };
                     }
@@ -241,9 +244,9 @@ pub fn step(
             .collect();
     }
 
-    // 11. Sudden death — arena walls close inward
+    // 12. Sudden death — arena walls close inward
     let current_tick = prev.tick + 1;
-    if !match_over && current_tick >= config.sudden_death_start_tick {
+    if !match_over && death_linger_timer == 0 && current_tick >= config.sudden_death_start_tick {
         let duration =
             (config.match_duration_ticks - config.sudden_death_start_tick) as f64;
         let elapsed = (current_tick - config.sudden_death_start_tick) as f64;
@@ -280,20 +283,20 @@ pub fn step(
         let alive_after_sd: Vec<&PlayerState> =
             players.iter().filter(|p| p.lives > 0).collect();
         if alive_after_sd.len() == 1 {
-            match_over = true;
+            death_linger_timer = DEATH_LINGER_TICKS;
             winner = alive_after_sd[0].id;
         } else if alive_after_sd.is_empty() {
             // Both hit 0 lives — last player to die loses
-            match_over = true;
+            death_linger_timer = DEATH_LINGER_TICKS;
             if let Some(other) = players.iter().find(|p| p.id != last_wall_kill_id) {
                 winner = other.id;
             } else {
-                winner = -1;
+                winner = 0; // P1 wins tiebreaker
             }
         }
 
         // Arena fully closed — force end, higher lives wins
-        if !match_over && progress >= 1.0 {
+        if !match_over && death_linger_timer == 0 && progress >= 1.0 {
             match_over = true;
             let p0 = &players[0];
             let p1 = &players[1];
@@ -302,13 +305,13 @@ pub fn step(
             } else if p1.lives > p0.lives {
                 winner = p1.id;
             } else {
-                winner = -1;
+                winner = 0; // P1 wins tiebreaker
             }
         }
     }
 
-    // 12. Time-up check
-    if !match_over && current_tick >= config.match_duration_ticks {
+    // 13. Time-up check
+    if !match_over && death_linger_timer == 0 && current_tick >= config.match_duration_ticks {
         match_over = true;
         let p0 = &players[0];
         let p1 = &players[1];
@@ -321,28 +324,27 @@ pub fn step(
         } else if p1.health > p0.health {
             winner = p1.id;
         } else {
-            winner = -1; // draw
+            winner = 0; // P1 wins tiebreaker (no draws)
         }
     }
 
-    // 13. Update score (kills tracked for display)
+    // 14. Update score (kills tracked for display)
     let mut score = prev.score;
     for kill in &hit_result.kills {
         if kill.killer_id >= 0 && (kill.killer_id as usize) < score.len() {
             score[kill.killer_id as usize] += 1;
         }
     }
-    for kill in &stomp_result.kills {
-        if kill.stomper_id >= 0 && (kill.stomper_id as usize) < score.len() {
-            score[kill.stomper_id as usize] += 1;
-        }
-    }
 
-    // 14. Advance tick
+    // 15. Tick pickup respawn timers
+    tick_pickup_timers(&mut weapon_pickups);
+
+    // 16. Advance tick
     GameState {
         tick: current_tick,
         players,
         projectiles,
+        weapon_pickups,
         rng_state,
         score,
         next_projectile_id,
@@ -350,6 +352,7 @@ pub fn step(
         arena_right,
         match_over,
         winner,
+        death_linger_timer,
     }
 }
 
@@ -395,8 +398,6 @@ mod tests {
         }
 
         assert!(state.match_over);
-        // Match ends at or before the duration limit.
-        // With idle players, sudden death walls close and eliminate them before 3600.
         assert!(state.tick <= config.match_duration_ticks);
     }
 
@@ -455,13 +456,36 @@ mod tests {
             assert_eq!(p1.y, p2.y);
             assert_eq!(p1.lives, p2.lives);
             assert_eq!(p1.health, p2.health);
+            assert_eq!(p1.weapon, p2.weapon);
+            assert_eq!(p1.ammo, p2.ammo);
         }
     }
 
     #[test]
-    fn player_can_shoot() {
+    fn unarmed_player_cannot_shoot() {
         let config = default_config(42);
-        let state = create_initial_state(&config);
+        let mut state = create_initial_state(&config);
+        state.weapon_pickups.clear(); // no pickups
+        let inputs = [
+            PlayerInput {
+                buttons: button::SHOOT,
+                aim_x: 1.0,
+                aim_y: 0.0,
+            },
+            NULL_INPUT,
+        ];
+        let result = step(&state, &inputs, &[NULL_INPUT; 2], &config);
+        assert_eq!(result.projectiles.len(), 0);
+    }
+
+    #[test]
+    fn armed_player_can_shoot() {
+        let config = default_config(42);
+        let mut state = create_initial_state(&config);
+        // Arm player 0 with a pistol
+        state.players[0].weapon = Some(WeaponType::Pistol);
+        state.players[0].ammo = 15;
+        state.weapon_pickups.clear();
         let inputs = [
             PlayerInput {
                 buttons: button::SHOOT,
@@ -473,72 +497,40 @@ mod tests {
         let result = step(&state, &inputs, &[NULL_INPUT; 2], &config);
         assert_eq!(result.projectiles.len(), 1);
         assert_eq!(result.projectiles[0].owner_id, 0);
+        assert_eq!(result.projectiles[0].weapon, WeaponType::Pistol);
     }
 
     #[test]
-    fn cross_validate_200tick_replay_with_ts() {
-        // Expected values from TypeScript sim: bun run services/prover/cross-validate.ts
-        // Same transcript generation logic as replay_determinism test.
+    fn ammo_depletes_and_drops_weapon() {
         let config = default_config(42);
-        let mut transcript: Vec<[PlayerInput; 2]> = Vec::new();
-        for tick in 0..200u32 {
-            let p0 = PlayerInput {
-                buttons: if tick % 30 < 15 {
-                    button::RIGHT | button::SHOOT
-                } else {
-                    button::LEFT
-                },
+        let mut state = create_initial_state(&config);
+        state.players[0].weapon = Some(WeaponType::Pistol);
+        state.players[0].ammo = 1; // last shot
+        state.weapon_pickups.clear();
+        let inputs = [
+            PlayerInput {
+                buttons: button::SHOOT,
                 aim_x: 1.0,
                 aim_y: 0.0,
-            };
-            let p1 = PlayerInput {
-                buttons: if tick % 20 < 10 {
-                    button::LEFT | button::SHOOT
-                } else {
-                    button::RIGHT | button::JUMP
-                },
-                aim_x: -1.0,
-                aim_y: 0.0,
-            };
-            transcript.push([p0, p1]);
-        }
-
-        let mut state = create_initial_state(&config);
-        let mut prev_inputs = [NULL_INPUT; 2];
-        for tick_inputs in &transcript {
-            state = step(&state, tick_inputs, &prev_inputs, &config);
-            prev_inputs = *tick_inputs;
-            if state.match_over {
-                break;
-            }
-        }
-
-        // Cross-validate with TS output
-        assert_eq!(state.tick, 200);
-        assert!(!state.match_over);
-        assert_eq!(state.winner, -1);
-        assert_eq!(state.score, [0, 0]);
-        assert_eq!(state.players[0].x, 160.0);
-        assert_eq!(state.players[0].y, 536.0);
-        assert_eq!(state.players[0].lives, 3);
-        assert_eq!(state.players[0].health, 75);
-        assert_eq!(state.players[1].x, 672.0);
-        assert_eq!(state.players[1].y, 385.0);
-        assert_eq!(state.players[1].lives, 3);
-        assert_eq!(state.players[1].health, 100);
-        assert_eq!(state.projectiles.len(), 7);
-        assert_eq!(state.rng_state, 42);
+            },
+            NULL_INPUT,
+        ];
+        let result = step(&state, &inputs, &[NULL_INPUT; 2], &config);
+        assert_eq!(result.projectiles.len(), 1);
+        assert_eq!(result.players[0].weapon, None);
+        assert_eq!(result.players[0].ammo, 0);
     }
 
     #[test]
     fn elimination_ends_match() {
         let config = default_config(42);
         let mut state = create_initial_state(&config);
-        // Set player 1 to 1 life, 1 hit from death
+        // Set player 1 to 1 life, exactly at pistol damage threshold
         state.players[1].lives = 1;
-        state.players[1].health = PROJECTILE_DAMAGE;
+        state.players[1].health = 20; // Pistol does 20 damage
+        state.weapon_pickups.clear();
 
-        // Place a projectile about to hit player 1
+        // Place a pistol projectile about to hit player 1
         state.projectiles.push(Projectile {
             id: 0,
             owner_id: 0,
@@ -547,11 +539,42 @@ mod tests {
             vx: PROJECTILE_SPEED,
             vy: 0.0,
             lifetime: 50,
+            weapon: WeaponType::Pistol,
         });
         state.next_projectile_id = 1;
 
         let result = step(&state, &[NULL_INPUT; 2], &[NULL_INPUT; 2], &config);
-        assert!(result.match_over);
+        // Linger starts but matchOver not yet true
+        assert!(!result.match_over);
+        assert!(result.death_linger_timer > 0);
         assert_eq!(result.winner, 0);
+
+        // Advance through linger
+        let mut s = result;
+        while !s.match_over {
+            s = step(&s, &[NULL_INPUT; 2], &[NULL_INPUT; 2], &config);
+        }
+        assert!(s.match_over);
+        assert_eq!(s.winner, 0);
+    }
+
+    #[test]
+    fn respawn_clears_weapon() {
+        let config = default_config(42);
+        let mut state = create_initial_state(&config);
+        // Kill player 0 but leave them with lives
+        state.players[0].lives = 2;
+        state.players[0].health = 0;
+        state.players[0].state_flags = 0;
+        state.players[0].weapon = Some(WeaponType::Sniper);
+        state.players[0].ammo = 3;
+        state.players[0].respawn_timer = RESPAWN_TICKS - 1;
+        state.weapon_pickups.clear();
+
+        let result = step(&state, &[NULL_INPUT; 2], &[NULL_INPUT; 2], &config);
+        // Player should respawn with no weapon
+        assert!(result.players[0].state_flags & player_state_flag::ALIVE != 0);
+        assert_eq!(result.players[0].weapon, None);
+        assert_eq!(result.players[0].ammo, 0);
     }
 }

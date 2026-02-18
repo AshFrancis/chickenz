@@ -2,7 +2,7 @@
 
 risc0_zkvm::guest::entry!(main);
 
-use chickenz_core::fp::{self, FpInput};
+use chickenz_core::fp;
 use chickenz_core::ProverOutput;
 
 fn main() {

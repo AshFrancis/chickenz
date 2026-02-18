@@ -24,12 +24,10 @@ pub fn apply_player_input(p: &PlayerState, input: &PlayerInput) -> PlayerState {
         } else if vx > target_vx {
             vx = (vx - ACCELERATION).max(target_vx);
         }
-    } else {
-        if vx > 0.0 {
-            vx = (vx - DECELERATION).max(0.0);
-        } else if vx < 0.0 {
-            vx = (vx + DECELERATION).min(0.0);
-        }
+    } else if vx > 0.0 {
+        vx = (vx - DECELERATION).max(0.0);
+    } else if vx < 0.0 {
+        vx = (vx + DECELERATION).min(0.0);
     }
 
     let mut vy = p.vy;
@@ -123,82 +121,6 @@ pub fn move_and_collide(
     }
 }
 
-pub struct StompKill {
-    pub stomper_id: PlayerId,
-    pub victim_id: PlayerId,
-}
-
-pub struct StompResult {
-    pub players: Vec<PlayerState>,
-    pub kills: Vec<StompKill>,
-}
-
-/// Detect head stomps: a player falling onto another player's head.
-/// Stomper must be falling (vy >= threshold), feet land on victim's head.
-/// Victim dies, stomper bounces up.
-pub fn resolve_stomps(players: &[PlayerState], prev_players: &[PlayerState]) -> StompResult {
-    let mut updated = players.to_vec();
-    let mut kills = Vec::new();
-
-    for i in 0..updated.len() {
-        if updated[i].state_flags & player_state_flag::ALIVE == 0 {
-            continue;
-        }
-
-        let prev_stomper = &prev_players[i];
-        if prev_stomper.vy < STOMP_VELOCITY_THRESHOLD {
-            continue;
-        }
-
-        let stomper_feet = updated[i].y + PLAYER_HEIGHT;
-        let prev_stomper_feet = prev_stomper.y + PLAYER_HEIGHT;
-
-        for j in 0..updated.len() {
-            if i == j {
-                continue;
-            }
-            let victim = &updated[j];
-            if victim.state_flags & player_state_flag::ALIVE == 0 {
-                continue;
-            }
-            if victim.state_flags & player_state_flag::INVINCIBLE != 0 {
-                continue;
-            }
-
-            let victim_top = victim.y;
-
-            if prev_stomper_feet <= victim_top
-                && stomper_feet >= victim_top
-                && updated[i].x + PLAYER_WIDTH > victim.x
-                && updated[i].x < victim.x + PLAYER_WIDTH
-            {
-                let stomper_id = updated[i].id;
-                let victim_id = updated[j].id;
-
-                // Kill victim
-                updated[j].health = 0;
-                updated[j].state_flags = 0;
-
-                // Bounce stomper
-                updated[i].vy = STOMP_BOUNCE;
-                updated[i].y = victim_top - PLAYER_HEIGHT;
-                updated[i].grounded = false;
-
-                kills.push(StompKill {
-                    stomper_id,
-                    victim_id,
-                });
-                break; // one stomp per stomper per tick
-            }
-        }
-    }
-
-    StompResult {
-        players: updated,
-        kills,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +139,8 @@ mod tests {
             grounded: false,
             state_flags: player_state_flag::ALIVE,
             respawn_timer: 0,
+            weapon: None,
+            ammo: 0,
         }
     }
 

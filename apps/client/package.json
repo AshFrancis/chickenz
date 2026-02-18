@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@chickenz/sim": "workspace:*",
-    "@stellar/freighter-api": "^6.0.1",
+    "@creit.tech/stellar-wallets-kit": "^1.9.5",
     "@stellar/stellar-sdk": "^14.5.0",
     "phaser": "^3.87.0"
   },

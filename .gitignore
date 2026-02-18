@@ -12,7 +12,9 @@ proof_artifacts.json
 services/prover/test_combat.json
 services/prover/test_short.json
 *.log
+test-transcript.json
 services/prover/bench-noir/
+services/prover/proof_artifacts.json
 
 # Soroban
 contracts/chickenz/target/

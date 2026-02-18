@@ -1,8 +1,9 @@
 import {
-  isConnected,
-  getAddress,
-  signTransaction,
-} from "@stellar/freighter-api";
+  StellarWalletsKit,
+  WalletNetwork,
+  allowAllModules,
+  FREIGHTER_ID,
+} from "@creit.tech/stellar-wallets-kit";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 const TESTNET_RPC = "https://soroban-testnet.stellar.org";
@@ -10,34 +11,65 @@ const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 
 // Deployed contract addresses (testnet)
 export const CHICKENZ_CONTRACT =
-  "CDSSYXMYCB6SPU5TWUU4WEISYGOY2BMIP6RMVHLQ3HMMYHVSOO4IUYAM";
+  "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
 export const GAME_HUB_CONTRACT =
   "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG";
 export const VERIFIER_CONTRACT =
   "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH";
 
 let connectedAddress: string | null = null;
+let kit: StellarWalletsKit | null = null;
 
 export function getConnectedAddress(): string | null {
   return connectedAddress;
 }
 
-export async function connectWallet(): Promise<string> {
-  const connected = await isConnected();
-  if (!connected.isConnected) {
-    throw new Error("Freighter wallet not found. Please install the extension.");
-  }
-  const result = await getAddress();
-  if (result.error) {
-    throw new Error(`Wallet connection failed: ${result.error}`);
-  }
-  connectedAddress = result.address;
-  return result.address;
+// ── Init stellar-wallets-kit v1 ─────────────────────────────────────────────
+
+export async function initWalletKit(walletButtonContainer: HTMLElement) {
+  kit = new StellarWalletsKit({
+    network: WalletNetwork.TESTNET,
+    selectedWalletId: FREIGHTER_ID,
+    modules: allowAllModules(),
+  });
+
+  await kit.createButton({
+    container: walletButtonContainer,
+    onConnect: ({ address }: { address: string }) => {
+      connectedAddress = address;
+      window.dispatchEvent(
+        new CustomEvent("walletChanged", { detail: { address } }),
+      );
+    },
+    onDisconnect: () => {
+      connectedAddress = null;
+      window.dispatchEvent(
+        new CustomEvent("walletChanged", { detail: { address: null } }),
+      );
+    },
+  });
 }
 
-export async function disconnectWallet(): Promise<void> {
-  connectedAddress = null;
+/** Try to silently reconnect to Freighter if previously connected. */
+export async function tryReconnectWallet(): Promise<boolean> {
+  if (!kit) return false;
+  try {
+    kit.setWallet(FREIGHTER_ID);
+    const { address } = await kit.getAddress();
+    if (address) {
+      connectedAddress = address;
+      window.dispatchEvent(
+        new CustomEvent("walletChanged", { detail: { address } }),
+      );
+      return true;
+    }
+  } catch {
+    // Freighter not available or user denied
+  }
+  return false;
 }
+
+// ── Contract helpers ───────────────────────────────────────────────────────
 
 function getRpc(): StellarSdk.rpc.Server {
   return new StellarSdk.rpc.Server(TESTNET_RPC);
@@ -47,7 +79,7 @@ async function callContract(
   method: string,
   args: StellarSdk.xdr.ScVal[],
 ): Promise<StellarSdk.rpc.Api.GetTransactionResponse> {
-  if (!connectedAddress) throw new Error("Wallet not connected");
+  if (!connectedAddress || !kit) throw new Error("Wallet not connected");
 
   const server = getRpc();
   const account = await server.getAccount(connectedAddress);
@@ -71,15 +103,13 @@ async function callContract(
     simResult as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse,
   ).build();
 
-  const signResult = await signTransaction(prepared.toXDR(), {
+  const { signedTxXdr } = await kit.signTransaction(prepared.toXDR(), {
     networkPassphrase: TESTNET_PASSPHRASE,
+    address: connectedAddress,
   });
-  if (signResult.error) {
-    throw new Error(`Signing failed: ${signResult.error}`);
-  }
 
   const signed = StellarSdk.TransactionBuilder.fromXDR(
-    signResult.signedTxXdr,
+    signedTxXdr,
     TESTNET_PASSPHRASE,
   );
 
@@ -108,7 +138,7 @@ export async function startMatch(
     StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
     StellarSdk.nativeToScVal(player1, { type: "address" }),
     StellarSdk.nativeToScVal(player2, { type: "address" }),
-    StellarSdk.nativeToScVal(Buffer.from(seedCommit), { type: "bytes" }),
+    StellarSdk.nativeToScVal(seedCommit, { type: "bytes" }),
   ]);
 }
 
@@ -119,8 +149,8 @@ export async function settleMatch(
 ): Promise<void> {
   await callContract("settle_match", [
     StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
-    StellarSdk.nativeToScVal(Buffer.from(seal), { type: "bytes" }),
-    StellarSdk.nativeToScVal(Buffer.from(journal), { type: "bytes" }),
+    StellarSdk.nativeToScVal(seal, { type: "bytes" }),
+    StellarSdk.nativeToScVal(journal, { type: "bytes" }),
   ]);
 }
 

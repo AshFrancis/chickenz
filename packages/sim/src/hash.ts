@@ -54,6 +54,8 @@ export function hashGameState(state: GameState): number {
     h = fnvFeedInt32(h, p.stateFlags);
     h = fnvFeedInt32(h, p.respawnTimer);
     h = fnvFeedInt32(h, p.lives);
+    h = fnvFeedInt32(h, p.weapon ?? -1);
+    h = fnvFeedInt32(h, p.ammo);
   }
 
   // Projectiles (sorted by id)
@@ -66,6 +68,17 @@ export function hashGameState(state: GameState): number {
     h = fnvFeedFloat64(h, proj.vx);
     h = fnvFeedFloat64(h, proj.vy);
     h = fnvFeedInt32(h, proj.lifetime);
+    h = fnvFeedInt32(h, proj.weapon);
+  }
+
+  // Weapon pickups (sorted by id)
+  const sortedPickups = [...state.weaponPickups].sort((a, b) => a.id - b.id);
+  for (const pickup of sortedPickups) {
+    h = fnvFeedInt32(h, pickup.id);
+    h = fnvFeedFloat64(h, pickup.x);
+    h = fnvFeedFloat64(h, pickup.y);
+    h = fnvFeedInt32(h, pickup.weapon);
+    h = fnvFeedInt32(h, pickup.respawnTimer);
   }
 
   // RNG state

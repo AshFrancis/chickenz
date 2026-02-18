@@ -10,8 +10,6 @@ import {
   MAX_FALL_SPEED,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
-  STOMP_VELOCITY_THRESHOLD,
-  STOMP_BOUNCE,
 } from "./constants";
 
 /** Accelerate/decelerate vx toward target, initiate jump if grounded, update facing. */
@@ -111,67 +109,3 @@ export function moveAndCollide(
   return { ...p, x, y, vy, grounded };
 }
 
-export interface StompResult {
-  readonly players: readonly PlayerState[];
-  readonly kills: readonly { stomperId: PlayerId; victimId: PlayerId }[];
-}
-
-/**
- * Detect head stomps: a player falling onto another player's head.
- * Stomper must be falling (vy >= STOMP_VELOCITY_THRESHOLD), feet land on victim's head.
- * Victim dies, stomper bounces up.
- */
-export function resolveStomps(
-  players: readonly PlayerState[],
-  prevPlayers: readonly PlayerState[],
-): StompResult {
-  const updated = [...players];
-  const kills: { stomperId: PlayerId; victimId: PlayerId }[] = [];
-
-  for (let i = 0; i < updated.length; i++) {
-    const stomper = updated[i]!;
-    if (!(stomper.stateFlags & PlayerStateFlag.Alive)) continue;
-
-    const prevStomper = prevPlayers[i]!;
-    // Must be falling
-    if (prevStomper.vy < STOMP_VELOCITY_THRESHOLD) continue;
-
-    const stomperFeet = stomper.y + PLAYER_HEIGHT;
-    const prevStomperFeet = prevStomper.y + PLAYER_HEIGHT;
-
-    for (let j = 0; j < updated.length; j++) {
-      if (i === j) continue;
-      const victim = updated[j]!;
-      if (!(victim.stateFlags & PlayerStateFlag.Alive)) continue;
-      if (victim.stateFlags & PlayerStateFlag.Invincible) continue;
-
-      const victimTop = victim.y;
-
-      // Stomper's feet crossed victim's head this tick and overlaps horizontally
-      if (
-        prevStomperFeet <= victimTop &&
-        stomperFeet >= victimTop &&
-        stomper.x + PLAYER_WIDTH > victim.x &&
-        stomper.x < victim.x + PLAYER_WIDTH
-      ) {
-        // Kill victim
-        updated[j] = {
-          ...victim,
-          health: 0,
-          stateFlags: 0,
-        };
-        // Bounce stomper
-        updated[i] = {
-          ...updated[i]!,
-          vy: STOMP_BOUNCE,
-          y: victimTop - PLAYER_HEIGHT,
-          grounded: false,
-        };
-        kills.push({ stomperId: stomper.id, victimId: victim.id });
-        break; // one stomp per stomper per tick
-      }
-    }
-  }
-
-  return { players: updated, kills };
-}

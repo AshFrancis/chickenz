@@ -2,11 +2,15 @@
 //! Uses i32 with 8 fractional bits (256 = 1.0), eliminating all f64 soft-float.
 //! Zero heap allocations in the hot path — all arrays are fixed-size.
 
+#![allow(clippy::needless_range_loop)] // Index loops are intentional in no-alloc zkVM code
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Max projectiles alive at once. 2 players × ceil(90/15) = 12, round up.
-pub const MAX_PROJECTILES: usize = 16;
+/// Max projectiles alive at once. With weapons (shotgun 5 pellets), increase cap.
+pub const MAX_PROJECTILES: usize = 24;
+/// Max weapon pickups on the map.
+pub const MAX_WEAPON_PICKUPS: usize = 4;
 
 // -- Fixed-point arithmetic --------------------------------------------------
 
@@ -51,14 +55,12 @@ pub const SHOOT_COOLDOWN: i32 = 15;
 pub const MAX_HEALTH: i32 = 100;
 pub const PROJECTILE_DAMAGE: i32 = 25;
 
-pub const STOMP_VELOCITY_THRESHOLD: Fp = 512; // 2.0
-pub const STOMP_BOUNCE: Fp = -2048; // -8.0
-
 pub const RESPAWN_TICKS: i32 = 60;
-pub const INVINCIBLE_TICKS: i32 = 36;
-pub const INITIAL_LIVES: i32 = 3;
-pub const MATCH_DURATION_TICKS: i32 = 3600;
-pub const SUDDEN_DEATH_START_TICK: i32 = 3000;
+pub const INVINCIBLE_TICKS: i32 = 60;
+pub const DEATH_LINGER_TICKS: i32 = 30;
+pub const INITIAL_LIVES: i32 = 1;
+pub const MATCH_DURATION_TICKS: i32 = 1800;
+pub const SUDDEN_DEATH_START_TICK: i32 = 1200;
 
 pub mod button {
     pub const LEFT: u8 = 1;
@@ -74,6 +76,66 @@ pub mod flag {
 
 pub const FACING_RIGHT: i32 = 1;
 pub const FACING_LEFT: i32 = -1;
+
+// -- Weapon constants --------------------------------------------------------
+
+/// Weapon type: -1 = unarmed, 0=Pistol, 1=Shotgun, 2=Sniper, 3=Rocket, 4=SMG
+pub const WEAPON_NONE: i8 = -1;
+pub const WEAPON_PISTOL: i8 = 0;
+pub const WEAPON_SHOTGUN: i8 = 1;
+pub const WEAPON_SNIPER: i8 = 2;
+pub const WEAPON_ROCKET: i8 = 3;
+pub const WEAPON_SMG: i8 = 4;
+pub const WEAPON_COUNT: usize = 5;
+
+pub const WEAPON_PICKUP_RESPAWN_TICKS: i32 = 300;
+pub const PICKUP_RADIUS: Fp = 4096; // 16.0
+
+/// Weapon rotation order for spawn points.
+pub const WEAPON_ROTATION: [i8; WEAPON_COUNT] = [
+    WEAPON_PISTOL, WEAPON_SHOTGUN, WEAPON_SNIPER, WEAPON_ROCKET, WEAPON_SMG,
+];
+
+/// Weapon stats: [damage, speed(fp), cooldown, lifetime, ammo, pellets, splash_radius(fp), splash_damage]
+pub struct FpWeaponStats {
+    pub damage: i32,
+    pub speed: Fp,
+    pub cooldown: i32,
+    pub lifetime: i32,
+    pub ammo: i32,
+    pub pellets: i32,
+    pub splash_radius: Fp,
+    pub splash_damage: i32,
+}
+
+pub fn fp_weapon_stats(weapon: i8) -> FpWeaponStats {
+    match weapon {
+        WEAPON_PISTOL => FpWeaponStats {
+            damage: 20, speed: 2048 /*8.0*/, cooldown: 12, lifetime: 90,
+            ammo: 15, pellets: 1, splash_radius: 0, splash_damage: 0,
+        },
+        WEAPON_SHOTGUN => FpWeaponStats {
+            damage: 12, speed: 1792 /*7.0*/, cooldown: 30, lifetime: 45,
+            ammo: 6, pellets: 5, splash_radius: 0, splash_damage: 0,
+        },
+        WEAPON_SNIPER => FpWeaponStats {
+            damage: 80, speed: 4096 /*16.0*/, cooldown: 60, lifetime: 120,
+            ammo: 3, pellets: 1, splash_radius: 0, splash_damage: 0,
+        },
+        WEAPON_ROCKET => FpWeaponStats {
+            damage: 50, speed: 1280 /*5.0*/, cooldown: 45, lifetime: 120,
+            ammo: 4, pellets: 1, splash_radius: 10240 /*40.0*/, splash_damage: 25,
+        },
+        WEAPON_SMG => FpWeaponStats {
+            damage: 10, speed: 2304 /*9.0*/, cooldown: 5, lifetime: 60,
+            ammo: 40, pellets: 1, splash_radius: 0, splash_damage: 0,
+        },
+        _ => FpWeaponStats {
+            damage: 20, speed: 2048, cooldown: 12, lifetime: 90,
+            ammo: 15, pellets: 1, splash_radius: 0, splash_damage: 0,
+        },
+    }
+}
 
 // -- Types -------------------------------------------------------------------
 
@@ -150,6 +212,8 @@ pub struct Player {
     pub grounded: bool,
     pub state_flags: u32,
     pub respawn_timer: i32,
+    pub weapon: i8,  // WEAPON_NONE (-1) or 0..4
+    pub ammo: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -161,6 +225,16 @@ pub struct Projectile {
     pub vx: Fp,
     pub vy: Fp,
     pub lifetime: i32,
+    pub weapon: i8,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WeaponPickup {
+    pub id: i32,
+    pub x: Fp,
+    pub y: Fp,
+    pub weapon: i8,
+    pub respawn_timer: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +253,7 @@ pub struct SpawnPoint {
 
 pub const NUM_PLATFORMS: usize = 6;
 pub const NUM_SPAWNS: usize = 4;
+pub const NUM_WEAPON_SPAWNS: usize = 4;
 
 #[derive(Clone, Debug)]
 pub struct Map {
@@ -186,6 +261,7 @@ pub struct Map {
     pub height: Fp,
     pub platforms: [Platform; NUM_PLATFORMS],
     pub spawns: [SpawnPoint; NUM_SPAWNS],
+    pub weapon_spawns: [SpawnPoint; NUM_WEAPON_SPAWNS],
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +270,8 @@ pub struct State {
     pub players: [Player; 2],
     pub projectiles: [Projectile; MAX_PROJECTILES],
     pub proj_count: u8,
+    pub weapon_pickups: [WeaponPickup; MAX_WEAPON_PICKUPS],
+    pub pickup_count: u8,
     pub rng_state: u32,
     pub score: [u32; 2],
     pub next_proj_id: i32,
@@ -201,18 +279,28 @@ pub struct State {
     pub arena_right: Fp,
     pub match_over: bool,
     pub winner: i32,
+    pub death_linger_timer: i32,
 }
 
 /// Sentinel projectile (unused slot)
 pub const EMPTY_PROJECTILE: Projectile = Projectile {
-    id: -1, owner_id: -1, x: 0, y: 0, vx: 0, vy: 0, lifetime: 0,
+    id: -1, owner_id: -1, x: 0, y: 0, vx: 0, vy: 0, lifetime: 0, weapon: WEAPON_NONE,
 };
 
-/// Small fixed-size list for kill events (max 2 per tick)
+/// Sentinel weapon pickup (unused slot)
+pub const EMPTY_PICKUP: WeaponPickup = WeaponPickup {
+    id: -1, x: 0, y: 0, weapon: WEAPON_NONE, respawn_timer: 0,
+};
+
+/// Small fixed-size list for kill events (max 4 per tick)
 #[derive(Clone, Copy, Debug)]
 pub struct KillList {
     pub data: [(i32, i32); 4],
     pub len: u8,
+}
+
+impl Default for KillList {
+    fn default() -> Self { Self::new() }
 }
 
 impl KillList {
@@ -268,10 +356,27 @@ pub fn arena_map() -> Map {
             SpawnPoint { x: fp(350), y: fp(318) },
             SpawnPoint { x: fp(400), y: fp(218) },
         ],
+        weapon_spawns: [
+            SpawnPoint { x: fp(163), y: fp(418) },
+            SpawnPoint { x: fp(613), y: fp(418) },
+            SpawnPoint { x: fp(388), y: fp(318) },
+            SpawnPoint { x: fp(388), y: fp(536) },
+        ],
     }
 }
 
 pub fn create_initial_state(seed: u32, map: &Map) -> State {
+    let mut weapon_pickups = [EMPTY_PICKUP; MAX_WEAPON_PICKUPS];
+    for i in 0..NUM_WEAPON_SPAWNS {
+        weapon_pickups[i] = WeaponPickup {
+            id: i as i32,
+            x: map.weapon_spawns[i].x,
+            y: map.weapon_spawns[i].y,
+            weapon: WEAPON_ROTATION[i % WEAPON_COUNT],
+            respawn_timer: 0,
+        };
+    }
+
     State {
         tick: 0,
         players: [
@@ -287,6 +392,8 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
                 grounded: false,
                 state_flags: flag::ALIVE,
                 respawn_timer: 0,
+                weapon: WEAPON_NONE,
+                ammo: 0,
             },
             Player {
                 id: 1,
@@ -300,10 +407,14 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
                 grounded: false,
                 state_flags: flag::ALIVE,
                 respawn_timer: 0,
+                weapon: WEAPON_NONE,
+                ammo: 0,
             },
         ],
         projectiles: [EMPTY_PROJECTILE; MAX_PROJECTILES],
         proj_count: 0,
+        weapon_pickups,
+        pickup_count: NUM_WEAPON_SPAWNS as u8,
         rng_state: seed,
         score: [0, 0],
         next_proj_id: 0,
@@ -311,6 +422,7 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
         arena_right: map.width,
         match_over: false,
         winner: -1,
+        death_linger_timer: 0,
     }
 }
 
@@ -409,56 +521,49 @@ fn move_and_collide(p: &Player, map: &Map, arena_left: Fp, arena_right: Fp) -> P
     Player { x, y, vy, grounded, ..*p }
 }
 
-struct StompResult {
-    players: [Player; 2],
-    kills: KillList,
+// -- Weapon pickup logic -----------------------------------------------------
+
+fn player_overlaps_pickup(p: &Player, pickup: &WeaponPickup) -> bool {
+    pickup.x + PICKUP_RADIUS > p.x
+        && pickup.x - PICKUP_RADIUS < p.x + PLAYER_WIDTH
+        && pickup.y + PICKUP_RADIUS > p.y
+        && pickup.y - PICKUP_RADIUS < p.y + PLAYER_HEIGHT
 }
 
-fn resolve_stomps(players: &[Player; 2], prev: &[Player; 2]) -> StompResult {
-    let mut updated = *players;
-    let mut kills = KillList::new();
-
-    for i in 0..2 {
-        if updated[i].state_flags & flag::ALIVE == 0 {
+fn resolve_weapon_pickups(state: &mut State) {
+    for pi in 0..state.pickup_count as usize {
+        if state.weapon_pickups[pi].respawn_timer > 0 {
             continue;
         }
-        if prev[i].vy < STOMP_VELOCITY_THRESHOLD {
-            continue;
-        }
-
-        let stomper_feet = updated[i].y + PLAYER_HEIGHT;
-        let prev_feet = prev[i].y + PLAYER_HEIGHT;
-        let j = 1 - i;
-
-        if updated[j].state_flags & flag::ALIVE == 0 {
-            continue;
-        }
-        if updated[j].state_flags & flag::INVINCIBLE != 0 {
-            continue;
-        }
-
-        let victim_top = updated[j].y;
-        if prev_feet <= victim_top
-            && stomper_feet >= victim_top
-            && updated[i].x + PLAYER_WIDTH > updated[j].x
-            && updated[i].x < updated[j].x + PLAYER_WIDTH
-        {
-            updated[j].health = 0;
-            updated[j].state_flags = 0;
-            updated[i].vy = STOMP_BOUNCE;
-            updated[i].y = victim_top - PLAYER_HEIGHT;
-            updated[i].grounded = false;
-            kills.push(updated[i].id, updated[j].id);
+        for i in 0..2 {
+            if state.players[i].state_flags & flag::ALIVE == 0 { continue; }
+            if player_overlaps_pickup(&state.players[i], &state.weapon_pickups[pi]) {
+                let stats = fp_weapon_stats(state.weapon_pickups[pi].weapon);
+                state.players[i].weapon = state.weapon_pickups[pi].weapon;
+                state.players[i].ammo = stats.ammo;
+                state.players[i].shoot_cooldown = 0;
+                state.weapon_pickups[pi].respawn_timer = WEAPON_PICKUP_RESPAWN_TICKS;
+                break;
+            }
         }
     }
+}
 
-    StompResult { players: updated, kills }
+fn tick_pickup_timers(state: &mut State) {
+    for pi in 0..state.pickup_count as usize {
+        if state.weapon_pickups[pi].respawn_timer <= 0 { continue; }
+        state.weapon_pickups[pi].respawn_timer -= 1;
+        if state.weapon_pickups[pi].respawn_timer <= 0 {
+            let next_idx = ((state.weapon_pickups[pi].weapon + 1) as usize) % WEAPON_COUNT;
+            state.weapon_pickups[pi].weapon = WEAPON_ROTATION[next_idx];
+        }
+    }
 }
 
 // -- Projectiles -------------------------------------------------------------
 
-fn spawn_projectile(player: &Player, aim_x: i8, aim_y: i8, id: i32) -> Projectile {
-    // Keyboard aim is always axis-aligned or zero; no sqrt needed
+/// Spawn a single projectile from a player's position toward their aim direction.
+fn spawn_projectile(player: &Player, aim_x: i8, aim_y: i8, id: i32, weapon: i8, speed: Fp) -> Projectile {
     let (nx, ny) = if aim_x == 0 && aim_y == 0 {
         (player.facing * ONE, 0)
     } else if aim_y == 0 {
@@ -471,23 +576,148 @@ fn spawn_projectile(player: &Player, aim_x: i8, aim_y: i8, id: i32) -> Projectil
         (if aim_x > 0 { d } else { -d }, if aim_y > 0 { d } else { -d })
     };
 
+    // Spawn at player edge in aim direction
+    let offset_x = mul(nx, PLAYER_WIDTH / 2);
+    let offset_y = mul(ny, PLAYER_HEIGHT / 2);
+
     Projectile {
         id,
         owner_id: player.id,
-        x: player.x + PLAYER_WIDTH / 2,
-        y: player.y + PLAYER_HEIGHT / 2,
-        vx: mul(nx, PROJECTILE_SPEED),
-        vy: mul(ny, PROJECTILE_SPEED),
-        lifetime: PROJECTILE_LIFETIME,
+        x: player.x + PLAYER_WIDTH / 2 + offset_x,
+        y: player.y + PLAYER_HEIGHT / 2 + offset_y,
+        vx: mul(nx, speed),
+        vy: mul(ny, speed),
+        lifetime: fp_weapon_stats(weapon).lifetime,
+        weapon,
     }
 }
 
-fn is_out_of_bounds(proj: &Projectile, map: &Map) -> bool {
-    proj.x < 0 || proj.x > map.width || proj.y < 0 || proj.y > map.height
+/// Spawn weapon projectiles (handles shotgun multi-pellet spread).
+/// Returns number of projectiles spawned.
+fn spawn_weapon_projectiles(
+    state: &mut State,
+    player_idx: usize,
+    aim_x: i8,
+    aim_y: i8,
+) -> u8 {
+    let weapon = state.players[player_idx].weapon;
+    if weapon == WEAPON_NONE { return 0; }
+
+    let stats = fp_weapon_stats(weapon);
+    let mut spawned = 0u8;
+
+    if stats.pellets == 1 {
+        // Single projectile
+        if (state.proj_count as usize) < MAX_PROJECTILES {
+            let p = state.players[player_idx];
+            let proj = spawn_projectile(&p, aim_x, aim_y, state.next_proj_id, weapon, stats.speed);
+            state.projectiles[state.proj_count as usize] = proj;
+            state.proj_count += 1;
+            state.next_proj_id += 1;
+            spawned = 1;
+        }
+    } else {
+        // Multi-pellet (shotgun): spread perpendicular to aim direction
+        let (nx, ny) = if aim_x == 0 && aim_y == 0 {
+            (state.players[player_idx].facing * ONE, 0)
+        } else if aim_y == 0 {
+            (if aim_x > 0 { ONE } else { -ONE }, 0)
+        } else if aim_x == 0 {
+            (0, if aim_y > 0 { ONE } else { -ONE })
+        } else {
+            let d: Fp = 181;
+            (if aim_x > 0 { d } else { -d }, if aim_y > 0 { d } else { -d })
+        };
+
+        // Perpendicular direction: (-ny, nx)
+        let perp_x = -ny;
+        let perp_y = nx;
+
+        // Spawn at edge
+        let offset_x = mul(nx, PLAYER_WIDTH / 2);
+        let offset_y = mul(ny, PLAYER_HEIGHT / 2);
+        let sx = state.players[player_idx].x + PLAYER_WIDTH / 2 + offset_x;
+        let sy = state.players[player_idx].y + PLAYER_HEIGHT / 2 + offset_y;
+
+        // sin(7.5°) ≈ 33/256 per step — 5 pellets at offsets -2,-1,0,1,2
+        const SPREAD_STEP: Fp = 33;
+
+        for i in 0..stats.pellets {
+            if (state.proj_count as usize) >= MAX_PROJECTILES { break; }
+
+            let offset = (i - stats.pellets / 2) as Fp;
+            // Add PRNG jitter: ±6/256 per pellet
+            let (jitter, new_rng) = prng_int_range(state.rng_state, -6, 6);
+            state.rng_state = new_rng;
+            let perp_amount = offset * SPREAD_STEP + jitter;
+
+            // Final velocity = base + perpendicular spread
+            let vx = mul(nx, stats.speed) + mul(perp_x, mul(perp_amount, stats.speed) / ONE);
+            let vy = mul(ny, stats.speed) + mul(perp_y, mul(perp_amount, stats.speed) / ONE);
+
+            state.projectiles[state.proj_count as usize] = Projectile {
+                id: state.next_proj_id,
+                owner_id: state.players[player_idx].id,
+                x: sx,
+                y: sy,
+                vx,
+                vy,
+                lifetime: stats.lifetime,
+                weapon,
+            };
+            state.proj_count += 1;
+            state.next_proj_id += 1;
+            spawned += 1;
+        }
+    }
+
+    spawned
+}
+
+fn is_out_of_bounds(proj: &Projectile, map: &Map, arena_left: Fp, arena_right: Fp) -> bool {
+    let m: Fp = 50 << 8; // 50px in fixed-point
+    proj.x < arena_left - m || proj.x > arena_right + m || proj.y < -m || proj.y > map.height + m
 }
 
 fn aabb_hit(px: Fp, py: Fp, rx: Fp, ry: Fp, rw: Fp, rh: Fp) -> bool {
     px >= rx && px <= rx + rw && py >= ry && py <= ry + rh
+}
+
+/// Apply rocket splash damage to all players within radius (Manhattan distance).
+fn apply_fp_splash_damage(
+    ex: Fp, ey: Fp, owner_id: i32,
+    players: &mut [Player; 2],
+    kills: &mut KillList,
+) {
+    let stats = fp_weapon_stats(WEAPON_ROCKET);
+    let radius = stats.splash_radius;
+    let max_dmg = stats.splash_damage;
+
+    for i in 0..2 {
+        if players[i].state_flags & flag::ALIVE == 0 { continue; }
+        if players[i].state_flags & flag::INVINCIBLE != 0 { continue; }
+        if players[i].id == owner_id { continue; }
+
+        let pcx = players[i].x + PLAYER_WIDTH / 2;
+        let pcy = players[i].y + PLAYER_HEIGHT / 2;
+        let dist = (pcx - ex).abs() + (pcy - ey).abs();
+
+        if dist < radius {
+            // Linear falloff: dmg = max_dmg * (1 - dist/radius)
+            let dmg = max_dmg - (max_dmg as i64 * dist as i64 / radius as i64) as i32;
+            if dmg > 0 {
+                let new_hp = players[i].health - dmg;
+                if new_hp <= 0 {
+                    let victim_id = players[i].id;
+                    players[i].health = 0;
+                    players[i].state_flags = 0;
+                    kills.push(owner_id, victim_id);
+                } else {
+                    players[i].health = new_hp;
+                }
+            }
+        }
+    }
 }
 
 /// Resolve projectile hits in-place. Returns kill list.
@@ -500,6 +730,7 @@ fn resolve_hits_mut(state: &mut State) -> KillList {
         let proj_owner = state.projectiles[pi].owner_id;
         let proj_x = state.projectiles[pi].x;
         let proj_y = state.projectiles[pi].y;
+        let proj_weapon = state.projectiles[pi].weapon;
 
         for i in 0..2 {
             if state.players[i].id == proj_owner { continue; }
@@ -509,7 +740,8 @@ fn resolve_hits_mut(state: &mut State) -> KillList {
             if aabb_hit(proj_x, proj_y, state.players[i].x, state.players[i].y, PLAYER_WIDTH, PLAYER_HEIGHT) {
                 hit_flags[pi] = true;
                 let victim_id = state.players[i].id;
-                let new_hp = state.players[i].health - PROJECTILE_DAMAGE;
+                let damage = fp_weapon_stats(proj_weapon).damage;
+                let new_hp = state.players[i].health - damage;
                 if new_hp <= 0 {
                     state.players[i].health = 0;
                     state.players[i].state_flags = 0;
@@ -517,6 +749,12 @@ fn resolve_hits_mut(state: &mut State) -> KillList {
                 } else {
                     state.players[i].health = new_hp;
                 }
+
+                // Rocket splash damage on impact
+                if proj_weapon == WEAPON_ROCKET {
+                    apply_fp_splash_damage(proj_x, proj_y, proj_owner, &mut state.players, &mut kills);
+                }
+
                 break;
             }
         }
@@ -542,6 +780,17 @@ fn resolve_hits_mut(state: &mut State) -> KillList {
 /// Advance game state by one tick, mutating in place (zero copies of State).
 pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     if state.match_over {
+        return;
+    }
+
+    // Death linger countdown — skip gameplay, just tick the timer
+    if state.death_linger_timer > 0 {
+        state.tick += 1;
+        state.death_linger_timer -= 1;
+        if state.death_linger_timer <= 0 {
+            state.match_over = true;
+            state.death_linger_timer = 0;
+        }
         return;
     }
 
@@ -571,34 +820,34 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         state.players[i] = apply_gravity(&state.players[i]);
     }
 
-    // 5. Move + collide — save pre-move for stomp check (only 2 Players, ~100 bytes)
-    let pre_move = state.players;
+    // 5. Move + collide
     for i in 0..2 {
         state.players[i] = move_and_collide(&state.players[i], map, state.arena_left, state.arena_right);
     }
 
-    // 5b. Stomps
-    let stomp = resolve_stomps(&state.players, &pre_move);
-    state.players = stomp.players;
+    // 6. Weapon pickup collision
+    resolve_weapon_pickups(state);
 
-    // 6. Shooting — add new projectiles directly into the array
+    // 7. Shooting — weapon-based
     for i in 0..2 {
         if state.players[i].state_flags & flag::ALIVE != 0
             && inputs[i].buttons & button::SHOOT != 0
             && state.players[i].shoot_cooldown <= 0
+            && state.players[i].weapon != WEAPON_NONE
+            && state.players[i].ammo > 0
         {
-            state.players[i].shoot_cooldown = SHOOT_COOLDOWN;
-            if (state.proj_count as usize) < MAX_PROJECTILES {
-                // Spawn into a temp to avoid borrow issues
-                let proj = spawn_projectile(&state.players[i], inputs[i].aim_x, inputs[i].aim_y, state.next_proj_id);
-                state.projectiles[state.proj_count as usize] = proj;
-                state.proj_count += 1;
-                state.next_proj_id += 1;
+            let weapon = state.players[i].weapon;
+            let stats = fp_weapon_stats(weapon);
+            state.players[i].shoot_cooldown = stats.cooldown;
+            spawn_weapon_projectiles(state, i, inputs[i].aim_x, inputs[i].aim_y);
+            state.players[i].ammo -= 1;
+            if state.players[i].ammo <= 0 {
+                state.players[i].weapon = WEAPON_NONE;
             }
         }
     }
 
-    // 7. Move projectiles in-place + compact dead ones
+    // 8. Move projectiles in-place + compact dead ones
     {
         let mut write = 0usize;
         for read in 0..state.proj_count as usize {
@@ -606,7 +855,7 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
             state.projectiles[read].y += state.projectiles[read].vy;
             state.projectiles[read].lifetime -= 1;
 
-            if state.projectiles[read].lifetime > 0 && !is_out_of_bounds(&state.projectiles[read], map) {
+            if state.projectiles[read].lifetime > 0 && !is_out_of_bounds(&state.projectiles[read], map, state.arena_left, state.arena_right) {
                 if write != read {
                     state.projectiles[write] = state.projectiles[read];
                 }
@@ -616,12 +865,12 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         state.proj_count = write as u8;
     }
 
-    // 8. Projectile hits (mutates state.projectiles and state.players in-place)
+    // 9. Projectile hits
     let hit_kills = resolve_hits_mut(state);
 
-    // 9. Deaths + lives
+    // 10. Deaths + lives
     for p in &mut state.players {
-        if hit_kills.contains_victim(p.id) || stomp.kills.contains_victim(p.id) {
+        if hit_kills.contains_victim(p.id) {
             p.lives -= 1;
             p.respawn_timer = 0;
             p.vx = 0;
@@ -629,18 +878,18 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         }
     }
 
-    // Check elimination
+    // Check elimination — start linger instead of immediate match_over
     let alive_count = state.players.iter().filter(|p| p.lives > 0).count();
     if alive_count == 1 {
-        state.match_over = true;
+        state.death_linger_timer = DEATH_LINGER_TICKS;
         state.winner = state.players.iter().find(|p| p.lives > 0).unwrap().id;
     } else if alive_count == 0 {
-        state.match_over = true;
-        state.winner = -1;
+        state.death_linger_timer = DEATH_LINGER_TICKS;
+        state.winner = 0;
     }
 
-    // 10. Respawn
-    if !state.match_over {
+    // 11. Respawn
+    if !state.match_over && state.death_linger_timer == 0 {
         for i in 0..2 {
             let p = &mut state.players[i];
             if p.state_flags & flag::ALIVE == 0 && p.lives > 0 {
@@ -660,13 +909,15 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                     p.respawn_timer = INVINCIBLE_TICKS;
                     p.shoot_cooldown = 0;
                     p.grounded = false;
+                    p.weapon = WEAPON_NONE;
+                    p.ammo = 0;
                 }
             }
         }
     }
 
-    // 11. Sudden death
-    if !state.match_over && current_tick >= SUDDEN_DEATH_START_TICK {
+    // 12. Sudden death
+    if !state.match_over && state.death_linger_timer == 0 && current_tick >= SUDDEN_DEATH_START_TICK {
         let duration = MATCH_DURATION_TICKS - SUDDEN_DEATH_START_TICK; // 600
         let elapsed = current_tick - SUDDEN_DEATH_START_TICK;
         let progress = if elapsed >= duration {
@@ -693,34 +944,34 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
             }
         }
 
-        // Re-check elimination
+        // Re-check elimination — use linger
         let alive_after = state.players.iter().filter(|p| p.lives > 0).count();
         if alive_after == 1 {
-            state.match_over = true;
+            state.death_linger_timer = DEATH_LINGER_TICKS;
             state.winner = state.players.iter().find(|p| p.lives > 0).unwrap().id;
         } else if alive_after == 0 {
-            state.match_over = true;
+            state.death_linger_timer = DEATH_LINGER_TICKS;
             state.winner = state.players
                 .iter()
                 .find(|p| p.id != last_wall_kill)
                 .map(|p| p.id)
-                .unwrap_or(-1);
+                .unwrap_or(0);
         }
 
-        if !state.match_over && progress >= ONE {
+        if !state.match_over && state.death_linger_timer == 0 && progress >= ONE {
             state.match_over = true;
             if state.players[0].lives > state.players[1].lives {
                 state.winner = state.players[0].id;
             } else if state.players[1].lives > state.players[0].lives {
                 state.winner = state.players[1].id;
             } else {
-                state.winner = -1;
+                state.winner = 0;
             }
         }
     }
 
-    // 12. Time-up
-    if !state.match_over && current_tick >= MATCH_DURATION_TICKS {
+    // 13. Time-up
+    if !state.match_over && state.death_linger_timer == 0 && current_tick >= MATCH_DURATION_TICKS {
         state.match_over = true;
         if state.players[0].lives > state.players[1].lives {
             state.winner = state.players[0].id;
@@ -731,21 +982,19 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         } else if state.players[1].health > state.players[0].health {
             state.winner = state.players[1].id;
         } else {
-            state.winner = -1;
+            state.winner = 0;
         }
     }
 
-    // 13. Score
+    // 14. Score
     for &(killer, _) in hit_kills.iter() {
         if killer >= 0 && (killer as usize) < state.score.len() {
             state.score[killer as usize] += 1;
         }
     }
-    for &(stomper, _) in stomp.kills.iter() {
-        if stomper >= 0 && (stomper as usize) < state.score.len() {
-            state.score[stomper as usize] += 1;
-        }
-    }
+
+    // 15. Tick pickup timers
+    tick_pickup_timers(state);
 }
 
 /// Convenience wrapper that returns a new State (for tests / non-zkVM use).
@@ -758,7 +1007,6 @@ pub fn step(prev: &State, inputs: &[FpInput; 2], map: &Map) -> State {
 // -- Hashing -----------------------------------------------------------------
 
 pub fn hash_transcript(transcript: &[[FpInput; 2]]) -> [u8; 32] {
-    // Batch into a contiguous buffer for efficient SHA-256 (fewer update calls).
     let mut buf = vec![0u8; transcript.len() * 6];
     for (i, tick) in transcript.iter().enumerate() {
         let off = i * 6;
@@ -783,11 +1031,8 @@ pub fn hash_seed(seed: u32) -> [u8; 32] {
 // -- State serialization (for chunked proving) --------------------------------
 
 /// Deterministic binary encoding of State (for hashing + chunk transfer).
-/// Layout: tick(4) + 2×Player(48ea) + proj_count(1) + proj_count×Projectile(28ea)
-///         + rng(4) + score(8) + next_proj_id(4) + arena_left(4) + arena_right(4)
-///         + match_over(1) + winner(4)
 pub fn encode_state(s: &State) -> Vec<u8> {
-    let mut b = Vec::with_capacity(256);
+    let mut b = Vec::with_capacity(512);
     b.extend_from_slice(&s.tick.to_le_bytes());
     for p in &s.players {
         b.extend_from_slice(&p.id.to_le_bytes());
@@ -802,6 +1047,8 @@ pub fn encode_state(s: &State) -> Vec<u8> {
         b.push(p.grounded as u8);
         b.extend_from_slice(&p.state_flags.to_le_bytes());
         b.extend_from_slice(&p.respawn_timer.to_le_bytes());
+        b.push(p.weapon as u8);
+        b.extend_from_slice(&p.ammo.to_le_bytes());
     }
     b.push(s.proj_count);
     for i in 0..s.proj_count as usize {
@@ -813,6 +1060,16 @@ pub fn encode_state(s: &State) -> Vec<u8> {
         b.extend_from_slice(&pj.vx.to_le_bytes());
         b.extend_from_slice(&pj.vy.to_le_bytes());
         b.extend_from_slice(&pj.lifetime.to_le_bytes());
+        b.push(pj.weapon as u8);
+    }
+    b.push(s.pickup_count);
+    for i in 0..s.pickup_count as usize {
+        let wp = &s.weapon_pickups[i];
+        b.extend_from_slice(&wp.id.to_le_bytes());
+        b.extend_from_slice(&wp.x.to_le_bytes());
+        b.extend_from_slice(&wp.y.to_le_bytes());
+        b.push(wp.weapon as u8);
+        b.extend_from_slice(&wp.respawn_timer.to_le_bytes());
     }
     b.extend_from_slice(&s.rng_state.to_le_bytes());
     b.extend_from_slice(&s.score[0].to_le_bytes());
@@ -822,6 +1079,7 @@ pub fn encode_state(s: &State) -> Vec<u8> {
     b.extend_from_slice(&s.arena_right.to_le_bytes());
     b.push(s.match_over as u8);
     b.extend_from_slice(&s.winner.to_le_bytes());
+    b.extend_from_slice(&s.death_linger_timer.to_le_bytes());
     b
 }
 
@@ -841,6 +1099,7 @@ pub fn decode_state(b: &[u8]) -> State {
     let mut players = [Player {
         id: 0, x: 0, y: 0, vx: 0, vy: 0, facing: 0, health: 0,
         lives: 0, shoot_cooldown: 0, grounded: false, state_flags: 0, respawn_timer: 0,
+        weapon: WEAPON_NONE, ammo: 0,
     }; 2];
     for p in &mut players {
         p.id = r32(b, &mut off);
@@ -855,6 +1114,8 @@ pub fn decode_state(b: &[u8]) -> State {
         p.grounded = b[off] != 0; off += 1;
         p.state_flags = ru32(b, &mut off);
         p.respawn_timer = r32(b, &mut off);
+        p.weapon = b[off] as i8; off += 1;
+        p.ammo = r32(b, &mut off);
     }
     let proj_count = b[off]; off += 1;
     let mut projectiles = [EMPTY_PROJECTILE; MAX_PROJECTILES];
@@ -867,6 +1128,18 @@ pub fn decode_state(b: &[u8]) -> State {
             vx: r32(b, &mut off),
             vy: r32(b, &mut off),
             lifetime: r32(b, &mut off),
+            weapon: { let w = b[off] as i8; off += 1; w },
+        };
+    }
+    let pickup_count = b[off]; off += 1;
+    let mut weapon_pickups = [EMPTY_PICKUP; MAX_WEAPON_PICKUPS];
+    for i in 0..pickup_count as usize {
+        weapon_pickups[i] = WeaponPickup {
+            id: r32(b, &mut off),
+            x: r32(b, &mut off),
+            y: r32(b, &mut off),
+            weapon: { let w = b[off] as i8; off += 1; w },
+            respawn_timer: r32(b, &mut off),
         };
     }
     let rng_state = ru32(b, &mut off);
@@ -877,11 +1150,12 @@ pub fn decode_state(b: &[u8]) -> State {
     let arena_right = r32(b, &mut off);
     let match_over = b[off] != 0; off += 1;
     let winner = r32(b, &mut off);
+    let death_linger_timer = r32(b, &mut off);
 
     State {
-        tick, players, projectiles, proj_count, rng_state,
-        score: [s0, s1], next_proj_id, arena_left, arena_right,
-        match_over, winner,
+        tick, players, projectiles, proj_count, weapon_pickups, pickup_count,
+        rng_state, score: [s0, s1], next_proj_id, arena_left, arena_right,
+        match_over, winner, death_linger_timer,
     }
 }
 
@@ -899,10 +1173,10 @@ pub fn hash_state(s: &State) -> [u8; 32] {
 pub struct ChunkProof {
     pub state_hash_in: [u8; 32],
     pub state_hash_out: [u8; 32],
-    pub input_hash: [u8; 32],  // SHA-256 of this chunk's inputs
+    pub input_hash: [u8; 32],
     pub tick_start: u32,
     pub tick_end: u32,
-    pub scores: [u32; 2],      // cumulative scores at chunk end
+    pub scores: [u32; 2],
     pub match_over: bool,
     pub winner: i32,
 }
@@ -1009,9 +1283,26 @@ mod tests {
     }
 
     #[test]
-    fn shooting_creates_projectile() {
+    fn unarmed_cannot_shoot() {
         let map = arena_map();
         let mut state = create_initial_state(42, &map);
+        // Clear pickups so player stays unarmed
+        state.pickup_count = 0;
+        let inputs = [
+            FpInput { buttons: button::SHOOT, aim_x: 1, aim_y: 0 },
+            NULL_INPUT,
+        ];
+        state = step(&state, &inputs, &map);
+        assert_eq!(state.proj_count, 0);
+    }
+
+    #[test]
+    fn armed_creates_projectile() {
+        let map = arena_map();
+        let mut state = create_initial_state(42, &map);
+        state.players[0].weapon = WEAPON_PISTOL;
+        state.players[0].ammo = 15;
+        state.pickup_count = 0;
         let inputs = [
             FpInput { buttons: button::SHOOT, aim_x: 1, aim_y: 0 },
             NULL_INPUT,
@@ -1019,7 +1310,55 @@ mod tests {
         state = step(&state, &inputs, &map);
         assert_eq!(state.proj_count, 1);
         assert_eq!(state.projectiles[0].owner_id, 0);
+        assert_eq!(state.projectiles[0].weapon, WEAPON_PISTOL);
         assert!(state.projectiles[0].vx > 0);
+    }
+
+    #[test]
+    fn shotgun_creates_five_pellets() {
+        let map = arena_map();
+        let mut state = create_initial_state(42, &map);
+        state.players[0].weapon = WEAPON_SHOTGUN;
+        state.players[0].ammo = 6;
+        state.pickup_count = 0;
+        let inputs = [
+            FpInput { buttons: button::SHOOT, aim_x: 1, aim_y: 0 },
+            NULL_INPUT,
+        ];
+        state = step(&state, &inputs, &map);
+        assert_eq!(state.proj_count, 5);
+        for i in 0..5 {
+            assert_eq!(state.projectiles[i].weapon, WEAPON_SHOTGUN);
+        }
+    }
+
+    #[test]
+    fn weapon_pickup_works() {
+        let map = arena_map();
+        let mut state = create_initial_state(42, &map);
+        // Place player 0 on top of weapon pickup 0
+        state.players[0].x = state.weapon_pickups[0].x - PLAYER_WIDTH / 2;
+        state.players[0].y = state.weapon_pickups[0].y - PLAYER_HEIGHT / 2;
+        assert_eq!(state.players[0].weapon, WEAPON_NONE);
+        state = step(&state, &[NULL_INPUT; 2], &map);
+        assert_ne!(state.players[0].weapon, WEAPON_NONE);
+        assert!(state.players[0].ammo > 0);
+    }
+
+    #[test]
+    fn ammo_depletes_drops_weapon() {
+        let map = arena_map();
+        let mut state = create_initial_state(42, &map);
+        state.players[0].weapon = WEAPON_PISTOL;
+        state.players[0].ammo = 1;
+        state.pickup_count = 0;
+        let inputs = [
+            FpInput { buttons: button::SHOOT, aim_x: 1, aim_y: 0 },
+            NULL_INPUT,
+        ];
+        state = step(&state, &inputs, &map);
+        assert_eq!(state.players[0].weapon, WEAPON_NONE);
+        assert_eq!(state.players[0].ammo, 0);
     }
 
     #[test]
@@ -1050,5 +1389,25 @@ mod tests {
         assert_eq!(r1.score, r2.score);
         assert_eq!(r1.players[0].x, r2.players[0].x);
         assert_eq!(r1.players[1].x, r2.players[1].x);
+        assert_eq!(r1.players[0].weapon, r2.players[0].weapon);
+        assert_eq!(r1.players[0].ammo, r2.players[0].ammo);
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let map = arena_map();
+        let mut state = create_initial_state(42, &map);
+        state.players[0].weapon = WEAPON_SNIPER;
+        state.players[0].ammo = 3;
+        let encoded = encode_state(&state);
+        let decoded = decode_state(&encoded);
+        assert_eq!(state.tick, decoded.tick);
+        assert_eq!(state.players[0].x, decoded.players[0].x);
+        assert_eq!(state.players[0].weapon, decoded.players[0].weapon);
+        assert_eq!(state.players[0].ammo, decoded.players[0].ammo);
+        assert_eq!(state.pickup_count, decoded.pickup_count);
+        assert_eq!(state.weapon_pickups[0].weapon, decoded.weapon_pickups[0].weapon);
+        assert_eq!(state.rng_state, decoded.rng_state);
+        assert_eq!(state.winner, decoded.winner);
     }
 }

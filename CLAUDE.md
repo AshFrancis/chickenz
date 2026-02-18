@@ -1,6 +1,6 @@
 # Chickenz
 
-Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes settled on Stellar Soroban. Two players compete in 60-second matches with 3 lives each. A sudden death mechanic closes the arena walls at 50s. The full input transcript feeds a ZK proof that verifies the result on-chain.
+Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes settled on Stellar Soroban. Two players compete in 60-second matches with 3 lives each. Five weapons spawn on the map. A sudden death mechanic closes the arena walls at 50s. The full input transcript feeds a RISC Zero ZK proof that verifies the result on-chain.
 
 ## Hackathon
 
@@ -15,32 +15,40 @@ Submission requirements:
 
 ## Status
 
-**Phase 1 complete.** Deterministic sim core (`packages/sim`) implemented with 29 passing tests. Phaser client runs local 2-player. Next: ZK prover + Soroban contract + Game Hub integration.
+All phases complete. Deterministic sim (54 TS tests), Rust prover (47 tests), Soroban contracts deployed, multiplayer server with lobby/ELO/replays, Phaser client with prediction + wallet connect.
 
 ## Tech Stack
 
-- **Sim core**: TypeScript, pure deterministic functions (`packages/sim`) — DONE
-- **Client**: Phaser 2D renderer + local input (`apps/client`) — DONE
-- **ZK Prover**: Noir circuits verified via Boundless on Stellar (`services/prover`)
-- **Contracts**: Soroban smart contract, integrates with Stellar Game Hub (`contracts/chickenz`)
+- **Sim core**: TypeScript, pure deterministic functions (`packages/sim`)
+- **Client**: Phaser 2D renderer, lobby UI, wallet connect (`apps/client`)
+- **Server**: Bun WebSocket, server-authoritative netcode (`services/server`)
+- **ZK Prover**: RISC Zero zkVM, Groth16 compression (`services/prover`)
+- **Contracts**: Soroban smart contract + Nethermind Groth16 verifier (`contracts/chickenz`)
 
 ## Monorepo Layout
 
 ```
-packages/sim/        Deterministic game state transition (pure logic, no I/O) ✅
-apps/client/         Phaser renderer, input handling, local 2-player ✅
-services/prover/     Noir circuit + Boundless proof orchestration
-contracts/chickenz/  Soroban contract — game lifecycle + proof verification
+packages/sim/           Deterministic game logic (pure TS, no I/O, 54 tests)
+apps/client/            Phaser renderer, lobby UI, wallet connect
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO
+services/prover/
+  core/                 Rust port of sim (f64 + fixed-point i32, 47 tests)
+  guest/                RISC Zero monolithic guest
+  chunk-guest/          Chunk prover guest
+  match-guest/          Match composer guest
+  host/                 Orchestration (monolithic + chunked + Boundless)
+contracts/chickenz/     Soroban game contract (deployed on testnet)
 ```
 
 ## Critical Design Invariants
 
-1. **Deterministic sim** — `nextState = step(prevState, inputs, prevInputs, config)`. Given identical inputs and seed, replay from tick 0 must produce identical final state. State hashes verified at configurable intervals.
+1. **Deterministic sim** — `nextState = step(prevState, inputs, prevInputs, config)`. Given identical inputs and seed, replay from tick 0 must produce identical final state.
 2. **60 Hz fixed tick** — all state changes are per-tick; no variable time deltas. Matches are 3600 ticks (60s).
 3. **3 lives + sudden death** — each player has 3 lives. At tick 3000 (50s), arena walls close inward. Player with more lives wins at time-up.
 4. **Missing-input rule** — if no input at tick T, reuse input from T-1. This rule must be identical across client, server, and ZK verification.
 5. **ZK-provable outcome** — the ZK proof verifies that running the deterministic sim with the given inputs + seed produces the claimed winner. This is the core mechanic.
 6. **Game Hub integration** — every match calls `start_game()` at match start and `end_game()` with the verified winner on the Game Hub contract.
+7. **Death linger** — 30-tick (0.5s) delay before `matchOver` after final kill, so both players see the death.
 
 ## Code Conventions (Sim Core)
 
@@ -52,25 +60,25 @@ Forbidden inside `packages/sim`:
 
 The sim core must be a pure function: `(state, inputs, prevInputs, config) → state`. TypeScript strict mode required.
 
-## ZK Architecture (Noir + Boundless)
+## ZK Architecture (RISC Zero + Groth16)
 
-**Framework**: Noir (Aztec's DSL for ZK circuits), proving via Boundless verifier network.
+**Framework**: RISC Zero zkVM with Groth16 compression via Boundless/Bonsai.
 
 **What the proof verifies:**
-1. Inputs match the committed transcript
-2. Seed matches seed_commit
+1. Inputs match the committed transcript (SHA-256)
+2. Seed matches seed_commit (SHA-256)
 3. Deterministic sim replay produces the claimed final state
 4. Winner derived correctly from final state
 
-**Public inputs**: match_id, players, seed_commit, transcript_root, final_outcome
-**Private witness**: full input transcript, seed, intermediate state hashes
+**Journal layout**: 76 bytes — winner(i32) + scores([u32;2]) + transcript_hash([u8;32]) + seed_commit([u8;32])
 
 **Integration flow:**
-1. Match plays out in browser (client sim)
-2. Input transcript is recorded
-3. Noir circuit replays the sim and generates proof
+1. Match plays out online (server-authoritative)
+2. Server records input transcript
+3. RISC Zero guest replays sim in zkVM, generates Groth16 proof
 4. Proof submitted to Soroban contract
-5. Contract verifies proof, calls `end_game()` on Game Hub with winner
+5. Contract verifies proof via Nethermind Groth16 verifier (BN254 pairing)
+6. Contract calls `end_game()` on Game Hub with verified winner
 
 ## Stellar Game Hub Integration
 
@@ -85,16 +93,9 @@ Required calls:
 | File | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Component layout, authority model, data flow |
-| [DEV_ROADMAP.md](DEV_ROADMAP.md) | Hackathon sprint plan |
-| [SIM_SPEC.md](SIM_SPEC.md) | GameState/PlayerState structures, transition function, determinism constraints |
-| [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) | Noir circuit design, Boundless integration, settlement flow |
-| [PROTOCOL.md](PROTOCOL.md) | Message types, missing-input rule |
+| [DEV_ROADMAP.md](DEV_ROADMAP.md) | Hackathon sprint plan and progress |
+| [SIM_SPEC.md](SIM_SPEC.md) | GameState/PlayerState structures, transition function, determinism |
+| [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) | RISC Zero pipeline, journal layout, settlement flow |
+| [MULTIPLAYER.md](MULTIPLAYER.md) | Netcode, prediction, room lifecycle |
+| [PROTOCOL.md](PROTOCOL.md) | WebSocket message types, missing-input rule |
 | [TRANSCRIPT.md](TRANSCRIPT.md) | Commitment chain, transcript integrity |
-
-## Development Phase Guidance
-
-Phase 1 is complete. Focus now on hackathon deliverables:
-1. Noir ZK circuit that replays sim and proves outcome
-2. Soroban contract with Game Hub integration
-3. Wire frontend: wallet connect → start game → play → prove → settle
-4. README, deploy to testnet, record demo video

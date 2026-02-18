@@ -1,59 +1,88 @@
-# ARCHITECTURE.md
-
-# System Overview
+# Architecture
 
 Chickenz is a competitive 2D multiplayer platform shooter with ZK-provable outcomes settled on Stellar Soroban.
 
-Core loop: play game → record transcript → generate ZK proof → settle on-chain via Game Hub.
+Core loop: play match online → server records transcript → generate RISC Zero ZK proof → settle on-chain via Game Hub.
 
 ---
 
-# Components
+## Components
 
 ```
-packages/sim/        Deterministic game state transition (pure TS, no I/O) ✅
-apps/client/         Phaser renderer + local input + wallet + settlement UI ✅ (gameplay)
-services/prover/     Noir circuit + Boundless proof orchestration
-contracts/chickenz/  Soroban contract — match lifecycle + proof verification
+packages/sim/           Deterministic game logic (pure TS, no I/O, 54 tests)
+apps/client/            Phaser renderer, lobby UI, wallet connect, settlement
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO, transcripts
+services/prover/
+  core/                 Rust port of sim (f64 + fixed-point i32, 47 tests)
+  guest/                RISC Zero monolithic guest (3600 ticks, 5.2M cycles)
+  chunk-guest/          Chunk prover guest (360 ticks per chunk)
+  match-guest/          Match composer guest (verifies chunk proof chain)
+  host/                 Orchestration (monolithic + chunked + Boundless modes)
+contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
 ```
 
 ---
 
-# Data Flow (Hackathon MVP)
+## Data Flow
 
-1. **Connect**: Player connects Stellar wallet
-2. **Start**: Client calls Chickenz contract → `start_match()` → Game Hub `start_game()`
-3. **Play**: Local 2-player match in browser, deterministic sim at 60Hz
-4. **Record**: Client captures full input transcript (per-tick inputs for both players)
-5. **Prove**: Input transcript + seed fed to Noir circuit → ZK proof of correct outcome
-6. **Settle**: Proof submitted to Chickenz contract → verifies → Game Hub `end_game(winner)`
+```
+Browser                          Server                    Blockchain
+  │                                │                          │
+  ├─ Connect wallet ──────────────→│                          │
+  ├─ Set username ────────────────→│                          │
+  ├─ Quick Play / Create Room ───→│                          │
+  │                                ├─ Match players           │
+  │←── matched(playerId, seed) ───┤                          │
+  │                                │                          │
+  │  ┌─ 60-second match ────────┐ │                          │
+  │  │ Client sends inputs ────→│ │                          │
+  │  │ Server runs sim at 60Hz  │ │                          │
+  │  │ Server broadcasts state  │ │                          │
+  │  │ Client predicts + renders│ │                          │
+  │  └─────────────────────────┘ │                          │
+  │                                │                          │
+  │←── ended(winner, scores) ─────┤                          │
+  │                                ├─ Store transcript        │
+  │                                │                          │
+  ├─ start_match() ───────────────────────────────────────→  │ Game Hub
+  │                                │                          │
+  ├─ Generate ZK proof (prover host) ─────────────────────┐  │
+  │                                │                       │  │
+  ├─ settle_match(seal, journal) ─────────────────────────→│  │ Verifier
+  │                                │                       └→ │ Game Hub
+  │←── Settlement confirmed ──────────────────────────────── │
+```
 
 ---
 
-# Authority Model
+## Authority Model
 
-**Hackathon (local 2-player):**
-- Client runs sim, both players on same machine
-- Transcript is the canonical record
-- ZK proof makes the outcome trustless
+**Online multiplayer (current):**
+- Server runs authoritative sim at 60Hz
+- Clients send inputs, receive state snapshots
+- Client-side prediction with rollback reconciliation
+- Server records full input transcript for ZK proving
+- "Favor the victim" netcode: hits resolved on server's current state, never rewound
 
-**Future (networked):**
-- Server authoritative, clients predict
-- Players sign input batches
-- Server or any party can generate proof from transcript
+**ZK settlement:**
+- Transcript feeds RISC Zero prover (identical Rust sim in zkVM)
+- Groth16 proof submitted to Soroban contract
+- Contract verifies proof, calls Game Hub `end_game(winner)`
+- No trust required in the server — proof is cryptographic
 
 ---
 
-# Timeline Model
+## Timeline Model
 
-- Fixed tick: 60Hz
-- All state changes occur per tick
+- Fixed tick rate: 60Hz (16.67ms per tick)
+- All state changes occur per tick — no variable time deltas
 - Inputs are bound to tick numbers
-- Missing inputs = reuse last input (deterministic rule)
+- Missing inputs reuse previous tick's input (deterministic rule)
+- Matches last 3600 ticks (60 seconds)
 
 ---
 
-# On-Chain Architecture
+## On-Chain Architecture
 
 ```
 ┌─────────────┐     start_game()     ┌──────────────┐
@@ -63,17 +92,23 @@ contracts/chickenz/  Soroban contract — match lifecycle + proof verification
 │              │ ──────────────────→  │               │
 └──────┬───────┘                      └───────────────┘
        │
-       │  verify proof
-       │  store match state
-       │
-   Soroban (Stellar Testnet)
+       │  verify(seal, image_id, journal_digest)
+       ▼
+┌──────────────┐
+│  Groth16     │
+│  Verifier    │  Nethermind stellar-risc0-verifier
+│  (BN254)     │  Protocol 25 native pairing
+└──────────────┘
 ```
 
 ---
 
-# ZK Integration
+## ZK Integration
 
-**Noir** circuit replays the deterministic sim and proves the outcome is correct.
-**Boundless** network handles proof generation and on-chain verification on Stellar.
+**RISC Zero zkVM** replays the deterministic sim inside a zero-knowledge virtual machine. The guest program executes the identical Rust game logic (fixed-point i32 arithmetic) and commits the match result as a 76-byte journal.
 
-See [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) for circuit design and settlement flow.
+**Groth16 compression** converts the RISC Zero STARK proof into a 256-byte Groth16 proof verifiable on Soroban via BN254 pairing (Protocol 25).
+
+**Boundless** is an optional proving marketplace — submit the transcript, receive a Groth16 proof back without running local hardware.
+
+See [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) for the full settlement flow and journal layout.

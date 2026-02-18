@@ -27,6 +27,38 @@ export interface PlayerInput {
 
 export const NULL_INPUT: PlayerInput = { buttons: 0, aimX: 0, aimY: 0 };
 
+// ── Weapons ────────────────────────────────────────────────
+
+export const enum WeaponType {
+  Pistol = 0,
+  Shotgun = 1,
+  Sniper = 2,
+  Rocket = 3,
+  SMG = 4,
+}
+
+export interface WeaponStats {
+  readonly damage: number;
+  readonly speed: number;
+  readonly cooldown: number;
+  readonly lifetime: number;
+  readonly ammo: number;
+  readonly pellets: number;       // 1 for all except shotgun (5)
+  readonly spreadDeg: number;     // 0 for all except shotgun (15)
+  readonly splashRadius: number;  // 0 for all except rocket (40)
+  readonly splashDamage: number;  // 0 for all except rocket (25)
+}
+
+// ── Weapon Pickups ─────────────────────────────────────────
+
+export interface WeaponPickup {
+  readonly id: number;
+  readonly x: number;
+  readonly y: number;
+  readonly weapon: WeaponType;
+  readonly respawnTimer: number;  // >0 means inactive (counting down)
+}
+
 // ── Player ──────────────────────────────────────────────────
 
 export const enum Facing {
@@ -52,6 +84,8 @@ export interface PlayerState {
   readonly grounded: boolean;
   readonly stateFlags: number;
   readonly respawnTimer: number;
+  readonly weapon: WeaponType | null;
+  readonly ammo: number;
 }
 
 // ── Projectile ──────────────────────────────────────────────
@@ -64,6 +98,7 @@ export interface Projectile {
   readonly vx: number;
   readonly vy: number;
   readonly lifetime: number;
+  readonly weapon: WeaponType;
 }
 
 // ── Map ─────────────────────────────────────────────────────
@@ -80,6 +115,7 @@ export interface GameMap {
   readonly height: number;
   readonly platforms: readonly Platform[];
   readonly spawnPoints: readonly Vec2[];
+  readonly weaponSpawnPoints: readonly Vec2[];
 }
 
 // ── Game State ──────────────────────────────────────────────
@@ -88,6 +124,7 @@ export interface GameState {
   readonly tick: Tick;
   readonly players: readonly PlayerState[];
   readonly projectiles: readonly Projectile[];
+  readonly weaponPickups: readonly WeaponPickup[];
   readonly rngState: number;
   readonly score: ReadonlyMap<PlayerId, number>;
   readonly nextProjectileId: number;
@@ -95,6 +132,7 @@ export interface GameState {
   readonly arenaRight: number;
   readonly matchOver: boolean;
   readonly winner: number; // PlayerId or -1 (no winner / draw)
+  readonly deathLingerTimer: number; // ticks remaining before matchOver after final kill
 }
 
 // ── Config ──────────────────────────────────────────────────

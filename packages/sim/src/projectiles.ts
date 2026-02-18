@@ -1,14 +1,14 @@
 import type { PlayerState, Projectile, GameMap } from "./types";
-import { PlayerStateFlag } from "./types";
+import { WeaponType, PlayerStateFlag } from "./types";
 import {
   PROJECTILE_SPEED,
   PROJECTILE_LIFETIME,
-  PROJECTILE_DAMAGE,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
 } from "./constants";
+import { getProjectileDamage, isRocket, applySplashDamage } from "./weapons";
 
-/** Spawn a projectile from a player's position toward their aim direction. */
+/** Spawn a projectile from a player's position toward their aim direction (legacy, unarmed fallback). */
 export function spawnProjectile(
   player: PlayerState,
   aimX: number,
@@ -19,7 +19,6 @@ export function spawnProjectile(
   const len = Math.sqrt(aimX * aimX + aimY * aimY);
   let nx: number, ny: number;
   if (len < 0.001) {
-    // Default to facing direction
     nx = player.facing;
     ny = 0;
   } else {
@@ -35,6 +34,7 @@ export function spawnProjectile(
     vx: nx * PROJECTILE_SPEED,
     vy: ny * PROJECTILE_SPEED,
     lifetime: PROJECTILE_LIFETIME,
+    weapon: WeaponType.Pistol,
   };
 }
 
@@ -48,9 +48,16 @@ export function moveProjectile(proj: Projectile): Projectile {
   };
 }
 
-/** Check if a projectile is out of bounds. */
-export function isOutOfBounds(proj: Projectile, map: GameMap): boolean {
-  return proj.x < 0 || proj.x > map.width || proj.y < 0 || proj.y > map.height;
+/** Check if a projectile is out of bounds (respects arena walls during sudden death).
+ *  50px margin lets bullets visually leave the screen before despawning. */
+export function isOutOfBounds(
+  proj: Projectile,
+  map: GameMap,
+  arenaLeft: number = 0,
+  arenaRight: number = map.width,
+): boolean {
+  const m = 50;
+  return proj.x < arenaLeft - m || proj.x > arenaRight + m || proj.y < -m || proj.y > map.height + m;
 }
 
 /** AABB point-in-rect: projectile center vs player hitbox. */
@@ -76,7 +83,8 @@ export interface HitResult {
  * - Skip projectile's owner
  * - Skip dead players
  * - Skip invincible players
- * - Apply damage, track kills
+ * - Apply per-weapon damage, track kills
+ * - Rockets apply splash damage on hit
  */
 export function resolveProjectileHits(
   projectiles: readonly Projectile[],
@@ -101,18 +109,31 @@ export function resolveProjectileHits(
         aabbOverlap(proj.x, proj.y, p.x, p.y, PLAYER_WIDTH, PLAYER_HEIGHT)
       ) {
         hitProjectileIds.add(proj.id);
-        const newHealth = p.health - PROJECTILE_DAMAGE;
+        const damage = getProjectileDamage(proj);
+        const newHealth = p.health - damage;
         if (newHealth <= 0) {
-          // Player dies
           updatedPlayers[i] = {
             ...p,
             health: 0,
-            stateFlags: 0, // clear Alive
+            stateFlags: 0,
           };
           kills.push({ killerId: proj.ownerId, victimId: p.id });
         } else {
           updatedPlayers[i] = { ...p, health: newHealth };
         }
+
+        // Rocket splash damage on impact
+        if (isRocket(proj)) {
+          const splash = applySplashDamage(
+            proj.x,
+            proj.y,
+            proj.ownerId,
+            updatedPlayers,
+          );
+          updatedPlayers = splash.players;
+          kills.push(...splash.kills);
+        }
+
         break; // projectile consumed
       }
     }

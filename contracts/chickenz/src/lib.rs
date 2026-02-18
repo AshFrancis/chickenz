@@ -29,6 +29,9 @@ pub trait GameHubInterface {
 
 // ── Storage types ────────────────────────────────────────────────────────────
 
+// ~30 days of ledgers (5s per ledger)
+const MATCH_TTL_LEDGERS: u32 = 518_400;
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -140,25 +143,12 @@ impl ChickenzContract {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Match(session_id))
-        {
+        let key = DataKey::Match(session_id);
+        if env.storage().temporary().has(&key) {
             return Err(Error::MatchAlreadyExists);
         }
 
-        let match_data = MatchData {
-            player1: player1.clone(),
-            player2: player2.clone(),
-            seed_commit,
-            settled: false,
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Match(session_id), &match_data);
-
-        // Call Game Hub start_game
+        // Call Game Hub start_game first
         let game_hub_addr: Address = env
             .storage()
             .instance()
@@ -174,6 +164,18 @@ impl ChickenzContract {
             &3i128,
         );
 
+        // Store match data after Game Hub succeeds
+        let match_data = MatchData {
+            player1,
+            player2,
+            seed_commit,
+            settled: false,
+        };
+        env.storage().temporary().set(&key, &match_data);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
+
         Ok(())
     }
 
@@ -187,11 +189,13 @@ impl ChickenzContract {
         seal: Bytes,
         journal: Bytes,
     ) -> Result<(), Error> {
+        let key = DataKey::Match(session_id);
+
         // 1. Load and validate match
         let mut match_data: MatchData = env
             .storage()
-            .persistent()
-            .get(&DataKey::Match(session_id))
+            .temporary()
+            .get(&key)
             .ok_or(Error::MatchNotFound)?;
 
         if match_data.settled {
@@ -235,16 +239,10 @@ impl ChickenzContract {
             return Err(Error::SeedMismatch);
         }
 
-        // 8. Determine player1_won
+        // 8. Determine player1_won (draws are impossible — sim always picks a winner)
         let player1_won = winner == 0;
 
-        // 9. Mark settled
-        match_data.settled = true;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Match(session_id), &match_data);
-
-        // 10. Call Game Hub end_game
+        // 9. Call Game Hub end_game FIRST (before updating state)
         let game_hub_addr: Address = env
             .storage()
             .instance()
@@ -253,13 +251,20 @@ impl ChickenzContract {
         let game_hub = GameHubClient::new(&env, &game_hub_addr);
         game_hub.end_game(&session_id, &player1_won);
 
+        // 10. Mark settled after Game Hub succeeds
+        match_data.settled = true;
+        env.storage().temporary().set(&key, &match_data);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
+
         Ok(())
     }
 
     /// Read match data.
     pub fn get_match(env: Env, session_id: u32) -> Result<MatchData, Error> {
         env.storage()
-            .persistent()
+            .temporary()
             .get(&DataKey::Match(session_id))
             .ok_or(Error::MatchNotFound)
     }

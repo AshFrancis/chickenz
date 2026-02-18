@@ -6,10 +6,12 @@ export * from "./physics";
 export * from "./projectiles";
 export * from "./step";
 export * from "./hash";
+export * from "./weapons";
 
 import type { GameState, MatchConfig, PlayerState } from "./types";
 import { Facing, PlayerStateFlag } from "./types";
 import { MAX_HEALTH } from "./constants";
+import { createInitialPickups } from "./weapons";
 
 /** Create the initial game state from a match config. */
 export function createInitialState(config: MatchConfig): GameState {
@@ -29,6 +31,8 @@ export function createInitialState(config: MatchConfig): GameState {
       grounded: false,
       stateFlags: PlayerStateFlag.Alive,
       respawnTimer: 0,
+      weapon: null,
+      ammo: 0,
     });
   }
 
@@ -37,16 +41,21 @@ export function createInitialState(config: MatchConfig): GameState {
     score.set(i, 0);
   }
 
+  // Create initial weapon pickups
+  const { pickups, rngState } = createInitialPickups(config.map, config.seed);
+
   return {
     tick: 0,
     players,
     projectiles: [],
-    rngState: config.seed,
+    weaponPickups: pickups,
+    rngState,
     score,
     nextProjectileId: 0,
     arenaLeft: 0,
     arenaRight: config.map.width,
     matchOver: false,
     winner: -1,
+    deathLingerTimer: 0,
   };
 }

@@ -1,0 +1,12 @@
+.git
+node_modules
+target
+*.tsbuildinfo
+.env
+.env.local
+contracts
+services/prover
+apps/client/dist
+apps/client/node_modules
+services/server/node_modules
+test-transcript.json

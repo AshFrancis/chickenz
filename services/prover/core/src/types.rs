@@ -35,6 +35,53 @@ pub const NULL_INPUT: PlayerInput = PlayerInput {
     aim_y: 0.0,
 };
 
+// ── Weapons ────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum WeaponType {
+    Pistol = 0,
+    Shotgun = 1,
+    Sniper = 2,
+    Rocket = 3,
+    SMG = 4,
+}
+
+impl WeaponType {
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Pistol),
+            1 => Some(Self::Shotgun),
+            2 => Some(Self::Sniper),
+            3 => Some(Self::Rocket),
+            4 => Some(Self::SMG),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WeaponStats {
+    pub damage: i32,
+    pub speed: f64,
+    pub cooldown: i32,
+    pub lifetime: i32,
+    pub ammo: i32,
+    pub pellets: i32,
+    pub spread_deg: f64,
+    pub splash_radius: f64,
+    pub splash_damage: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WeaponPickup {
+    pub id: i32,
+    pub x: f64,
+    pub y: f64,
+    pub weapon: WeaponType,
+    pub respawn_timer: i32,
+}
+
 // ── Player ──────────────────────────────────────────────────
 
 /// Facing direction: Right = 1, Left = -1.
@@ -63,6 +110,8 @@ pub struct PlayerState {
     pub grounded: bool,
     pub state_flags: u32,
     pub respawn_timer: i32,
+    pub weapon: Option<WeaponType>,
+    pub ammo: i32,
 }
 
 // ── Projectile ──────────────────────────────────────────────
@@ -76,6 +125,7 @@ pub struct Projectile {
     pub vx: f64,
     pub vy: f64,
     pub lifetime: i32,
+    pub weapon: WeaponType,
 }
 
 // ── Map ─────────────────────────────────────────────────────
@@ -94,6 +144,7 @@ pub struct GameMap {
     pub height: f64,
     pub platforms: Vec<Platform>,
     pub spawn_points: Vec<Vec2>,
+    pub weapon_spawn_points: Vec<Vec2>,
 }
 
 // ── Game State ──────────────────────────────────────────────
@@ -103,6 +154,7 @@ pub struct GameState {
     pub tick: Tick,
     pub players: Vec<PlayerState>,
     pub projectiles: Vec<Projectile>,
+    pub weapon_pickups: Vec<WeaponPickup>,
     pub rng_state: u32,
     /// Kill count per player. Index = player id.
     pub score: [u32; 2],
@@ -112,6 +164,8 @@ pub struct GameState {
     pub match_over: bool,
     /// PlayerId of winner, or -1 for draw / no winner.
     pub winner: i32,
+    /// Ticks remaining before match_over after final kill (death linger).
+    pub death_linger_timer: i32,
 }
 
 // ── Config ──────────────────────────────────────────────────
@@ -151,14 +205,9 @@ pub struct ProverOutput {
 }
 
 /// Journal layout: 19 u32 words = 76 bytes.
-/// Word 0: winner (i32 as u32)
-/// Words 1-2: scores[0], scores[1]
-/// Words 3-10: transcript_hash (8 LE u32 words)
-/// Words 11-18: seed_commit (8 LE u32 words)
 pub const PROVER_OUTPUT_WORDS: usize = 19;
 
 impl ProverOutput {
-    /// Encode as 19 u32 words for commit_slice (no serde overhead).
     pub fn to_journal_words(&self) -> [u32; PROVER_OUTPUT_WORDS] {
         let mut w = [0u32; PROVER_OUTPUT_WORDS];
         w[0] = self.winner as u32;
@@ -185,7 +234,6 @@ impl ProverOutput {
         w
     }
 
-    /// Decode from raw journal bytes (76 bytes = 19 u32 words LE).
     pub fn from_journal_bytes(b: &[u8]) -> Self {
         assert!(b.len() >= PROVER_OUTPUT_WORDS * 4);
         let u32_at = |off: usize| -> u32 {

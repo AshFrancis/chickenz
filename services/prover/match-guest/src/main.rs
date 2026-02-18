@@ -38,8 +38,6 @@ fn main() {
     let mut transcript_hasher = Sha256::new();
     let mut final_scores = [0u32; 2];
     let mut final_winner = -1i32;
-    let mut final_match_over = false;
-
     for i in 0..num_chunks {
         // Read chunk journal (30 u32 words = 120 bytes)
         let mut journal_words = [0u32; CHUNK_PROOF_WORDS];
@@ -71,7 +69,6 @@ fn main() {
         // Track final state
         final_scores = chunk.scores;
         final_winner = chunk.winner;
-        final_match_over = chunk.match_over;
     }
 
     // 5. Compute final commitments
