@@ -10,19 +10,19 @@ import {
   SUDDEN_DEATH_START_TICK,
   TICK_RATE,
   TICK_DT_MS,
-  GRAVITY,
-  MAX_FALL_SPEED,
   PlayerStateFlag,
   WeaponType,
   createInitialState,
   step,
   NULL_INPUT,
-  moveAndCollide,
 } from "@chickenz/sim";
 import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, Projectile, WeaponPickup, InputMap } from "@chickenz/sim";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
+import { InterpolationBuffer } from "../net/InterpolationBuffer";
 import { DPR } from "../game";
+
+const INTERP_DELAY = 100; // ms — render remote player 100ms behind real-time
 
 interface TranscriptInput {
   buttons: number;
@@ -119,8 +119,8 @@ export class GameScene extends Phaser.Scene {
 
   // Smooth render positions (per-frame lerp absorbs prediction rollback snaps)
   private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
-  // Remote player: physics-extrapolated position so they always hit the ground
-  private remoteExtrap: { x: number; y: number; vx: number; vy: number; initialized: boolean } = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+  // Remote player: interpolation buffer for smooth rendering between server snapshots
+  private remoteInterp = new InterpolationBuffer();
 
   // Camera
   private currentZoom = 1.0;
@@ -320,7 +320,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteExtrap = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.remoteInterp.clear();
     this.bulletCache.clear();
     this.explosions = [];
 
@@ -440,7 +440,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteExtrap = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.remoteInterp.clear();
     this.bulletCache.clear();
   }
 
@@ -477,7 +477,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteExtrap = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.remoteInterp.clear();
     this.bulletCache.clear();
     this.replayInfoText.setVisible(true);
 
@@ -534,6 +534,23 @@ export class GameScene extends Phaser.Scene {
     // Feed server state to prediction manager for reconciliation
     if (this.prediction) {
       this.prediction.applyServerState(state, state.tick);
+    }
+
+    // Push remote player snapshot into interpolation buffer
+    if (!this.replayMode) {
+      const remoteId = 1 - this.localPlayerId;
+      const remoteP = state.players[remoteId];
+      if (remoteP) {
+        this.remoteInterp.push({
+          time: performance.now(),
+          x: remoteP.x,
+          y: remoteP.y,
+          vx: remoteP.vx,
+          vy: remoteP.vy,
+          facing: remoteP.facing,
+          stateFlags: remoteP.stateFlags,
+        });
+      }
     }
   }
 
@@ -778,56 +795,16 @@ export class GameScene extends Phaser.Scene {
             smooth.y = lerp(smooth.y, cp.y, 0.7);
           }
         } else {
-          // Remote: simple lerp toward server state (which now contains
-          // the other client's self-reported position+velocity).
-          // Physics extrapolation ensures they visually hit the ground
-          // even when 20Hz snapshots skip grounded frames.
-          const ext = this.remoteExtrap;
-          if (!ext.initialized) {
-            ext.x = cp.x; ext.y = cp.y; ext.vx = cp.vx; ext.vy = cp.vy;
-            ext.initialized = true;
-          }
-
-          // Adopt horizontal velocity, blend X toward target
-          ext.vx = cp.vx;
-          ext.x = lerp(ext.x, cp.x, 0.35);
-
-          // Physics: gravity + platform collision (ensures they visually land)
-          ext.vy = Math.min(ext.vy + GRAVITY, MAX_FALL_SPEED);
-          ext.y += ext.vy;
-          const map = this.config?.map ?? ARENA;
-          let extGrounded = false;
-          for (const plat of map.platforms) {
-            const feetBefore = ext.y - ext.vy + PLAYER_HEIGHT;
-            const feetAfter = ext.y + PLAYER_HEIGHT;
-            if (feetBefore <= plat.y && feetAfter >= plat.y
-              && ext.x + PLAYER_WIDTH > plat.x && ext.x < plat.x + plat.width) {
-              ext.y = plat.y - PLAYER_HEIGHT;
-              ext.vy = 0;
-              extGrounded = true;
-            }
-          }
-          if (ext.y + PLAYER_HEIGHT > map.height) {
-            ext.y = map.height - PLAYER_HEIGHT;
-            ext.vy = 0;
-            extGrounded = true;
-          }
-
-          // When grounded and target is jumping, adopt jump velocity
-          if (cp.vy < 0 && extGrounded) {
-            ext.vy = cp.vy;
-          }
-
-          // Mid-air: blend velocity toward target to prevent apex oscillation
-          if (!extGrounded) {
-            ext.vy = lerp(ext.vy, cp.vy, 0.25);
-          }
-
-          // Gentle Y correction — keeps in sync without fighting physics
-          ext.y = lerp(ext.y, cp.y, 0.08);
+          // Remote: interpolation buffer — smooth movement between known server positions
         }
-        drawX = isLocal ? this.localSmooth.x : this.remoteExtrap.x;
-        drawY = isLocal ? this.localSmooth.y : this.remoteExtrap.y;
+        if (isLocal) {
+          drawX = this.localSmooth.x;
+          drawY = this.localSmooth.y;
+        } else {
+          const snap = this.remoteInterp.sample(performance.now() - INTERP_DELAY);
+          drawX = snap ? snap.x : cp.x;
+          drawY = snap ? snap.y : cp.y;
+        }
       }
 
       g.fillStyle(color);
