@@ -185,13 +185,14 @@ export class NetworkManager {
   private posSendAccum = 0;
 
   sendInput(input: PlayerInput, pos?: { x: number; y: number; vx: number; vy: number; grounded: boolean; facing: number }) {
-    // Send on input change OR every 3rd call (~20Hz) to keep position fresh
+    // Send on input change OR every 2nd call (30Hz) to keep position fresh
+    // for the server-side nudge correction
     this.posSendAccum++;
     const inputChanged =
       input.buttons !== this.lastSentButtons ||
       input.aimX !== this.lastSentAimX ||
       input.aimY !== this.lastSentAimY;
-    if (!inputChanged && this.posSendAccum < 3) return;
+    if (!inputChanged && this.posSendAccum < 2) return;
 
     this.posSendAccum = 0;
     this.lastSentButtons = input.buttons;
@@ -203,10 +204,10 @@ export class NetworkManager {
       aimX: input.aimX,
       aimY: input.aimY,
       ...(pos ? {
-        x: Math.round(pos.x),
-        y: Math.round(pos.y),
-        vx: Math.round(pos.vx * 10) / 10,
-        vy: Math.round(pos.vy * 10) / 10,
+        x: pos.x,
+        y: pos.y,
+        vx: pos.vx,
+        vy: pos.vy,
         grounded: pos.grounded,
         facing: pos.facing,
       } : {}),

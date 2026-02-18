@@ -255,6 +255,33 @@ export class GameRoom {
     this.state = step(this.state, inputs, this.prevInputs, this.config);
     this.prevInputs = inputs;
 
+    // Nudge sim positions toward client-reported positions each tick.
+    // The sim runs from inputs (smooth physics) but drifts from reality
+    // due to input latency (~60ms). Gentle lerp keeps it accurate without
+    // the stutter of hard overwrites. Hard-snap for large divergences
+    // (e.g., landing on different platforms).
+    const NUDGE = 0.3;
+    const SNAP = 50;
+    for (let i = 0; i < 2; i++) {
+      const rep = this.reportedState[i];
+      if (rep && this.state.players[i]) {
+        const p = this.state.players[i];
+        const dx = rep.x - p.x;
+        const dy = rep.y - p.y;
+        if (Math.abs(dx) > SNAP || Math.abs(dy) > SNAP) {
+          p.x = rep.x;
+          p.y = rep.y;
+          p.vx = rep.vx;
+          p.vy = rep.vy;
+        } else {
+          p.x += dx * NUDGE;
+          p.y += dy * NUDGE;
+          p.vx += (rep.vx - p.vx) * NUDGE;
+          p.vy += (rep.vy - p.vy) * NUDGE;
+        }
+      }
+    }
+
     // Reset accumulated to last raw input (not NULL) so held keys persist
     this.accInput[0] = { ...this.rawInput[0] };
     this.accInput[1] = { ...this.rawInput[1] };
