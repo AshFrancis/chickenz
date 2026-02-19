@@ -110,7 +110,6 @@ export class GameScene extends Phaser.Scene {
   // winText + roundPopupText are DOM-based (see #announce-overlay)
   private controlsText!: Phaser.GameObjects.Text;
   private weaponText!: Phaser.GameObjects.Text;
-  private versionText!: Phaser.GameObjects.Text;
   private nameTexts: Phaser.GameObjects.Text[] = [];
 
   // Rocket explosion effects
@@ -238,12 +237,6 @@ export class GameScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 1).setResolution(DPR).setDepth(100);
 
-    this.versionText = this.add.text(10, 30, "v5", {
-      fontSize: "10px",
-      color: "#ff0000",
-      fontFamily: PIXEL_FONT,
-    }).setResolution(DPR).setDepth(100);
-
     // Player name texts (rendered on main camera, move with players)
     for (let i = 0; i < 2; i++) {
       const text = this.add.text(0, 0, "", {
@@ -284,7 +277,7 @@ export class GameScene extends Phaser.Scene {
     this.hudCamera.setZoom(DPR);
 
     // Collect HUD elements (rendered only on hudCamera)
-    const hudElements = [this.timerText, this.suddenDeathText, this.controlsText, this.weaponText, this.roundText, this.replayInfoText, this.versionText];
+    const hudElements = [this.timerText, this.suddenDeathText, this.controlsText, this.weaponText, this.roundText, this.replayInfoText];
 
     // Main camera ignores HUD texts
     for (const el of hudElements) {
