@@ -22,7 +22,7 @@ import { PredictionManager } from "../net/PredictionManager";
 import { InterpolationBuffer } from "../net/InterpolationBuffer";
 import { DPR, VIEW_W, VIEW_H } from "../game";
 
-const INTERP_DELAY = 120; // ms — render remote player 120ms behind real-time
+const INTERP_DELAY = 50; // ms — render remote player 50ms behind real-time (3 frames at 60Hz)
 
 interface TranscriptInput {
   buttons: number;
@@ -117,10 +117,6 @@ export class GameScene extends Phaser.Scene {
 
   // Rocket explosion effects
   private explosions: { x: number; y: number; timer: number }[] = [];
-
-  // Client-side bullet simulation — bullets move at constant velocity,
-  // so we track them locally at render framerate instead of waiting for server
-  private bulletCache = new Map<number, { x: number; y: number; vx: number; vy: number; weapon: number; ownerId: number }>();
 
   // Smooth render positions (per-frame lerp absorbs prediction rollback snaps)
   private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
@@ -337,7 +333,6 @@ export class GameScene extends Phaser.Scene {
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
     this.remoteInterp.clear();
-    this.bulletCache.clear();
     this.explosions = [];
 
     const warmupEl = document.getElementById("warmup-overlay");
@@ -486,7 +481,6 @@ export class GameScene extends Phaser.Scene {
     }
     this.localSmooth = { x: 0, y: 0, initialized: false };
     this.remoteInterp.clear();
-    this.bulletCache.clear();
     this.lastServerTick = 0;
     this.interpTimeReady = false;
 
@@ -539,7 +533,6 @@ export class GameScene extends Phaser.Scene {
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
     this.remoteInterp.clear();
-    this.bulletCache.clear();
     this.replayInfoText.setVisible(true);
 
     // Remove previous replay listeners to prevent stacking
@@ -823,7 +816,49 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
       const isLocal = i === this.localPlayerId && !this.replayMode;
-      const cp = isLocal && predicted ? predicted.players[i]! : curr.players[i]!;
+      const raw = curr.players[i]!;
+
+      // Build cp: for local player use predicted state, for remote use
+      // interpolated stateFlags/facing so alive/invincible checks match
+      // the rendered position (not the latest server state which is ahead).
+      let cp: PlayerState;
+      let drawX: number, drawY: number;
+
+      if (this.replayMode) {
+        cp = raw;
+        drawX = cp.x;
+        drawY = cp.y;
+      } else if (isLocal) {
+        cp = predicted ? predicted.players[i]! : raw;
+        // Smooth lerp absorbs prediction rollback snaps
+        const smooth = this.localSmooth;
+        if (!smooth.initialized) {
+          smooth.x = cp.x;
+          smooth.y = cp.y;
+          smooth.initialized = true;
+        }
+        const teleported = Math.abs(smooth.x - cp.x) > 100
+          || Math.abs(smooth.y - cp.y) > 100;
+        if (teleported) {
+          smooth.x = cp.x;
+          smooth.y = cp.y;
+        } else {
+          smooth.x = smoothLerp(smooth.x, cp.x, 0.7, delta ?? 16.667);
+          smooth.y = smoothLerp(smooth.y, cp.y, 0.7, delta ?? 16.667);
+        }
+        drawX = smooth.x;
+        drawY = smooth.y;
+      } else {
+        // Remote: sample interpolation FIRST for consistent state
+        const snap = this.remoteInterp.sample(performance.now() - INTERP_DELAY);
+        drawX = snap ? snap.x : raw.x;
+        drawY = snap ? snap.y : raw.y;
+        // Use interpolated stateFlags/facing so alive/invincible checks
+        // match the rendered position; other fields (health, weapon, etc.)
+        // come from latest server state for HUD accuracy.
+        cp = snap ? { ...raw, stateFlags: snap.stateFlags, facing: snap.facing } : raw;
+      }
+
       const color = PLAYER_COLORS[cp.id] ?? 0xffffff;
       const alive = !!(cp.stateFlags & PlayerStateFlag.Alive);
 
@@ -845,41 +880,6 @@ export class GameScene extends Phaser.Scene {
       if (invincible && displayTick % 6 < 3) {
         this.nameTexts[i]?.setVisible(false);
         continue;
-      }
-
-      let drawX: number, drawY: number;
-      if (this.replayMode) {
-        drawX = cp.x;
-        drawY = cp.y;
-      } else {
-        if (isLocal) {
-          // Local: smooth lerp absorbs prediction rollback snaps
-          const smooth = this.localSmooth;
-          if (!smooth.initialized) {
-            smooth.x = cp.x;
-            smooth.y = cp.y;
-            smooth.initialized = true;
-          }
-          const teleported = Math.abs(smooth.x - cp.x) > 100
-            || Math.abs(smooth.y - cp.y) > 100;
-          if (teleported) {
-            smooth.x = cp.x;
-            smooth.y = cp.y;
-          } else {
-            smooth.x = smoothLerp(smooth.x, cp.x, 0.7, delta ?? 16.667);
-            smooth.y = smoothLerp(smooth.y, cp.y, 0.7, delta ?? 16.667);
-          }
-        } else {
-          // Remote: interpolation buffer — smooth movement between known server positions
-        }
-        if (isLocal) {
-          drawX = this.localSmooth.x;
-          drawY = this.localSmooth.y;
-        } else {
-          const snap = this.remoteInterp.sample(performance.now() - INTERP_DELAY);
-          drawX = snap ? snap.x : cp.x;
-          drawY = snap ? snap.y : cp.y;
-        }
       }
 
       g.fillStyle(color);
@@ -935,36 +935,14 @@ export class GameScene extends Phaser.Scene {
     g: Phaser.GameObjects.Graphics,
     curr: GameState,
     predicted: GameState | null | undefined,
-    delta: number,
+    _delta: number,
   ) {
-    // Use predicted state as single source of truth (rollback+replay
-    // already merges server state with local prediction correctly).
-    // Fall back to raw server state for replay mode or if no prediction.
-    const displayProj = (predicted ?? curr).projectiles;
-    const activeIds = new Set<number>();
-
-    for (const proj of displayProj) {
-      activeIds.add(proj.id);
-      if (!this.bulletCache.has(proj.id)) {
-        this.bulletCache.set(proj.id, {
-          x: proj.x, y: proj.y, vx: proj.vx, vy: proj.vy,
-          weapon: proj.weapon, ownerId: proj.ownerId,
-        });
-      }
-    }
-
-    // Remove bullets no longer in state
-    for (const id of this.bulletCache.keys()) {
-      if (!activeIds.has(id)) this.bulletCache.delete(id);
-    }
-
-    // Advance ALL cached bullets by frame delta and draw
-    const tickFraction = delta / TICK_DT_MS;
-    for (const [, b] of this.bulletCache) {
-      b.x += b.vx * tickFraction;
-      b.y += b.vy * tickFraction;
-      g.fillStyle(WEAPON_PROJECTILE_COLORS[b.weapon] ?? 0xffee58);
-      g.fillCircle(b.x, b.y, b.weapon === WeaponType.Rocket ? 6 : PROJECTILE_RADIUS);
+    // Render directly from sim state — no cache, no ID tracking.
+    // At 60fps/60Hz the sim provides a fresh position every frame.
+    const projectiles = (predicted ?? curr).projectiles;
+    for (const p of projectiles) {
+      g.fillStyle(WEAPON_PROJECTILE_COLORS[p.weapon] ?? 0xffee58);
+      g.fillCircle(p.x, p.y, p.weapon === WeaponType.Rocket ? 6 : PROJECTILE_RADIUS);
     }
   }
 
@@ -1049,6 +1027,7 @@ export class GameScene extends Phaser.Scene {
       ...remoteRaw,
       x: remoteSnap?.x ?? remoteRaw.x,
       y: remoteSnap?.y ?? remoteRaw.y,
+      stateFlags: remoteSnap?.stateFlags ?? remoteRaw.stateFlags,
     } : remoteRaw;
 
     // Warmup or single-player: follow local player only

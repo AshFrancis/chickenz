@@ -42,8 +42,8 @@ export class InterpolationBuffer {
           y: a.y + (b.y - a.y) * t,
           vx: b.vx,
           vy: b.vy,
-          facing: b.facing,
-          stateFlags: b.stateFlags,
+          facing: a.facing,
+          stateFlags: a.stateFlags,
         };
       }
     }
