@@ -399,12 +399,19 @@ function renderMatchHistory(matches: MatchRecord[]) {
         <span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span>
         ${showSettle ? `<button class="btn btn-sm btn-primary btn-settle" data-match-id="${m.id}">Settle</button>` : ""}
         <button class="btn btn-sm btn-replay" data-room-id="${m.roomId}">Replay</button>
+        <button class="btn btn-sm btn-download" data-room-id="${m.roomId}">DL</button>
       </div>
     `;
     const replayBtn = el.querySelector(".btn-replay");
     if (replayBtn) {
       replayBtn.addEventListener("click", () => {
         startReplay(m.roomId);
+      });
+    }
+    const downloadBtn = el.querySelector(".btn-download");
+    if (downloadBtn) {
+      downloadBtn.addEventListener("click", () => {
+        downloadTranscript(m.roomId);
       });
     }
     const settleBtn = el.querySelector(".btn-settle");
@@ -454,6 +461,25 @@ function startReplay(roomId: string) {
     })
     .catch(() => {
       lobbyStatus.textContent = "Failed to load transcript for replay.";
+    });
+}
+
+function downloadTranscript(roomId: string) {
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+  fetch(`${origin}/transcript/${roomId}`)
+    .then((r) => r.json())
+    .then((data) => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chickenz-${roomId}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    })
+    .catch(() => {
+      lobbyStatus.textContent = "Failed to download transcript.";
     });
 }
 
