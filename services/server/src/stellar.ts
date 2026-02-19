@@ -1,12 +1,18 @@
-import * as StellarSdk from "@stellar/stellar-sdk";
+// Lazy import — don't crash if @stellar/stellar-sdk isn't installed
+let StellarSdk: any = null;
+try {
+  StellarSdk = await import("@stellar/stellar-sdk");
+} catch {
+  console.warn("[stellar] @stellar/stellar-sdk not installed, on-chain features disabled");
+}
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const CHICKENZ_CONTRACT = "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
 const ADMIN_SECRET = process.env.STELLAR_ADMIN_SECRET;
 
-function getAdmin(): StellarSdk.Keypair | null {
-  if (!ADMIN_SECRET) return null;
+function getAdmin(): any | null {
+  if (!StellarSdk || !ADMIN_SECRET) return null;
   try {
     return StellarSdk.Keypair.fromSecret(ADMIN_SECRET);
   } catch {
@@ -17,11 +23,11 @@ function getAdmin(): StellarSdk.Keypair | null {
 
 async function submitTx(
   method: string,
-  args: StellarSdk.xdr.ScVal[],
+  args: any[],
 ): Promise<void> {
   const admin = getAdmin();
   if (!admin) {
-    console.warn(`[stellar] No admin key configured, skipping ${method}`);
+    console.warn(`[stellar] No admin key or SDK configured, skipping ${method}`);
     return;
   }
 
@@ -44,7 +50,7 @@ async function submitTx(
 
   const prepared = StellarSdk.rpc.assembleTransaction(
     tx,
-    simResult as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse,
+    simResult as any,
   ).build();
 
   prepared.sign(admin);
@@ -75,6 +81,7 @@ export async function startMatchOnChain(
   player2: string,
   seedCommit: Uint8Array,
 ): Promise<void> {
+  if (!StellarSdk) return;
   try {
     await submitTx("start_match", [
       StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
@@ -93,6 +100,7 @@ export async function settleMatchOnChain(
   seal: Uint8Array,
   journal: Uint8Array,
 ): Promise<void> {
+  if (!StellarSdk) return;
   await submitTx("settle_match", [
     StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
     StellarSdk.nativeToScVal(Buffer.from(seal), { type: "bytes" }),
