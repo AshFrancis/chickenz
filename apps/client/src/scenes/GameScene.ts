@@ -19,10 +19,7 @@ import {
 import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, Projectile, WeaponPickup, InputMap } from "@chickenz/sim";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
-import { InterpolationBuffer } from "../net/InterpolationBuffer";
 import { DPR, VIEW_W, VIEW_H } from "../game";
-
-const INTERP_DELAY = 50; // ms — render remote player 50ms behind real-time (3 frames at 60Hz)
 
 interface TranscriptInput {
   buttons: number;
@@ -119,10 +116,9 @@ export class GameScene extends Phaser.Scene {
   // Rocket explosion effects
   private explosions: { x: number; y: number; timer: number }[] = [];
 
-  // Smooth render positions (per-frame lerp absorbs prediction rollback snaps)
+  // Smooth render positions (per-frame lerp absorbs prediction/reconciliation snaps)
   private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
-  // Remote player: interpolation buffer for smooth rendering between server snapshots
-  private remoteInterp = new InterpolationBuffer();
+  private remoteSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
 
   // Camera
   private currentZoom = 1.0;
@@ -130,11 +126,8 @@ export class GameScene extends Phaser.Scene {
   private cameraY = 270;
   private hudCamera!: Phaser.Cameras.Scene2D.Camera;
 
-  // Netcode: tick ordering + synthetic interp timestamps
+  // Netcode: tick ordering
   private lastServerTick = 0;
-  private interpTimeBase = 0;
-  private interpTickBase = 0;
-  private interpTimeReady = false;
 
   // Audio
   private _muted = false;
@@ -245,9 +238,9 @@ export class GameScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 1).setResolution(DPR).setDepth(100);
 
-    this.versionText = this.add.text(VIEW_W - 5, VIEW_H - 5, "v2", {
-      fontSize: "7px",
-      color: "#444444",
+    this.versionText = this.add.text(VIEW_W - 10, VIEW_H - 8, "v3", {
+      fontSize: "8px",
+      color: "#555555",
       fontFamily: PIXEL_FONT,
       align: "right",
     }).setOrigin(1, 1).setResolution(DPR).setDepth(100);
@@ -340,7 +333,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteInterp.clear();
+    this.remoteSmooth = { x: 0, y: 0, initialized: false };
     this.explosions = [];
 
     const warmupEl = document.getElementById("warmup-overlay");
@@ -488,23 +481,8 @@ export class GameScene extends Phaser.Scene {
       this.currentZoom = 1.0;
     }
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteInterp.clear();
+    this.remoteSmooth = { x: 0, y: 0, initialized: false };
     this.lastServerTick = 0;
-    this.interpTimeReady = false;
-
-    // Pre-seed interp buffer so remote player doesn't snap on first server state
-    const remoteP = initial.players[1 - this.localPlayerId];
-    if (remoteP) {
-      this.remoteInterp.push({
-        time: performance.now(),
-        x: remoteP.x,
-        y: remoteP.y,
-        vx: 0,
-        vy: 0,
-        facing: remoteP.facing,
-        stateFlags: remoteP.stateFlags,
-      });
-    }
   }
 
   startReplay(transcript: TickInputPair[], seed: number) {
@@ -540,7 +518,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteInterp.clear();
+    this.remoteSmooth = { x: 0, y: 0, initialized: false };
     this.replayInfoText.setVisible(true);
 
     // Remove previous replay listeners to prevent stacking
@@ -600,31 +578,6 @@ export class GameScene extends Phaser.Scene {
     // Feed server state to prediction manager for reconciliation
     if (this.prediction) {
       this.prediction.applyServerState(state, state.tick);
-    }
-
-    // Push remote player snapshot into interpolation buffer using synthetic
-    // tick-derived timestamps for even spacing (immune to event-loop batching)
-    if (!this.replayMode) {
-      if (!this.interpTimeReady) {
-        this.interpTimeBase = performance.now();
-        this.interpTickBase = state.tick;
-        this.interpTimeReady = true;
-      }
-      const syntheticTime = this.interpTimeBase + (state.tick - this.interpTickBase) * TICK_DT_MS;
-
-      const remoteId = 1 - this.localPlayerId;
-      const remoteP = state.players[remoteId];
-      if (remoteP) {
-        this.remoteInterp.push({
-          time: syntheticTime,
-          x: remoteP.x,
-          y: remoteP.y,
-          vx: remoteP.vx,
-          vy: remoteP.vy,
-          facing: remoteP.facing,
-          stateFlags: remoteP.stateFlags,
-        });
-      }
     }
   }
 
@@ -857,14 +810,25 @@ export class GameScene extends Phaser.Scene {
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
-        // Remote: sample interpolation FIRST for consistent state
-        const snap = this.remoteInterp.sample(performance.now() - INTERP_DELAY);
-        drawX = snap ? snap.x : raw.x;
-        drawY = snap ? snap.y : raw.y;
-        // Use interpolated stateFlags/facing so alive/invincible checks
-        // match the rendered position; other fields (health, weapon, etc.)
-        // come from latest server state for HUD accuracy.
-        cp = snap ? { ...raw, stateFlags: snap.stateFlags, facing: snap.facing } : raw;
+        // Remote: use predicted state (same timeline as bullets) + smooth lerp
+        cp = predicted ? predicted.players[i]! : raw;
+        const smooth = this.remoteSmooth;
+        if (!smooth.initialized) {
+          smooth.x = cp.x;
+          smooth.y = cp.y;
+          smooth.initialized = true;
+        }
+        const teleported = Math.abs(smooth.x - cp.x) > 100
+          || Math.abs(smooth.y - cp.y) > 100;
+        if (teleported) {
+          smooth.x = cp.x;
+          smooth.y = cp.y;
+        } else {
+          smooth.x = smoothLerp(smooth.x, cp.x, 0.5, delta ?? 16.667);
+          smooth.y = smoothLerp(smooth.y, cp.y, 0.5, delta ?? 16.667);
+        }
+        drawX = smooth.x;
+        drawY = smooth.y;
       }
 
       const color = PLAYER_COLORS[cp.id] ?? 0xffffff;
@@ -1025,18 +989,9 @@ export class GameScene extends Phaser.Scene {
   private updateCamera(curr: GameState, predicted: GameState | null | undefined, delta: number) {
     const cam = this.cameras.main;
 
-    // Use predicted position for local player, interpolated position for remote
-    // This matches how drawPlayers renders each player
+    // Use predicted state for both players — same timeline as bullets
     const localP = (predicted ?? curr).players[this.localPlayerId];
-    const remoteRaw = curr.players[1 - this.localPlayerId];
-    // Use interpolated position for remote player so camera doesn't jitter
-    const remoteSnap = this.replayMode ? null : this.remoteInterp.sample(performance.now() - INTERP_DELAY);
-    const remoteP = remoteRaw ? {
-      ...remoteRaw,
-      x: remoteSnap?.x ?? remoteRaw.x,
-      y: remoteSnap?.y ?? remoteRaw.y,
-      stateFlags: remoteSnap?.stateFlags ?? remoteRaw.stateFlags,
-    } : remoteRaw;
+    const remoteP = (predicted ?? curr).players[1 - this.localPlayerId];
 
     // Warmup or single-player: follow local player only
     if (!localP || !remoteP || this.warmupMode) {
