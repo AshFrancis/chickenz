@@ -2,7 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
 import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
 import { startMatchOnChain, settleMatchOnChain } from "./stellar";
-import { proveMatch } from "./prover";
+import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
 import { updateElo, getLeaderboard } from "./elo";
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -104,7 +104,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     if (mode === "ranked" && room) {
       record.proofStatus = "proving";
       const transcript = room.getTranscript();
-      proveMatch(record.id, transcript).then((artifacts) => {
+      const onProofResult = (artifacts: ProofArtifacts | null) => {
         if (artifacts) {
           record.proofArtifacts = artifacts;
           record.proofStatus = "verified";
@@ -117,11 +117,11 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
               .then(() => { record.proofStatus = "settled"; })
               .catch((err) => { console.error("Auto-settle failed:", err); });
           }
+        } else {
+          record.proofStatus = "pending";
         }
-      }).catch((err) => {
-        console.error("Proving failed:", err);
-        record.proofStatus = "pending";
-      });
+      };
+      proveMatch(record.id, transcript, onProofResult);
     }
   }
 
@@ -192,7 +192,7 @@ function isValidUsername(name: string): boolean {
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -290,6 +290,63 @@ const server = Bun.serve<SocketData>({
         record.proofStatus = "settled";
         return Response.json({ id: record.id, proofStatus: record.proofStatus }, { headers: corsHeaders });
       }
+    }
+
+    // ── Worker API (prover worker polls these) ──────────────
+
+    // Worker polls this — also serves as heartbeat
+    if (url.pathname === "/api/worker/poll") {
+      const job = claimNextJob();
+      if (job) {
+        return Response.json({ matchId: job.matchId }, { headers: corsHeaders });
+      }
+      return Response.json({ matchId: null }, { headers: corsHeaders });
+    }
+
+    // Worker downloads transcript for a claimed job
+    const workerInputMatch = url.pathname.match(/^\/api\/worker\/input\/(.+)$/);
+    if (workerInputMatch) {
+      const matchId = workerInputMatch[1]!;
+      const transcript = getJobTranscript(matchId);
+      if (!transcript) {
+        return Response.json({ error: "Job not found" }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json(transcript, { headers: corsHeaders });
+    }
+
+    // Worker submits proof result
+    if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/(.+)$/)) {
+      const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
+      try {
+        const body = await req.json() as { seal: string; journal: string; imageId: string };
+        const job = submitJobResult(matchId, body);
+        if (!job) {
+          return Response.json({ error: "Job not found" }, { status: 404, headers: corsHeaders });
+        }
+        // Update match record
+        const record = matchHistory.find((m) => m.id === matchId);
+        if (record) {
+          record.proofArtifacts = body;
+          record.proofStatus = "verified";
+          // Auto-settle if admin key is configured
+          if (process.env.STELLAR_ADMIN_SECRET) {
+            const sealBytes = new Uint8Array(Buffer.from(body.seal, "hex"));
+            const journalBytes = new Uint8Array(Buffer.from(body.journal, "hex"));
+            const numericId = parseInt(record.id.replace("match-", ""), 10);
+            settleMatchOnChain(numericId, sealBytes, journalBytes)
+              .then(() => { record.proofStatus = "settled"; })
+              .catch((err) => { console.error("Auto-settle failed:", err); });
+          }
+        }
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      } catch {
+        return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // Worker status (for dashboard/debugging)
+    if (url.pathname === "/api/worker/status") {
+      return Response.json({ online: isWorkerOnline() }, { headers: corsHeaders });
     }
 
     // API status endpoint
