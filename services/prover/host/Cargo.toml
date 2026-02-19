@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 chickenz-core = { path = "../core" }
 chickenz-methods = { path = "../methods" }
-risc0-zkvm = { version = "3.0", features = ["prove", "metal"] }
+risc0-zkvm = { version = "3.0", features = ["prove"] }
 serde = { workspace = true }
 serde_json = "1"
 hex = "0.4"
@@ -20,4 +20,6 @@ anyhow = { version = "1.0", optional = true }
 
 [features]
 default = []
+metal = ["risc0-zkvm/metal"]
+cuda = ["risc0-zkvm/cuda"]
 boundless = ["dep:boundless-market", "dep:alloy", "dep:tokio", "dep:url", "dep:anyhow"]
