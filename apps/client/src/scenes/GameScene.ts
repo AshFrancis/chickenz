@@ -464,8 +464,19 @@ export class GameScene extends Phaser.Scene {
     this.prediction = new PredictionManager(initial, this.config, this.localPlayerId);
     this.predictionAccum = 0;
     this.currentZoom = 1.0;
-    this.cameraX = 480;
-    this.cameraY = 270;
+    // Snap camera to midpoint between both players so they're visible immediately
+    const p0 = initial.players[0];
+    const p1 = initial.players[1];
+    if (p0 && p1) {
+      this.cameraX = (p0.x + p1.x) / 2 + PLAYER_WIDTH / 2;
+      this.cameraY = (p0.y + p1.y) / 2 + PLAYER_HEIGHT / 2;
+    } else if (p0) {
+      this.cameraX = p0.x + PLAYER_WIDTH / 2;
+      this.cameraY = p0.y + PLAYER_HEIGHT / 2;
+    } else {
+      this.cameraX = 480;
+      this.cameraY = 270;
+    }
     this.localSmooth = { x: 0, y: 0, initialized: false };
     this.remoteInterp.clear();
     this.bulletCache.clear();
