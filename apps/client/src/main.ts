@@ -2,7 +2,8 @@ import Phaser from "phaser";
 import { gameConfig } from "./game";
 import { GameScene } from "./scenes/GameScene";
 
-import { NetworkManager, type RoomInfo } from "./net/NetworkManager";
+import { NetworkManager, type RoomInfo, type GameMode } from "./net/NetworkManager";
+import { initWalletKit, tryReconnectWallet, connectWallet, disconnectWallet, getConnectedAddress, settleMatch } from "./stellar";
 
 interface MatchRecord {
   id: string;
@@ -14,6 +15,7 @@ interface MatchRecord {
   timestamp: number;
   proofStatus: "pending" | "proving" | "verified" | "settled";
   roomId: string;
+  mode?: GameMode;
 }
 
 // ── DOM elements ───────────────────────────────────────────────────────────────
@@ -21,6 +23,7 @@ interface MatchRecord {
 // Top bar (read-only after gate)
 const topBarAddress = document.getElementById("top-bar-address") as HTMLSpanElement;
 const topBarUsername = document.getElementById("top-bar-username") as HTMLSpanElement;
+const walletBtn = document.getElementById("btn-wallet") as HTMLButtonElement;
 const muteBtn = document.getElementById("btn-mute") as HTMLButtonElement;
 
 // Gate overlay elements
@@ -43,6 +46,8 @@ const roomListEl = document.getElementById("room-list") as HTMLDivElement;
 const lobbyStatus = document.getElementById("lobby-status") as HTMLDivElement;
 const matchHistoryList = document.getElementById("match-history-list") as HTMLDivElement;
 const leaderboardContent = document.getElementById("leaderboard-content") as HTMLDivElement;
+const modeCasualBtn = document.getElementById("btn-mode-casual") as HTMLButtonElement;
+const modeRankedBtn = document.getElementById("btn-mode-ranked") as HTMLButtonElement;
 
 // ── Phaser ─────────────────────────────────────────────────────────────────────
 
@@ -57,6 +62,9 @@ function getGameScene(): GameScene | null {
 let networkManager: NetworkManager | null = null;
 let onlineRoomId: string | null = null;
 let currentUsername = "";
+let currentMode: GameMode = "casual";
+let lastMatchMode: GameMode = "casual";
+let proofPollTimer: ReturnType<typeof setInterval> | null = null;
 
 // Auto-detect server: same host in production, localhost in dev
 const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -111,6 +119,72 @@ if (savedUsername) {
 gatePlayBtn.addEventListener("click", submitGateUsername);
 gateUsernameInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") submitGateUsername();
+});
+
+// ── Wallet Connect ──────────────────────────────────────────────────────────
+
+function truncateAddress(addr: string): string {
+  if (addr.length <= 12) return addr;
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+}
+
+function updateWalletUI() {
+  const addr = getConnectedAddress();
+  if (addr) {
+    topBarAddress.textContent = truncateAddress(addr);
+    walletBtn.textContent = "Disconnect";
+    walletBtn.classList.add("btn-warn");
+    walletBtn.classList.remove("btn-primary");
+    modeRankedBtn.classList.remove("locked");
+    networkManager?.sendSetWallet(addr);
+  } else {
+    topBarAddress.textContent = "";
+    walletBtn.textContent = "Connect Wallet";
+    walletBtn.classList.remove("btn-warn");
+    walletBtn.classList.add("btn-primary");
+    if (currentMode === "ranked") {
+      setMode("casual");
+    }
+    modeRankedBtn.classList.add("locked");
+  }
+}
+
+walletBtn.addEventListener("click", async () => {
+  if (getConnectedAddress()) {
+    disconnectWallet();
+  } else {
+    await connectWallet();
+  }
+});
+
+window.addEventListener("walletChanged", () => {
+  updateWalletUI();
+});
+
+// Init kit and try silent reconnect
+initWalletKit();
+tryReconnectWallet().then(() => {
+  updateWalletUI();
+}).catch(() => {});
+
+// ── Mode Toggle ───────────────────────────────────────────────────────────────
+
+function setMode(mode: GameMode) {
+  currentMode = mode;
+  modeCasualBtn.classList.toggle("active", mode === "casual");
+  modeRankedBtn.classList.toggle("active", mode === "ranked");
+}
+
+modeCasualBtn.addEventListener("click", () => {
+  setMode("casual");
+});
+
+modeRankedBtn.addEventListener("click", () => {
+  if (!getConnectedAddress()) {
+    lobbyStatus.textContent = "Connect wallet to play ranked.";
+    return;
+  }
+  setMode("ranked");
 });
 
 // ── Mute ──────────────────────────────────────────────────────────────────────
@@ -206,9 +280,13 @@ function renderRoomList(rooms: RoomInfo[]) {
 function createRoomElement(room: RoomInfo): HTMLDivElement {
   const el = document.createElement("div");
   el.className = "room-item";
+  const modeBadge = room.mode === "ranked"
+    ? `<span class="mode-badge ranked">Ranked</span>`
+    : `<span class="mode-badge casual">Casual</span>`;
   el.innerHTML = `
     <span>
       <span class="room-name">${escapeHtml(room.name)}</span>
+      ${modeBadge}
       <span class="room-code">${room.joinCode}</span>
     </span>
     <div class="room-info">
@@ -305,14 +383,20 @@ function renderMatchHistory(matches: MatchRecord[]) {
     const el = document.createElement("div");
     el.className = "match-item";
     const ago = formatTimeAgo(m.timestamp);
+    const modeBadge = m.mode === "ranked"
+      ? `<span class="mode-badge ranked">Ranked</span>`
+      : `<span class="mode-badge casual">Casual</span>`;
+    const showSettle = m.mode === "ranked" && m.proofStatus === "verified" && getConnectedAddress();
     el.innerHTML = `
       <div>
         <span class="match-players">${escapeHtml(m.player1)} vs ${escapeHtml(m.player2)}</span>
         <span class="match-score">${m.scores[0]}-${m.scores[1]}</span>
+        ${modeBadge}
       </div>
       <div class="match-item-meta">
         <span class="match-time">${ago}</span>
         <span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span>
+        ${showSettle ? `<button class="btn btn-sm btn-primary btn-settle" data-match-id="${m.id}">Settle</button>` : ""}
         <button class="btn btn-sm btn-replay" data-room-id="${m.roomId}">Replay</button>
       </div>
     `;
@@ -320,6 +404,12 @@ function renderMatchHistory(matches: MatchRecord[]) {
     if (replayBtn) {
       replayBtn.addEventListener("click", () => {
         startReplay(m.roomId);
+      });
+    }
+    const settleBtn = el.querySelector(".btn-settle");
+    if (settleBtn) {
+      settleBtn.addEventListener("click", () => {
+        handleSettleMatch(m.id);
       });
     }
     matchHistoryList.appendChild(el);
@@ -389,8 +479,9 @@ function connectToServer(url: string) {
       }
     },
 
-    onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds) {
+    onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode) {
       onlineRoomId = roomId;
+      lastMatchMode = mode;
 
       const scene = getGameScene();
       if (!scene) return;
@@ -425,8 +516,9 @@ function connectToServer(url: string) {
       if (scene) scene.startNewRound(seed, mapIndex, round);
     },
 
-    onEnded(winner, scores, roundWins, roomId) {
+    onEnded(winner, scores, roundWins, roomId, mode) {
       onlineRoomId = roomId;
+      lastMatchMode = mode;
       const scene = getGameScene();
       if (scene) scene.endOnlineMatch(winner);
 
@@ -455,6 +547,10 @@ function connectToServer(url: string) {
       if (currentUsername) {
         networkManager.sendSetUsername(currentUsername);
       }
+      const walletAddr = getConnectedAddress();
+      if (walletAddr) {
+        networkManager.sendSetWallet(walletAddr);
+      }
       openLobby();
     }
   }, 100);
@@ -468,24 +564,24 @@ function connectToServer(url: string) {
 quickplayBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
 
-  networkManager.sendQuickplay();
-  lobbyStatus.textContent = "Finding a match...";
+  networkManager.sendQuickplay(currentMode);
+  lobbyStatus.textContent = `Finding a ${currentMode} match...`;
   setLobbyButtons(false);
 });
 
 createPublicBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
 
-  networkManager.sendCreate(false);
-  lobbyStatus.textContent = "Creating public match...";
+  networkManager.sendCreate(false, currentMode);
+  lobbyStatus.textContent = `Creating ${currentMode} public match...`;
   setLobbyButtons(false);
 });
 
 createPrivateBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
 
-  networkManager.sendCreate(true);
-  lobbyStatus.textContent = "Creating private match...";
+  networkManager.sendCreate(true, currentMode);
+  lobbyStatus.textContent = `Creating ${currentMode} private match...`;
   setLobbyButtons(false);
 });
 
@@ -507,6 +603,71 @@ joinCodeInput.addEventListener("keydown", (e) => {
     joinCodeBtn.click();
   }
 });
+
+// ── Settlement Flow (Ranked) ─────────────────────────────────────────────────
+
+function startProofPolling(matchId: string) {
+  if (proofPollTimer) clearInterval(proofPollTimer);
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+
+  proofPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${origin}/api/matches/${matchId}/status`);
+      const data = await res.json();
+      if (data.proofStatus === "verified" || data.proofStatus === "settled") {
+        if (proofPollTimer) clearInterval(proofPollTimer);
+        proofPollTimer = null;
+        // Refresh match history to show updated status
+        if (activeTab === "history") fetchMatchHistory();
+      }
+    } catch {
+      // Network error, keep polling
+    }
+  }, 10000);
+
+  // Stop polling after 45 minutes
+  setTimeout(() => {
+    if (proofPollTimer) {
+      clearInterval(proofPollTimer);
+      proofPollTimer = null;
+    }
+  }, 45 * 60 * 1000);
+}
+
+async function handleSettleMatch(matchId: string) {
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+  const addr = getConnectedAddress();
+  if (!addr) {
+    lobbyStatus.textContent = "Connect wallet to settle on-chain.";
+    return;
+  }
+
+  try {
+    lobbyStatus.textContent = "Fetching proof...";
+    const proofRes = await fetch(`${origin}/api/matches/${matchId}/proof`);
+    if (!proofRes.ok) {
+      lobbyStatus.textContent = "Proof not available yet.";
+      return;
+    }
+    const proof = await proofRes.json();
+
+    lobbyStatus.textContent = "Signing settlement transaction...";
+    const numericId = parseInt(matchId.replace("match-", ""), 10);
+    const seal = new Uint8Array(Buffer.from(proof.seal, "hex"));
+    const journal = new Uint8Array(Buffer.from(proof.journal, "hex"));
+
+    await settleMatch(numericId, seal, journal);
+
+    // Notify server
+    await fetch(`${origin}/api/matches/${matchId}/settle`, { method: "POST" });
+    lobbyStatus.textContent = "Match settled on-chain!";
+    if (activeTab === "history") fetchMatchHistory();
+  } catch (err) {
+    lobbyStatus.textContent = `Settlement failed: ${(err as Error).message}`;
+  }
+}
 
 // ── Replay exit handler ──────────────────────────────────────────────────────
 

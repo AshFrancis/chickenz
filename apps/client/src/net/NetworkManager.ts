@@ -1,5 +1,7 @@
 import type { GameState, PlayerInput, PlayerState, Projectile, WeaponPickup } from "@chickenz/sim";
 
+export type GameMode = "casual" | "ranked";
+
 export interface RoomInfo {
   id: string;
   name: string;
@@ -7,6 +9,7 @@ export interface RoomInfo {
   players: number;
   joinCode: string;
   isPrivate: boolean;
+  mode: GameMode;
 }
 
 // Wire types for JSON messages from the server
@@ -62,6 +65,7 @@ interface ServerMessage {
   mapIndex?: number;
   totalRounds?: number;
   round?: number;
+  mode?: GameMode;
   // State fields (inlined when type === "state")
   tick?: number;
   players?: RawPlayerState[];
@@ -77,11 +81,11 @@ interface ServerMessage {
 
 export interface NetworkCallbacks {
   onWaiting: (roomId: string, roomName: string, joinCode: string) => void;
-  onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number) => void;
+  onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number, mode: GameMode) => void;
   onState: (state: GameState) => void;
   onRoundEnd: (round: number, winner: number, roundWins: [number, number]) => void;
   onRoundStart: (round: number, seed: number, mapIndex: number) => void;
-  onEnded: (winner: number, scores: [number, number], roundWins: [number, number], roomId: string) => void;
+  onEnded: (winner: number, scores: [number, number], roundWins: [number, number], roomId: string, mode: GameMode) => void;
   onLobby: (rooms: RoomInfo[]) => void;
   onError: (message: string) => void;
   onDisconnect: () => void;
@@ -125,6 +129,7 @@ export class NetworkManager {
             msg.usernames ?? ["", ""],
             msg.mapIndex ?? 0,
             msg.totalRounds ?? 3,
+            msg.mode ?? "casual",
           );
           break;
         case "state":
@@ -137,7 +142,7 @@ export class NetworkManager {
           this.callbacks.onRoundStart(msg.round!, msg.seed!, msg.mapIndex ?? 0);
           break;
         case "ended":
-          this.callbacks.onEnded(msg.winner!, msg.scores!, msg.roundWins ?? [0, 0], msg.roomId!);
+          this.callbacks.onEnded(msg.winner!, msg.scores!, msg.roundWins ?? [0, 0], msg.roomId!, msg.mode ?? "casual");
           break;
         case "error":
           this.callbacks.onError(msg.message!);
@@ -166,12 +171,16 @@ export class NetworkManager {
     this.send({ type: "set_username", username });
   }
 
-  sendQuickplay() {
-    this.send({ type: "quickplay" });
+  sendQuickplay(mode: GameMode = "casual") {
+    this.send({ type: "quickplay", mode });
   }
 
-  sendCreate(isPrivate: boolean = false) {
-    this.send({ type: "create", isPrivate });
+  sendCreate(isPrivate: boolean = false, mode: GameMode = "casual") {
+    this.send({ type: "create", isPrivate, mode });
+  }
+
+  sendSetWallet(address: string) {
+    this.send({ type: "set_wallet", address });
   }
 
   sendJoinRoom(roomId: string) {

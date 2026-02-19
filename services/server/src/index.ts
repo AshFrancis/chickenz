@@ -1,6 +1,8 @@
 import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
-import type { ClientMessage, RoomInfo } from "./protocol";
+import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
+import { startMatchOnChain, settleMatchOnChain } from "./stellar";
+import { proveMatch } from "./prover";
 import { updateElo, getLeaderboard } from "./elo";
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -22,6 +24,8 @@ interface MatchRecord {
   timestamp: number;
   proofStatus: "pending" | "proving" | "verified" | "settled";
   roomId: string;
+  mode: GameMode;
+  proofArtifacts?: { seal: string; journal: string; imageId: string };
 }
 
 const matchHistory: MatchRecord[] = [];
@@ -61,13 +65,14 @@ function sendLobby(ws: ServerWebSocket<SocketData>) {
   }
 }
 
-function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, roomId: string, roomName: string, scores: [number, number]) {
-  // Update ELO if both players have usernames and sufficient input activity
-  if (sockets.length === 2 && winner >= 0 && winner <= 1) {
+function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) {
+  const room = rooms.get(roomId);
+
+  // Only update ELO for ranked matches with sufficient input activity
+  if (mode === "ranked" && sockets.length === 2 && winner >= 0 && winner <= 1) {
     const winnerName = sockets[winner]?.data.username;
     const loserName = sockets[1 - winner]?.data.username;
     if (winnerName && loserName) {
-      const room = rooms.get(roomId);
       const activity = room?.getInputActivity() ?? [0, 0];
       const MIN_INPUT_CHANGES = 30;
       if (activity[0] >= MIN_INPUT_CHANGES && activity[1] >= MIN_INPUT_CHANGES) {
@@ -86,12 +91,37 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       winner,
       scores,
       timestamp: Date.now(),
-      proofStatus: "pending",
+      proofStatus: mode === "ranked" ? "pending" : "pending",
       roomId,
+      mode,
     };
     matchHistory.unshift(record);
     if (matchHistory.length > MAX_MATCH_HISTORY) {
       matchHistory.pop();
+    }
+
+    // Trigger proving for ranked matches
+    if (mode === "ranked" && room) {
+      record.proofStatus = "proving";
+      const transcript = room.getTranscript();
+      proveMatch(record.id, transcript).then((artifacts) => {
+        if (artifacts) {
+          record.proofArtifacts = artifacts;
+          record.proofStatus = "verified";
+          // Auto-settle if admin key is configured
+          if (process.env.STELLAR_ADMIN_SECRET) {
+            const sealBytes = new Uint8Array(Buffer.from(artifacts.seal, "hex"));
+            const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
+            const numericId = parseInt(record.id.replace("match-", ""), 10);
+            settleMatchOnChain(numericId, sealBytes, journalBytes)
+              .then(() => { record.proofStatus = "settled"; })
+              .catch((err) => { console.error("Auto-settle failed:", err); });
+          }
+        }
+      }).catch((err) => {
+        console.error("Proving failed:", err);
+        record.proofStatus = "pending";
+      });
     }
   }
 
@@ -179,7 +209,7 @@ const server = Bun.serve<SocketData>({
     // WebSocket upgrade
     if (url.pathname === "/ws") {
       const upgraded = server.upgrade(req, {
-        data: { roomId: null, playerId: -1, username: "" },
+        data: { roomId: null, playerId: -1, username: "", walletAddress: "" },
       });
       if (!upgraded) {
         return new Response("WebSocket upgrade failed", {
@@ -226,6 +256,18 @@ const server = Bun.serve<SocketData>({
         return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
       }
       return Response.json({ id: record.id, proofStatus: record.proofStatus }, { headers: corsHeaders });
+    }
+    const matchProofMatch = url.pathname.match(/^\/api\/matches\/(.+)\/proof$/);
+    if (matchProofMatch) {
+      const matchId = matchProofMatch[1]!;
+      const record = matchHistory.find((m) => m.id === matchId);
+      if (!record) {
+        return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
+      }
+      if (!record.proofArtifacts) {
+        return Response.json({ error: "Proof not yet available" }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json(record.proofArtifacts, { headers: corsHeaders });
     }
     if (req.method === "POST") {
       const proveMatch = url.pathname.match(/^\/api\/matches\/(.+)\/prove$/);
@@ -311,6 +353,15 @@ const server = Bun.serve<SocketData>({
         return;
       }
 
+      // ── Set wallet address ──────────────────────────────────
+      if (msg.type === "set_wallet") {
+        const addr = ((msg as any).address ?? "").trim();
+        if (addr && addr.length > 0) {
+          ws.data.walletAddress = addr;
+        }
+        return;
+      }
+
       // ── Create room ─────────────────────────────────────
       if (msg.type === "create") {
         if (ws.data.roomId) {
@@ -319,9 +370,10 @@ const server = Bun.serve<SocketData>({
         }
 
         const isPrivate = !!msg.isPrivate;
+        const mode: GameMode = (msg as any).mode === "ranked" ? "ranked" : "casual";
         const name = isPrivate ? "Private Match" : "Public Match";
         const roomId = generateRoomId();
-        const room = new GameRoom(roomId, name, ws, isPrivate);
+        const room = new GameRoom(roomId, name, ws, isPrivate, mode);
         room.onEnded = returnToLobby;
         rooms.set(roomId, room);
         lobbySockets.delete(ws);
@@ -384,10 +436,12 @@ const server = Bun.serve<SocketData>({
           return;
         }
 
-        // Find first waiting PUBLIC room
+        const mode: GameMode = (msg as any).mode === "ranked" ? "ranked" : "casual";
+
+        // Find first waiting PUBLIC room with matching mode
         let matched = false;
         for (const room of rooms.values()) {
-          if (room.isWaiting() && !room.isPrivate) {
+          if (room.isWaiting() && !room.isPrivate && room.mode === mode) {
             room.addPlayer(ws);
             lobbySockets.delete(ws);
             broadcastLobby();
@@ -398,7 +452,7 @@ const server = Bun.serve<SocketData>({
 
         if (!matched) {
           const roomId = generateRoomId();
-          const room = new GameRoom(roomId, "Quick Play", ws, false);
+          const room = new GameRoom(roomId, "Quick Play", ws, false, mode);
           room.onEnded = returnToLobby;
           rooms.set(roomId, room);
           lobbySockets.delete(ws);

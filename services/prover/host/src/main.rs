@@ -342,6 +342,7 @@ async fn run_boundless(fp_input: &FpProverInput) {
         .expect("Failed to build Boundless client");
 
     // 5. Submit proof request (monolithic guest, standalone Groth16)
+    // Using default pricing (SDK maximizes fulfillment chances)
     eprintln!("Submitting proof request to Boundless...");
     let request = client
         .new_request()
@@ -356,12 +357,15 @@ async fn run_boundless(fp_input: &FpProverInput) {
     eprintln!("Submitted! Request ID: {:x}", request_id);
     eprintln!("Expires at block: {}", expires_at);
     eprintln!("Waiting for proof generation (polling every 5s)...");
+    let boundless_start = Instant::now();
 
     // 6. Wait for fulfillment
     let fulfillment = client
         .wait_for_request_fulfillment(request_id, Duration::from_secs(5), expires_at)
         .await
         .expect("Proof generation failed or timed out");
+    let boundless_elapsed = boundless_start.elapsed();
+    eprintln!("Boundless proof fulfilled in {:.1}s", boundless_elapsed.as_secs_f64());
 
     // 7. Extract seal and journal
     let seal = fulfillment.seal.to_vec();

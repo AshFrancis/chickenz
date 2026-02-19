@@ -2,19 +2,17 @@ import Phaser from "phaser";
 import { GameScene } from "./scenes/GameScene";
 
 /**
- * Compute canvas size to match the native physical pixel resolution of the
- * display area, so Phaser.Scale.FIT does ~1:1 CSS scaling (no blur).
- * DPR = ratio from 960x540 game-world coords to canvas pixels.
+ * Canvas fills the entire browser window at native pixel resolution.
+ * DPR is height-dominant: 540 world-units always fit vertically.
+ * VIEW_W/VIEW_H are the viewport dimensions in world coords.
  */
 const dpr = window.devicePixelRatio || 1;
-const maxW = window.innerWidth;
-const maxH = window.innerHeight - 16; // small padding
-const fitW = Math.min(maxW, maxH * (16 / 9));
-const fitH = fitW / (16 / 9);
-const canvasW = Math.round(fitW * dpr);
-const canvasH = Math.round(fitH * dpr);
+const canvasW = Math.round(window.innerWidth * dpr);
+const canvasH = Math.round(window.innerHeight * dpr);
 
-export const DPR = canvasW / 960;
+export const DPR = canvasH / 540;
+export const VIEW_W = canvasW / DPR; // 960 at 16:9, wider on ultrawide
+export const VIEW_H = 540;           // always 540
 
 export const gameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,

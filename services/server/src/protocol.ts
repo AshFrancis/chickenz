@@ -2,13 +2,22 @@ import type { PlayerInput } from "@chickenz/sim";
 
 // ── Client → Server ────────────────────────────────────────
 
+export type GameMode = "casual" | "ranked";
+
 export interface QuickplayMessage {
   type: "quickplay";
+  mode?: GameMode;
 }
 
 export interface CreateRoomMessage {
   type: "create";
   isPrivate?: boolean;
+  mode?: GameMode;
+}
+
+export interface SetWalletMessage {
+  type: "set_wallet";
+  address: string;
 }
 
 export interface JoinRoomMessage {
@@ -44,7 +53,8 @@ export type ClientMessage =
   | JoinCodeMessage
   | InputMessage
   | ListRoomsMessage
-  | SetUsernameMessage;
+  | SetUsernameMessage
+  | SetWalletMessage;
 
 // ── Server → Client ────────────────────────────────────────
 
@@ -63,6 +73,7 @@ export interface MatchedMessage {
   usernames: [string, string];
   mapIndex: number;
   totalRounds: number;
+  mode: GameMode;
 }
 
 export interface RoundEndMessage {
@@ -101,6 +112,7 @@ export interface EndedMessage {
   scores: [number, number];
   roundWins: [number, number];
   roomId: string;
+  mode: GameMode;
 }
 
 export interface RoomInfo {
@@ -110,6 +122,7 @@ export interface RoomInfo {
   players: number;
   joinCode: string;
   isPrivate: boolean;
+  mode: GameMode;
 }
 
 export interface LobbyMessage {

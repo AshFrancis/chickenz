@@ -43,10 +43,15 @@ fn main() {
         let mut journal_words = [0u32; CHUNK_PROOF_WORDS];
         risc0_zkvm::guest::env::read_slice(&mut journal_words);
 
-        // Convert to bytes for verification
-        let journal_bytes: Vec<u8> = journal_words.iter()
-            .flat_map(|w| w.to_le_bytes())
-            .collect();
+        // Convert to bytes for verification (fixed buffer, no heap)
+        let mut journal_bytes = [0u8; CHUNK_PROOF_WORDS * 4];
+        for (i, w) in journal_words.iter().enumerate() {
+            let b = w.to_le_bytes();
+            journal_bytes[i * 4] = b[0];
+            journal_bytes[i * 4 + 1] = b[1];
+            journal_bytes[i * 4 + 2] = b[2];
+            journal_bytes[i * 4 + 3] = b[3];
+        }
 
         // Verify this chunk's proof (zero cycles — resolved at recursion layer)
         risc0_zkvm::guest::env::verify(chunk_image_id, &journal_bytes)

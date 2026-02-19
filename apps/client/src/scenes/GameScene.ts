@@ -20,7 +20,7 @@ import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, Project
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
 import { InterpolationBuffer } from "../net/InterpolationBuffer";
-import { DPR } from "../game";
+import { DPR, VIEW_W, VIEW_H } from "../game";
 
 const INTERP_DELAY = 120; // ms — render remote player 120ms behind real-time
 
@@ -213,7 +213,7 @@ export class GameScene extends Phaser.Scene {
 
     // HUD texts (rendered on separate HUD camera, immune to zoom)
     this.timerText = this.add
-      .text(940, 10, "", {
+      .text(VIEW_W - 20, 10, "", {
         fontSize: "16px",
         color: "#ffffff",
         fontFamily: PIXEL_FONT,
@@ -223,7 +223,7 @@ export class GameScene extends Phaser.Scene {
       .setResolution(DPR)
       .setDepth(100);
     this.suddenDeathText = this.add
-      .text(480, 40, "SUDDEN DEATH", {
+      .text(VIEW_W / 2, 40, "SUDDEN DEATH", {
         fontSize: "16px",
         color: "#ff4444",
         fontFamily: PIXEL_FONT,
@@ -235,13 +235,13 @@ export class GameScene extends Phaser.Scene {
       .setDepth(100);
     this.inputManager.init(this.game.canvas);
 
-    this.controlsText = this.add.text(10, 515, "WASD + Space to play", {
+    this.controlsText = this.add.text(10, VIEW_H - 25, "WASD + Space to play", {
       fontSize: "8px",
       color: "#888888",
       fontFamily: PIXEL_FONT,
     }).setResolution(DPR).setDepth(100);
 
-    this.weaponText = this.add.text(480, 520, "", {
+    this.weaponText = this.add.text(VIEW_W / 2, VIEW_H - 20, "", {
       fontSize: "8px",
       color: "#ffffff",
       fontFamily: PIXEL_FONT,
@@ -267,7 +267,7 @@ export class GameScene extends Phaser.Scene {
     }).setResolution(DPR).setDepth(100);
 
     // Replay info text
-    this.replayInfoText = this.add.text(480, 530, "", {
+    this.replayInfoText = this.add.text(VIEW_W / 2, VIEW_H - 10, "", {
       fontSize: "8px",
       color: "#ffee58",
       fontFamily: PIXEL_FONT,
@@ -275,12 +275,15 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5, 1).setResolution(DPR).setDepth(100).setVisible(false);
 
     // Camera setup — main camera for game world, HUD camera for overlay
-    // DPR-scaled canvas: zoom by DPR so world coords stay 960x540
-    this.cameras.main.setBounds(0, 0, 960, 540);
+    // DPR-scaled canvas: zoom by DPR so world coords map to pixels
+    // Bounds extend beyond map so wider viewports can see background
+    const padX = VIEW_W / 2;
+    const padY = VIEW_H / 2;
+    this.cameras.main.setBounds(-padX, -padY, 960 + padX * 2, 540 + padY * 2);
     this.cameras.main.setZoom(DPR);
 
-    // HUD camera: fixed zoom at DPR, overlays on top
-    this.hudCamera = this.cameras.add(0, 0, 960 * DPR, 540 * DPR);
+    // HUD camera: fixed zoom at DPR, covers full canvas viewport
+    this.hudCamera = this.cameras.add(0, 0, Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
     this.hudCamera.setScroll(0, 0);
     this.hudCamera.setZoom(DPR);
 
@@ -319,6 +322,8 @@ export class GameScene extends Phaser.Scene {
       suddenDeathStartTick: 999999,
     };
     this.warmupState = createInitialState(this.warmupConfig);
+    // Banish player 2 off-screen so they don't absorb bullets or affect camera
+    this.banishWarmupPlayer2(this.warmupState);
     this.currState = this.warmupState;
     this.prevState = this.warmupState;
     this.config = this.warmupConfig;
@@ -345,6 +350,17 @@ export class GameScene extends Phaser.Scene {
 
   get isWarmup(): boolean {
     return this.warmupMode;
+  }
+
+  /** Move player 2 far off-screen so they can't absorb bullets or affect camera. */
+  private banishWarmupPlayer2(state: GameState) {
+    const p1 = state.players[1] as { x: number; y: number; vx: number; vy: number } | undefined;
+    if (p1) {
+      p1.x = -9999;
+      p1.y = -9999;
+      p1.vx = 0;
+      p1.vy = 0;
+    }
   }
 
   stopWarmup() {
@@ -638,6 +654,7 @@ export class GameScene extends Phaser.Scene {
           [1, NULL_INPUT],
         ]);
         this.warmupState = step(this.warmupState, inputs, this.warmupPrevInputs, this.warmupConfig);
+        this.banishWarmupPlayer2(this.warmupState);
         this.warmupPrevInputs = inputs;
       }
       if (this.warmupAccum > TICK_DT_MS * 2) this.warmupAccum = 0;
@@ -1027,7 +1044,7 @@ export class GameScene extends Phaser.Scene {
     } : remoteRaw;
 
     // Warmup or single-player: follow local player only
-    if (!localP || !remoteP) {
+    if (!localP || !remoteP || this.warmupMode) {
       if (localP) {
         const aliveLocal = !!(localP.stateFlags & PlayerStateFlag.Alive);
         const targetX = aliveLocal ? localP.x + PLAYER_WIDTH / 2 : 480;

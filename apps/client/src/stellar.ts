@@ -26,28 +26,47 @@ export function getConnectedAddress(): string | null {
 
 // ── Init stellar-wallets-kit v1 ─────────────────────────────────────────────
 
-export async function initWalletKit(walletButtonContainer: HTMLElement) {
+export function initWalletKit() {
   kit = new StellarWalletsKit({
     network: WalletNetwork.TESTNET,
     selectedWalletId: FREIGHTER_ID,
     modules: allowAllModules(),
   });
+}
 
-  await kit.createButton({
-    container: walletButtonContainer,
-    onConnect: ({ address }: { address: string }) => {
-      connectedAddress = address;
-      window.dispatchEvent(
-        new CustomEvent("walletChanged", { detail: { address } }),
-      );
-    },
-    onDisconnect: () => {
-      connectedAddress = null;
-      window.dispatchEvent(
-        new CustomEvent("walletChanged", { detail: { address: null } }),
-      );
-    },
+/** Open wallet selection modal, connect, and return address. */
+export async function connectWallet(): Promise<string | null> {
+  if (!kit) return null;
+
+  return new Promise((resolve) => {
+    kit!.openModal({
+      onWalletSelected: async (option: { id: string }) => {
+        try {
+          kit!.setWallet(option.id);
+          const { address } = await kit!.getAddress();
+          if (address) {
+            connectedAddress = address;
+            window.dispatchEvent(
+              new CustomEvent("walletChanged", { detail: { address } }),
+            );
+            resolve(address);
+          } else {
+            resolve(null);
+          }
+        } catch {
+          resolve(null);
+        }
+      },
+    });
   });
+}
+
+/** Disconnect wallet and clear state. */
+export function disconnectWallet() {
+  connectedAddress = null;
+  window.dispatchEvent(
+    new CustomEvent("walletChanged", { detail: { address: null } }),
+  );
 }
 
 /** Try to silently reconnect to Freighter if previously connected. */

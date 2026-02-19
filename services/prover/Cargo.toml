@@ -6,3 +6,9 @@ resolver = "2"
 
 [workspace.dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+# Optimize guest code for minimal cycles in zkVM
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1

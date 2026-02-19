@@ -16,13 +16,14 @@ import type {
   InputMap,
   PlayerInput,
 } from "@chickenz/sim";
-import type { StateMessage, EndedMessage, RoomInfo } from "./protocol";
+import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol";
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
 
 export interface SocketData {
   roomId: string | null;
   playerId: number;
   username: string;
+  walletAddress: string;
 }
 
 type GameSocket = ServerWebSocket<SocketData>;
@@ -37,6 +38,7 @@ export class GameRoom {
   readonly name: string;
   readonly joinCode: string;
   readonly isPrivate: boolean;
+  readonly mode: GameMode;
   private sockets: GameSocket[] = [];
   private state!: GameState;
   private config!: MatchConfig;
@@ -49,18 +51,19 @@ export class GameRoom {
   private timer: ReturnType<typeof setInterval> | null = null;
   private seed = 0;
   private _status: "waiting" | "playing" | "ended" = "waiting";
-  onEnded?: (sockets: GameSocket[], winner: number, roomId: string, roomName: string, scores: [number, number]) => void;
+  onEnded?: (sockets: GameSocket[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) => void;
 
   // Round system
   private currentRound = 0;
   private roundWins: [number, number] = [0, 0];
   private mapOrder: number[] = []; // indices into MAP_POOL
 
-  constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false) {
+  constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
     this.name = name;
     this.joinCode = generateJoinCode();
     this.isPrivate = isPrivate;
+    this.mode = mode;
 
     creator.data.roomId = id;
     creator.data.playerId = 0;
@@ -135,6 +138,7 @@ export class GameRoom {
       players: this.sockets.length,
       joinCode: this.joinCode,
       isPrivate: this.isPrivate,
+      mode: this.mode,
     };
   }
 
@@ -195,6 +199,7 @@ export class GameRoom {
         usernames,
         mapIndex: this.mapOrder[0],
         totalRounds: TOTAL_ROUNDS,
+        mode: this.mode,
       });
     }
 
@@ -379,6 +384,7 @@ export class GameRoom {
       scores,
       roundWins: [...this.roundWins] as [number, number],
       roomId: this.id,
+      mode: this.mode,
     };
 
     const json = JSON.stringify(endMsg);
@@ -394,7 +400,7 @@ export class GameRoom {
     }
 
     // Notify server to return sockets to lobby
-    this.onEnded?.(this.sockets, winner, this.id, this.name, scores);
+    this.onEnded?.(this.sockets, winner, this.id, this.name, scores, this.mode);
   }
 
   private broadcast(msg: object) {

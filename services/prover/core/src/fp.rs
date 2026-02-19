@@ -97,6 +97,7 @@ pub const WEAPON_ROTATION: [i8; WEAPON_COUNT] = [
 ];
 
 /// Weapon stats: [damage, speed(fp), cooldown, lifetime, ammo, pellets, splash_radius(fp), splash_damage]
+#[derive(Clone, Copy)]
 pub struct FpWeaponStats {
     pub damage: i32,
     pub speed: Fp,
@@ -108,32 +109,42 @@ pub struct FpWeaponStats {
     pub splash_damage: i32,
 }
 
+/// Const lookup table — indexed by weapon type (0..5). No branching, no function call overhead.
+pub const WEAPON_STATS: [FpWeaponStats; WEAPON_COUNT] = [
+    // 0: Pistol
+    FpWeaponStats {
+        damage: 20, speed: 2048 /*8.0*/, cooldown: 12, lifetime: 90,
+        ammo: 15, pellets: 1, splash_radius: 0, splash_damage: 0,
+    },
+    // 1: Shotgun
+    FpWeaponStats {
+        damage: 12, speed: 1792 /*7.0*/, cooldown: 30, lifetime: 45,
+        ammo: 6, pellets: 5, splash_radius: 0, splash_damage: 0,
+    },
+    // 2: Sniper
+    FpWeaponStats {
+        damage: 80, speed: 4096 /*16.0*/, cooldown: 60, lifetime: 120,
+        ammo: 3, pellets: 1, splash_radius: 0, splash_damage: 0,
+    },
+    // 3: Rocket
+    FpWeaponStats {
+        damage: 50, speed: 1280 /*5.0*/, cooldown: 45, lifetime: 120,
+        ammo: 4, pellets: 1, splash_radius: 10240 /*40.0*/, splash_damage: 25,
+    },
+    // 4: SMG
+    FpWeaponStats {
+        damage: 10, speed: 2304 /*9.0*/, cooldown: 5, lifetime: 60,
+        ammo: 40, pellets: 1, splash_radius: 0, splash_damage: 0,
+    },
+];
+
+/// Look up weapon stats by type. Falls back to Pistol for invalid values.
+#[inline(always)]
 pub fn fp_weapon_stats(weapon: i8) -> FpWeaponStats {
-    match weapon {
-        WEAPON_PISTOL => FpWeaponStats {
-            damage: 20, speed: 2048 /*8.0*/, cooldown: 12, lifetime: 90,
-            ammo: 15, pellets: 1, splash_radius: 0, splash_damage: 0,
-        },
-        WEAPON_SHOTGUN => FpWeaponStats {
-            damage: 12, speed: 1792 /*7.0*/, cooldown: 30, lifetime: 45,
-            ammo: 6, pellets: 5, splash_radius: 0, splash_damage: 0,
-        },
-        WEAPON_SNIPER => FpWeaponStats {
-            damage: 80, speed: 4096 /*16.0*/, cooldown: 60, lifetime: 120,
-            ammo: 3, pellets: 1, splash_radius: 0, splash_damage: 0,
-        },
-        WEAPON_ROCKET => FpWeaponStats {
-            damage: 50, speed: 1280 /*5.0*/, cooldown: 45, lifetime: 120,
-            ammo: 4, pellets: 1, splash_radius: 10240 /*40.0*/, splash_damage: 25,
-        },
-        WEAPON_SMG => FpWeaponStats {
-            damage: 10, speed: 2304 /*9.0*/, cooldown: 5, lifetime: 60,
-            ammo: 40, pellets: 1, splash_radius: 0, splash_damage: 0,
-        },
-        _ => FpWeaponStats {
-            damage: 20, speed: 2048, cooldown: 12, lifetime: 90,
-            ammo: 15, pellets: 1, splash_radius: 0, splash_damage: 0,
-        },
+    if weapon >= 0 && (weapon as usize) < WEAPON_COUNT {
+        WEAPON_STATS[weapon as usize]
+    } else {
+        WEAPON_STATS[0] // fallback: Pistol
     }
 }
 
@@ -428,10 +439,9 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
 
 // -- Physics -----------------------------------------------------------------
 
-fn apply_input(p: &Player, buttons: u8, aim_x: i8) -> Player {
-    if p.state_flags & flag::ALIVE == 0 {
-        return *p;
-    }
+#[inline(always)]
+fn apply_input_mut(p: &mut Player, buttons: u8, aim_x: i8) {
+    if p.state_flags & flag::ALIVE == 0 { return; }
 
     let mut target_vx: Fp = 0;
     if buttons & button::LEFT != 0 {
@@ -441,88 +451,80 @@ fn apply_input(p: &Player, buttons: u8, aim_x: i8) -> Player {
         target_vx += PLAYER_SPEED;
     }
 
-    let mut vx = p.vx;
     if target_vx != 0 {
-        if vx < target_vx {
-            vx = (vx + ACCELERATION).min(target_vx);
-        } else if vx > target_vx {
-            vx = (vx - ACCELERATION).max(target_vx);
+        if p.vx < target_vx {
+            p.vx = (p.vx + ACCELERATION).min(target_vx);
+        } else if p.vx > target_vx {
+            p.vx = (p.vx - ACCELERATION).max(target_vx);
         }
-    } else if vx > 0 {
-        vx = (vx - DECELERATION).max(0);
-    } else if vx < 0 {
-        vx = (vx + DECELERATION).min(0);
+    } else if p.vx > 0 {
+        p.vx = (p.vx - DECELERATION).max(0);
+    } else if p.vx < 0 {
+        p.vx = (p.vx + DECELERATION).min(0);
     }
 
-    let mut vy = p.vy;
     if buttons & button::JUMP != 0 && p.grounded {
-        vy = JUMP_VELOCITY;
+        p.vy = JUMP_VELOCITY;
     }
 
-    let mut facing = p.facing;
     if aim_x > 0 {
-        facing = FACING_RIGHT;
+        p.facing = FACING_RIGHT;
     } else if aim_x < 0 {
-        facing = FACING_LEFT;
+        p.facing = FACING_LEFT;
     }
-
-    Player { vx, vy, facing, ..*p }
 }
 
-fn apply_gravity(p: &Player) -> Player {
-    if p.state_flags & flag::ALIVE == 0 {
-        return *p;
-    }
-    Player { vy: (p.vy + GRAVITY).min(MAX_FALL_SPEED), ..*p }
+#[inline(always)]
+fn apply_gravity_mut(p: &mut Player) {
+    if p.state_flags & flag::ALIVE == 0 { return; }
+    p.vy = (p.vy + GRAVITY).min(MAX_FALL_SPEED);
 }
 
-fn move_and_collide(p: &Player, map: &Map, arena_left: Fp, arena_right: Fp) -> Player {
-    if p.state_flags & flag::ALIVE == 0 {
-        return *p;
-    }
+#[inline(always)]
+fn move_and_collide_mut(p: &mut Player, map: &Map, arena_left: Fp, arena_right: Fp) {
+    if p.state_flags & flag::ALIVE == 0 { return; }
 
-    let mut x = p.x + p.vx;
-    let mut y = p.y + p.vy;
-    let mut vy = p.vy;
-    let mut grounded = false;
+    let prev_y = p.y;
+    p.x += p.vx;
+    p.y += p.vy;
+    p.grounded = false;
 
     for plat in &map.platforms {
-        let feet_before = p.y + PLAYER_HEIGHT;
-        let feet_after = y + PLAYER_HEIGHT;
+        let feet_before = prev_y + PLAYER_HEIGHT;
+        let feet_after = p.y + PLAYER_HEIGHT;
         let plat_top = plat.y;
 
         if feet_before <= plat_top
             && feet_after >= plat_top
-            && x + PLAYER_WIDTH > plat.x
-            && x < plat.x + plat.width
+            && p.x + PLAYER_WIDTH > plat.x
+            && p.x < plat.x + plat.width
         {
-            y = plat_top - PLAYER_HEIGHT;
-            vy = 0;
-            grounded = true;
+            p.y = plat_top - PLAYER_HEIGHT;
+            p.vy = 0;
+            p.grounded = true;
         }
     }
 
-    if x < arena_left {
-        x = arena_left;
+    if p.x < arena_left {
+        p.x = arena_left;
     }
-    if x + PLAYER_WIDTH > arena_right {
-        x = arena_right - PLAYER_WIDTH;
+    if p.x + PLAYER_WIDTH > arena_right {
+        p.x = arena_right - PLAYER_WIDTH;
     }
-    if y < 0 {
-        y = 0;
-        vy = 0;
+    if p.y < 0 {
+        p.y = 0;
+        p.vy = 0;
     }
-    if y + PLAYER_HEIGHT > map.height {
-        y = map.height - PLAYER_HEIGHT;
-        vy = 0;
-        grounded = true;
+    if p.y + PLAYER_HEIGHT > map.height {
+        p.y = map.height - PLAYER_HEIGHT;
+        p.vy = 0;
+        p.grounded = true;
     }
-
-    Player { x, y, vy, grounded, ..*p }
 }
 
 // -- Weapon pickup logic -----------------------------------------------------
 
+#[inline(always)]
 fn player_overlaps_pickup(p: &Player, pickup: &WeaponPickup) -> bool {
     pickup.x + PICKUP_RADIUS > p.x
         && pickup.x - PICKUP_RADIUS < p.x + PLAYER_WIDTH
@@ -530,6 +532,7 @@ fn player_overlaps_pickup(p: &Player, pickup: &WeaponPickup) -> bool {
         && pickup.y - PICKUP_RADIUS < p.y + PLAYER_HEIGHT
 }
 
+#[inline(always)]
 fn resolve_weapon_pickups(state: &mut State) {
     for pi in 0..state.pickup_count as usize {
         if state.weapon_pickups[pi].respawn_timer > 0 {
@@ -549,6 +552,7 @@ fn resolve_weapon_pickups(state: &mut State) {
     }
 }
 
+#[inline(always)]
 fn tick_pickup_timers(state: &mut State) {
     for pi in 0..state.pickup_count as usize {
         if state.weapon_pickups[pi].respawn_timer <= 0 { continue; }
@@ -563,6 +567,7 @@ fn tick_pickup_timers(state: &mut State) {
 // -- Projectiles -------------------------------------------------------------
 
 /// Spawn a single projectile from a player's position toward their aim direction.
+#[inline(always)]
 fn spawn_projectile(player: &Player, aim_x: i8, aim_y: i8, id: i32, weapon: i8, speed: Fp) -> Projectile {
     let (nx, ny) = if aim_x == 0 && aim_y == 0 {
         (player.facing * ONE, 0)
@@ -594,6 +599,7 @@ fn spawn_projectile(player: &Player, aim_x: i8, aim_y: i8, id: i32, weapon: i8, 
 
 /// Spawn weapon projectiles (handles shotgun multi-pellet spread).
 /// Returns number of projectiles spawned.
+#[inline(always)]
 fn spawn_weapon_projectiles(
     state: &mut State,
     player_idx: usize,
@@ -674,16 +680,19 @@ fn spawn_weapon_projectiles(
     spawned
 }
 
+#[inline(always)]
 fn is_out_of_bounds(proj: &Projectile, map: &Map, arena_left: Fp, arena_right: Fp) -> bool {
     let m: Fp = 50 << 8; // 50px in fixed-point
     proj.x < arena_left - m || proj.x > arena_right + m || proj.y < -m || proj.y > map.height + m
 }
 
+#[inline(always)]
 fn aabb_hit(px: Fp, py: Fp, rx: Fp, ry: Fp, rw: Fp, rh: Fp) -> bool {
     px >= rx && px <= rx + rw && py >= ry && py <= ry + rh
 }
 
 /// Apply rocket splash damage to all players within radius (Manhattan distance).
+#[inline(always)]
 fn apply_fp_splash_damage(
     ex: Fp, ey: Fp, owner_id: i32,
     players: &mut [Player; 2],
@@ -721,6 +730,7 @@ fn apply_fp_splash_damage(
 }
 
 /// Resolve projectile hits in-place. Returns kill list.
+#[inline(always)]
 fn resolve_hits_mut(state: &mut State) -> KillList {
     let mut hit_flags: [bool; MAX_PROJECTILES] = [false; MAX_PROJECTILES];
     let mut kills = KillList::new();
@@ -810,19 +820,11 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         }
     }
 
-    // 3. Apply input (in-place)
+    // 3. Apply input + gravity + move/collide (all in-place, no copies)
     for i in 0..2 {
-        state.players[i] = apply_input(&state.players[i], inputs[i].buttons, inputs[i].aim_x);
-    }
-
-    // 4. Gravity (in-place)
-    for i in 0..2 {
-        state.players[i] = apply_gravity(&state.players[i]);
-    }
-
-    // 5. Move + collide
-    for i in 0..2 {
-        state.players[i] = move_and_collide(&state.players[i], map, state.arena_left, state.arena_right);
+        apply_input_mut(&mut state.players[i], inputs[i].buttons, inputs[i].aim_x);
+        apply_gravity_mut(&mut state.players[i]);
+        move_and_collide_mut(&mut state.players[i], map, state.arena_left, state.arena_right);
     }
 
     // 6. Weapon pickup collision
@@ -879,10 +881,14 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     }
 
     // Check elimination — start linger instead of immediate match_over
-    let alive_count = state.players.iter().filter(|p| p.lives > 0).count();
+    let mut alive_count = 0i32;
+    let mut alive_id = -1i32;
+    for i in 0..2 {
+        if state.players[i].lives > 0 { alive_count += 1; alive_id = state.players[i].id; }
+    }
     if alive_count == 1 {
         state.death_linger_timer = DEATH_LINGER_TICKS;
-        state.winner = state.players.iter().find(|p| p.lives > 0).unwrap().id;
+        state.winner = alive_id;
     } else if alive_count == 0 {
         state.death_linger_timer = DEATH_LINGER_TICKS;
         state.winner = 0;
@@ -945,17 +951,22 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         }
 
         // Re-check elimination — use linger
-        let alive_after = state.players.iter().filter(|p| p.lives > 0).count();
+        let mut alive_after = 0i32;
+        let mut alive_after_id = -1i32;
+        for i in 0..2 {
+            if state.players[i].lives > 0 { alive_after += 1; alive_after_id = state.players[i].id; }
+        }
         if alive_after == 1 {
             state.death_linger_timer = DEATH_LINGER_TICKS;
-            state.winner = state.players.iter().find(|p| p.lives > 0).unwrap().id;
+            state.winner = alive_after_id;
         } else if alive_after == 0 {
             state.death_linger_timer = DEATH_LINGER_TICKS;
-            state.winner = state.players
-                .iter()
-                .find(|p| p.id != last_wall_kill)
-                .map(|p| p.id)
-                .unwrap_or(0);
+            // Give win to player who wasn't the last wall kill
+            let mut other_id = 0i32;
+            for i in 0..2 {
+                if state.players[i].id != last_wall_kill { other_id = state.players[i].id; break; }
+            }
+            state.winner = other_id;
         }
 
         if !state.match_over && state.death_linger_timer == 0 && progress >= ONE {
@@ -1026,6 +1037,72 @@ pub fn hash_seed(seed: u32) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(seed.to_le_bytes());
     h.finalize().into()
+}
+
+// -- Streaming sim + hash (single pass, zero heap allocation) ----------------
+
+/// Result of running the game simulation with streaming hash.
+pub struct StreamingResult {
+    pub state: State,
+    pub transcript_hash: [u8; 32],
+    pub seed_commit: [u8; 32],
+}
+
+/// Run the full simulation in a single pass over raw input bytes.
+/// Parses each tick's inputs, feeds them to a streaming SHA-256 hasher,
+/// and steps the sim — all without allocating any Vec.
+///
+/// `data` layout: [seed: 4 LE] [tick_count: 4 LE] [tick × 6 bytes]
+pub fn run_streaming(data: &[u8]) -> StreamingResult {
+    let seed = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let tick_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+
+    let map = arena_map();
+    let mut state = create_initial_state(seed, &map);
+    let mut hasher = Sha256::new();
+
+    let mut offset = 8;
+    for _ in 0..tick_count {
+        // Parse inputs directly from raw bytes (no intermediate Vec)
+        let tick_bytes = &data[offset..offset + 6];
+        let inputs = [
+            FpInput {
+                buttons: tick_bytes[0],
+                aim_x: tick_bytes[1] as i8,
+                aim_y: tick_bytes[2] as i8,
+            },
+            FpInput {
+                buttons: tick_bytes[3],
+                aim_x: tick_bytes[4] as i8,
+                aim_y: tick_bytes[5] as i8,
+            },
+        ];
+
+        // Feed raw tick bytes to hasher (same serialization as hash_transcript)
+        hasher.update(tick_bytes);
+
+        // Step the simulation
+        step_mut(&mut state, &inputs, &map);
+        if state.match_over {
+            // Hash remaining ticks for transcript integrity
+            offset += 6;
+            for remaining_offset in (offset..8 + tick_count * 6).step_by(6) {
+                hasher.update(&data[remaining_offset..remaining_offset + 6]);
+            }
+            break;
+        }
+
+        offset += 6;
+    }
+
+    let transcript_hash: [u8; 32] = hasher.finalize().into();
+    let seed_commit = hash_seed(seed);
+
+    StreamingResult {
+        state,
+        transcript_hash,
+        seed_commit,
+    }
 }
 
 // -- State serialization (for chunked proving) --------------------------------
@@ -1160,10 +1237,57 @@ pub fn decode_state(b: &[u8]) -> State {
 }
 
 /// Hash the full game state (for chunk boundary commitments).
+/// Hash state by feeding fields directly to SHA-256 (no intermediate Vec).
+/// MUST produce the same hash as encode_state → SHA-256 for compatibility.
 pub fn hash_state(s: &State) -> [u8; 32] {
-    let bytes = encode_state(s);
     let mut h = Sha256::new();
-    h.update(&bytes);
+    h.update(s.tick.to_le_bytes());
+    for p in &s.players {
+        h.update(p.id.to_le_bytes());
+        h.update(p.x.to_le_bytes());
+        h.update(p.y.to_le_bytes());
+        h.update(p.vx.to_le_bytes());
+        h.update(p.vy.to_le_bytes());
+        h.update(p.facing.to_le_bytes());
+        h.update(p.health.to_le_bytes());
+        h.update(p.lives.to_le_bytes());
+        h.update(p.shoot_cooldown.to_le_bytes());
+        h.update([p.grounded as u8]);
+        h.update(p.state_flags.to_le_bytes());
+        h.update(p.respawn_timer.to_le_bytes());
+        h.update([p.weapon as u8]);
+        h.update(p.ammo.to_le_bytes());
+    }
+    h.update([s.proj_count]);
+    for i in 0..s.proj_count as usize {
+        let pj = &s.projectiles[i];
+        h.update(pj.id.to_le_bytes());
+        h.update(pj.owner_id.to_le_bytes());
+        h.update(pj.x.to_le_bytes());
+        h.update(pj.y.to_le_bytes());
+        h.update(pj.vx.to_le_bytes());
+        h.update(pj.vy.to_le_bytes());
+        h.update(pj.lifetime.to_le_bytes());
+        h.update([pj.weapon as u8]);
+    }
+    h.update([s.pickup_count]);
+    for i in 0..s.pickup_count as usize {
+        let wp = &s.weapon_pickups[i];
+        h.update(wp.id.to_le_bytes());
+        h.update(wp.x.to_le_bytes());
+        h.update(wp.y.to_le_bytes());
+        h.update([wp.weapon as u8]);
+        h.update(wp.respawn_timer.to_le_bytes());
+    }
+    h.update(s.rng_state.to_le_bytes());
+    h.update(s.score[0].to_le_bytes());
+    h.update(s.score[1].to_le_bytes());
+    h.update(s.next_proj_id.to_le_bytes());
+    h.update(s.arena_left.to_le_bytes());
+    h.update(s.arena_right.to_le_bytes());
+    h.update([s.match_over as u8]);
+    h.update(s.winner.to_le_bytes());
+    h.update(s.death_linger_timer.to_le_bytes());
     h.finalize().into()
 }
 
@@ -1409,5 +1533,111 @@ mod tests {
         assert_eq!(state.weapon_pickups[0].weapon, decoded.weapon_pickups[0].weapon);
         assert_eq!(state.rng_state, decoded.rng_state);
         assert_eq!(state.winner, decoded.winner);
+    }
+
+    #[test]
+    fn streaming_matches_original() {
+        // Build a transcript with some combat inputs
+        let seed = 42u32;
+        let tick_count = 300u32;
+        let mut transcript = Vec::with_capacity(tick_count as usize);
+        let mut raw = Vec::with_capacity(8 + tick_count as usize * 6);
+        raw.extend_from_slice(&seed.to_le_bytes());
+        raw.extend_from_slice(&tick_count.to_le_bytes());
+
+        for t in 0..tick_count {
+            let p0 = FpInput {
+                buttons: if t % 3 == 0 { button::RIGHT | button::SHOOT } else { button::RIGHT },
+                aim_x: 1,
+                aim_y: 0,
+            };
+            let p1 = FpInput {
+                buttons: if t % 5 == 0 { button::LEFT | button::SHOOT } else { button::LEFT },
+                aim_x: -1,
+                aim_y: 0,
+            };
+            raw.push(p0.buttons);
+            raw.push(p0.aim_x as u8);
+            raw.push(p0.aim_y as u8);
+            raw.push(p1.buttons);
+            raw.push(p1.aim_x as u8);
+            raw.push(p1.aim_y as u8);
+            transcript.push([p0, p1]);
+        }
+
+        // Original three-step approach
+        let (orig_seed, orig_transcript) = decode_raw_input(&raw);
+        let map = arena_map();
+        let mut orig_state = create_initial_state(orig_seed, &map);
+        for tick_inputs in &orig_transcript {
+            step_mut(&mut orig_state, tick_inputs, &map);
+            if orig_state.match_over { break; }
+        }
+        let orig_hash = hash_transcript(&orig_transcript);
+        let orig_seed_commit = hash_seed(orig_seed);
+
+        // Streaming single-pass approach
+        let streaming = run_streaming(&raw);
+
+        // Must produce identical results
+        assert_eq!(streaming.state.tick, orig_state.tick);
+        assert_eq!(streaming.state.winner, orig_state.winner);
+        assert_eq!(streaming.state.match_over, orig_state.match_over);
+        assert_eq!(streaming.state.score, orig_state.score);
+        assert_eq!(streaming.state.players[0].x, orig_state.players[0].x);
+        assert_eq!(streaming.state.players[1].x, orig_state.players[1].x);
+        assert_eq!(streaming.state.players[0].lives, orig_state.players[0].lives);
+        assert_eq!(streaming.state.players[1].lives, orig_state.players[1].lives);
+        assert_eq!(streaming.transcript_hash, orig_hash);
+        assert_eq!(streaming.seed_commit, orig_seed_commit);
+    }
+
+    #[test]
+    fn streaming_early_exit_hashes_all_ticks() {
+        // Create inputs where match ends early (one player dies quickly)
+        // The streaming function must hash ALL tick bytes, not just ticks played
+        let seed = 42u32;
+        let tick_count = 1800u32;
+        let mut raw = Vec::with_capacity(8 + tick_count as usize * 6);
+        raw.extend_from_slice(&seed.to_le_bytes());
+        raw.extend_from_slice(&tick_count.to_le_bytes());
+
+        // All idle inputs
+        for _ in 0..tick_count {
+            raw.extend_from_slice(&[0u8; 6]);
+        }
+
+        let streaming = run_streaming(&raw);
+
+        // Original approach for comparison
+        let (_, orig_transcript) = decode_raw_input(&raw);
+        let orig_hash = hash_transcript(&orig_transcript);
+        assert_eq!(streaming.transcript_hash, orig_hash);
+    }
+
+    #[test]
+    fn streaming_hash_state_matches_encode() {
+        // Run a short sim and verify streaming hash_state == encode_state → SHA-256
+        let map = arena_map();
+        let mut state = create_initial_state(42, &map);
+        let inputs = [
+            FpInput { buttons: button::RIGHT | button::SHOOT, aim_x: 1, aim_y: 0 },
+            FpInput { buttons: button::LEFT, aim_x: -1, aim_y: 0 },
+        ];
+        // Run several ticks to get non-trivial state
+        for _ in 0..100 {
+            step_mut(&mut state, &inputs, &map);
+        }
+
+        // Old approach: encode_state → Vec → SHA-256
+        let encoded = encode_state(&state);
+        let mut h = Sha256::new();
+        h.update(&encoded);
+        let old_hash: [u8; 32] = h.finalize().into();
+
+        // New approach: streaming hash_state
+        let new_hash = hash_state(&state);
+
+        assert_eq!(old_hash, new_hash);
     }
 }

@@ -45,6 +45,9 @@ importers:
       '@chickenz/sim':
         specifier: workspace:*
         version: link:../../packages/sim
+      '@stellar/stellar-sdk':
+        specifier: ^13.1.0
+        version: 13.3.0
     devDependencies:
       '@types/bun':
         specifier: ^1.2.0
