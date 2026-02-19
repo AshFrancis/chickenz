@@ -532,8 +532,8 @@
         <div id="top-bar">
           <div></div>
           <div id="top-bar-right">
-            <button id="btn-wallet" class="btn btn-sm" title="Connect Stellar wallet">Connect Wallet</button>
-            <span id="top-bar-address"></span>
+            <button id="btn-wallet" class="btn btn-sm" title="Connect Stellar wallet" style="display:none">Connect Wallet</button>
+            <span id="top-bar-address" style="display:none"></span>
             <span id="top-bar-username"></span>
             <button id="btn-mute" class="btn-icon" title="Toggle mute" aria-label="Toggle audio">&#128266;</button>
           </div>
@@ -575,11 +575,11 @@
             <h2>CHICKENZ</h2>
           </div>
           <div id="lobby-actions">
-            <div class="mode-toggle">
+            <!-- Ranked mode hidden for demo -->
+            <div class="mode-toggle" style="display:none">
               <button id="btn-mode-casual" class="btn-mode active">Casual</button>
               <button id="btn-mode-ranked" class="btn-mode locked">Ranked</button>
             </div>
-            <span class="lobby-divider">|</span>
             <button id="btn-quickplay" class="btn btn-primary">Quick Play</button>
             <span class="lobby-divider">|</span>
             <button id="btn-create-public" class="btn btn-primary">Create Public</button>
