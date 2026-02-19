@@ -463,19 +463,26 @@ export class GameScene extends Phaser.Scene {
     this.explosions = [];
     this.prediction = new PredictionManager(initial, this.config, this.localPlayerId);
     this.predictionAccum = 0;
-    this.currentZoom = 1.0;
     // Snap camera to midpoint between both players so they're visible immediately
     const p0 = initial.players[0];
     const p1 = initial.players[1];
     if (p0 && p1) {
       this.cameraX = (p0.x + p1.x) / 2 + PLAYER_WIDTH / 2;
       this.cameraY = (p0.y + p1.y) / 2 + PLAYER_HEIGHT / 2;
+      // Start at correct zoom for narrow viewports
+      const PAD = 80;
+      const needW = Math.abs(p0.x - p1.x) + PLAYER_WIDTH + PAD * 2;
+      const needH = Math.abs(p0.y - p1.y) + PLAYER_HEIGHT + PAD * 2;
+      const fitZoom = Math.min(VIEW_W / needW, VIEW_H / needH);
+      this.currentZoom = Math.min(1.0, fitZoom);
     } else if (p0) {
       this.cameraX = p0.x + PLAYER_WIDTH / 2;
       this.cameraY = p0.y + PLAYER_HEIGHT / 2;
+      this.currentZoom = 1.0;
     } else {
       this.cameraX = 480;
       this.cameraY = 270;
+      this.currentZoom = 1.0;
     }
     this.localSmooth = { x: 0, y: 0, initialized: false };
     this.remoteInterp.clear();
@@ -1084,6 +1091,13 @@ export class GameScene extends Phaser.Scene {
       targetZoom = dist < 250 ? 1.3 : dist > 500 ? 1.0 : lerp(1.3, 1.0, (dist - 250) / 250);
       targetX = (localP.x + remoteP.x) / 2 + PLAYER_WIDTH / 2;
       targetY = (localP.y + remoteP.y) / 2 + PLAYER_HEIGHT / 2;
+
+      // Ensure both players fit in viewport (critical for narrow windows)
+      const PAD = 80; // pixels of padding around players
+      const needW = Math.abs(localP.x - remoteP.x) + PLAYER_WIDTH + PAD * 2;
+      const needH = Math.abs(localP.y - remoteP.y) + PLAYER_HEIGHT + PAD * 2;
+      const fitZoom = Math.min(VIEW_W / needW, VIEW_H / needH);
+      if (fitZoom < targetZoom) targetZoom = fitZoom;
     } else if (aliveLocal) {
       targetZoom = killZoom ? 1.5 : 1.0;
       targetX = localP.x + PLAYER_WIDTH / 2;
