@@ -24,7 +24,7 @@ interface MatchRecord {
 const topBarAddress = document.getElementById("top-bar-address") as HTMLSpanElement;
 const topBarUsername = document.getElementById("top-bar-username") as HTMLSpanElement;
 const walletBtn = document.getElementById("btn-wallet") as HTMLButtonElement;
-const muteBtn = document.getElementById("btn-mute") as HTMLButtonElement;
+const muteBtn = document.getElementById("btn-mute") as HTMLButtonElement | null;
 
 // Gate overlay elements
 const gateOverlay = document.getElementById("gate-overlay") as HTMLDivElement;
@@ -191,12 +191,13 @@ modeRankedBtn.addEventListener("click", () => {
 
 let isMuted = localStorage.getItem("chickenz-muted") === "true";
 function updateMuteButton() {
+  if (!muteBtn) return;
   muteBtn.innerHTML = isMuted ? "&#128264;" : "&#128266;";
   muteBtn.title = isMuted ? "Unmute" : "Mute";
 }
 updateMuteButton();
 
-muteBtn.addEventListener("click", () => {
+muteBtn?.addEventListener("click", () => {
   isMuted = !isMuted;
   localStorage.setItem("chickenz-muted", String(isMuted));
   updateMuteButton();
