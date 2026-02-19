@@ -76,7 +76,7 @@ fi
 if [ "$MODE" = "server" ] || [ "$MODE" = "both" ] || [ "$MODE" = "client" ]; then
   # Always restart server — it serves the client too
   log "Restarting server..."
-  ssh $SSH_OPTS $SERVER "source ~/.bashrc && cd $REMOTE_DIR && ln -sfn $REMOTE_DIR/packages/sim node_modules/@chickenz/sim && fuser -k 3000/tcp 2>/dev/null || true; sleep 1 && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 &"
+  ssh $SSH_OPTS $SERVER "source ~/.bashrc && cd $REMOTE_DIR && ln -sfn $REMOTE_DIR/packages/sim node_modules/@chickenz/sim && lsof -ti:3000 | xargs kill -9 2>/dev/null || true; sleep 2 && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & disown"
   sleep 2
   # Verify it started
   RUNNING=$(ssh $SSH_OPTS $SERVER "cat /tmp/chickenz-server.log 2>/dev/null | tail -1")
