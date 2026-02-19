@@ -938,24 +938,23 @@ export class GameScene extends Phaser.Scene {
     delta: number,
   ) {
     const activeIds = new Set<number>();
+    const localId = this.localPlayerId;
 
-    // Register bullets from prediction (local player's most up-to-date source)
-    if (predicted) {
-      for (const proj of predicted.projectiles) {
-        activeIds.add(proj.id);
-        if (!this.bulletCache.has(proj.id)) {
-          this.bulletCache.set(proj.id, {
-            x: proj.x, y: proj.y, vx: proj.vx, vy: proj.vy,
-            weapon: proj.weapon, ownerId: proj.ownerId,
-          });
-        }
-      }
+    // Server state: only take REMOTE-owned bullets (skip local — prediction owns those)
+    for (const proj of curr.projectiles) {
+      if (proj.ownerId === localId) continue;
+      activeIds.add(proj.id);
+      this.bulletCache.set(proj.id, {
+        x: proj.x, y: proj.y, vx: proj.vx, vy: proj.vy,
+        weapon: proj.weapon, ownerId: proj.ownerId,
+      });
     }
 
-    // Register bullets from server state (remote player's source)
-    for (const proj of curr.projectiles) {
-      activeIds.add(proj.id);
-      if (!this.bulletCache.has(proj.id)) {
+    // Prediction: take local-owned bullets (responsive, no server duplicates)
+    if (predicted) {
+      for (const proj of predicted.projectiles) {
+        if (proj.ownerId !== localId) continue;
+        activeIds.add(proj.id);
         this.bulletCache.set(proj.id, {
           x: proj.x, y: proj.y, vx: proj.vx, vy: proj.vy,
           weapon: proj.weapon, ownerId: proj.ownerId,

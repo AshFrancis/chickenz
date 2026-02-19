@@ -53,10 +53,31 @@ export class PredictionManager {
     this.lastConfirmedState = serverState;
     this.lastConfirmedTick = serverTick;
 
-    // Check if we need to reconcile
+    // Server is ahead or at same tick — accept server state but still
+    // protect local cooldown and projectile ownership (server may not
+    // have received our fire input yet, especially on low-latency/localhost).
     if (serverTick >= this.predictedTick) {
-      // Server is ahead or at same tick — just use server state
-      this.predictedState = serverState;
+      const sp = serverState.players[this.localPlayerId];
+      const pp = this.predictedState.players[this.localPlayerId];
+      const remoteProj = serverState.projectiles.filter(
+        p => p.ownerId !== this.localPlayerId,
+      );
+      const localProj = this.predictedState.projectiles.filter(
+        p => p.ownerId === this.localPlayerId,
+      );
+      let players = serverState.players;
+      if (sp && pp) {
+        players = serverState.players.map((p, i) =>
+          i === this.localPlayerId
+            ? { ...p, shootCooldown: pp.shootCooldown }
+            : p,
+        );
+      }
+      this.predictedState = {
+        ...serverState,
+        players,
+        projectiles: [...remoteProj, ...localProj],
+      };
       this.predictedTick = serverTick;
       this.prevInputs = new Map();
       return;
@@ -65,37 +86,79 @@ export class PredictionManager {
     const serverPlayer = serverState.players[this.localPlayerId];
     const predictedPlayer = this.predictedState.players[this.localPlayerId];
 
-    // Client-authoritative movement: never rollback or nudge position.
-    // Instead, merge server-authoritative fields (health, lives, weapon)
-    // into the predicted state. The only time we accept server position
-    // is on death (respawn teleport to spawn point).
+    // Server-authoritative position with smooth convergence.
+    // Nudge predicted position toward server each update so client
+    // never permanently diverges (e.g. grounded mismatch on platforms).
+    const DEAD_ZONE = 2;        // px — ignore tiny divergence
+    const NUDGE_FACTOR = 0.15;  // blend 15% toward server per update (~300ms convergence)
+    const SNAP_THRESHOLD = 60;  // px — teleport if way off
+
     if (serverPlayer && predictedPlayer) {
       const died = serverPlayer.lives < predictedPlayer.lives;
-      const corrected = died
-        ? { ...serverPlayer }  // died → accept full server state (respawn position)
-        : {
-            ...predictedPlayer,
-            health: serverPlayer.health,
-            lives: serverPlayer.lives,
-            weapon: serverPlayer.weapon,
-            ammo: serverPlayer.ammo,
-            shootCooldown: Math.min(predictedPlayer.shootCooldown, serverPlayer.shootCooldown),
-          };
+
+      let corrected;
+      if (died) {
+        // Died → accept full server state (respawn position)
+        corrected = { ...serverPlayer };
+      } else {
+        const dx = serverPlayer.x - predictedPlayer.x;
+        const dy = serverPlayer.y - predictedPlayer.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        let nx = predictedPlayer.x;
+        let ny = predictedPlayer.y;
+        let nvx = predictedPlayer.vx;
+        let nvy = predictedPlayer.vy;
+        let nGrounded = predictedPlayer.grounded;
+
+        if (dist > SNAP_THRESHOLD) {
+          // Way off — teleport to server position
+          nx = serverPlayer.x;
+          ny = serverPlayer.y;
+          nvx = serverPlayer.vx;
+          nvy = serverPlayer.vy;
+          nGrounded = serverPlayer.grounded;
+        } else if (dist > DEAD_ZONE) {
+          // Smooth nudge toward server
+          nx += dx * NUDGE_FACTOR;
+          ny += dy * NUDGE_FACTOR;
+          nvx += (serverPlayer.vx - predictedPlayer.vx) * NUDGE_FACTOR;
+          nvy += (serverPlayer.vy - predictedPlayer.vy) * NUDGE_FACTOR;
+          // Trust server grounded state to prevent gravity re-divergence
+          nGrounded = serverPlayer.grounded;
+        }
+
+        corrected = {
+          ...predictedPlayer,
+          x: nx,
+          y: ny,
+          vx: nvx,
+          vy: nvy,
+          grounded: nGrounded,
+          health: serverPlayer.health,
+          lives: serverPlayer.lives,
+          weapon: serverPlayer.weapon,
+          ammo: serverPlayer.ammo,
+          shootCooldown: predictedPlayer.shootCooldown,
+        };
+      }
+
       const players = this.predictedState.players.map((p, i) =>
         i === this.localPlayerId ? corrected : serverState.players[i] ?? p,
       );
-      // Keep local player's projectiles that haven't been confirmed by server yet.
-      // Without this, bullets flicker: they appear in prediction, vanish when
-      // reconciliation replaces projectiles with server state (which hasn't
-      // received the input yet at 120ms RTT), then reappear ~100ms later.
-      const serverProjIds = new Set(serverState.projectiles.map(p => p.id));
-      const pendingLocal = this.predictedState.projectiles.filter(
-        p => p.ownerId === this.localPlayerId && !serverProjIds.has(p.id),
+      // Split projectiles by ownership:
+      // - Remote-owned: server is authoritative (prediction doesn't have remote input)
+      // - Local-owned: prediction is authoritative (responsive, no ghost doubles)
+      const remoteProjectiles = serverState.projectiles.filter(
+        p => p.ownerId !== this.localPlayerId,
+      );
+      const localProjectiles = this.predictedState.projectiles.filter(
+        p => p.ownerId === this.localPlayerId,
       );
       this.predictedState = {
         ...this.predictedState,
         players,
-        projectiles: [...serverState.projectiles, ...pendingLocal],
+        projectiles: [...remoteProjectiles, ...localProjectiles],
         weaponPickups: serverState.weaponPickups,
         score: serverState.score,
         matchOver: serverState.matchOver,

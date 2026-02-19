@@ -28,7 +28,7 @@ export interface SocketData {
 
 type GameSocket = ServerWebSocket<SocketData>;
 
-const STATE_BROADCAST_INTERVAL = 2; // send state every 2nd tick (30Hz)
+const STATE_BROADCAST_INTERVAL = 1; // send state every tick (60Hz)
 const TOTAL_ROUNDS = 3;
 const WINS_NEEDED = 2;
 const ROUND_TRANSITION_MS = 1500; // 1.5s pause between rounds
