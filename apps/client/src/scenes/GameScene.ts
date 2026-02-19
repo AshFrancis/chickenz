@@ -937,24 +937,15 @@ export class GameScene extends Phaser.Scene {
     predicted: GameState | null | undefined,
     delta: number,
   ) {
+    // Use predicted state as single source of truth (rollback+replay
+    // already merges server state with local prediction correctly).
+    // Fall back to raw server state for replay mode or if no prediction.
+    const displayProj = (predicted ?? curr).projectiles;
     const activeIds = new Set<number>();
-    const localId = this.localPlayerId;
 
-    // Server state: only take REMOTE-owned bullets (skip local — prediction owns those)
-    for (const proj of curr.projectiles) {
-      if (proj.ownerId === localId) continue;
+    for (const proj of displayProj) {
       activeIds.add(proj.id);
-      this.bulletCache.set(proj.id, {
-        x: proj.x, y: proj.y, vx: proj.vx, vy: proj.vy,
-        weapon: proj.weapon, ownerId: proj.ownerId,
-      });
-    }
-
-    // Prediction: take local-owned bullets (responsive, no server duplicates)
-    if (predicted) {
-      for (const proj of predicted.projectiles) {
-        if (proj.ownerId !== localId) continue;
-        activeIds.add(proj.id);
+      if (!this.bulletCache.has(proj.id)) {
         this.bulletCache.set(proj.id, {
           x: proj.x, y: proj.y, vx: proj.vx, vy: proj.vy,
           weapon: proj.weapon, ownerId: proj.ownerId,
@@ -962,7 +953,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Remove bullets no longer in server or prediction state
+    // Remove bullets no longer in state
     for (const id of this.bulletCache.keys()) {
       if (!activeIds.has(id)) this.bulletCache.delete(id);
     }
