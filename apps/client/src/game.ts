@@ -8,7 +8,7 @@ import { GameScene } from "./scenes/GameScene";
  */
 const dpr = window.devicePixelRatio || 1;
 const maxW = window.innerWidth;
-const maxH = window.innerHeight - 60; // top bar
+const maxH = window.innerHeight - 16; // small padding
 const fitW = Math.min(maxW, maxH * (16 / 9));
 const fitH = fitW / (16 / 9);
 const canvasW = Math.round(fitW * dpr);

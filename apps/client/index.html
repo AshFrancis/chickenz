@@ -48,21 +48,25 @@
       ::-webkit-scrollbar-thumb { background: #444; }
       ::-webkit-scrollbar-thumb:hover { background: #666; }
 
-      /* Top bar */
+      /* Top bar — overlaid on game canvas */
       #top-bar {
-        width: 100%;
+        position: absolute;
+        top: 0; left: 0; right: 0;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 16px;
-        flex-shrink: 0;
+        padding: 6px 12px;
+        z-index: 60;
+        pointer-events: none;
+        background: linear-gradient(to bottom, rgba(10, 10, 20, 0.7) 0%, transparent 100%);
       }
+      #top-bar * { pointer-events: auto; }
       #top-bar h1 {
-        font-size: 22px;
+        font-size: 16px;
         color: #ffee58;
         font-weight: 700;
         letter-spacing: 4px;
-        text-shadow: 2px 2px 0 #c9a800, 4px 4px 0 #222;
+        text-shadow: 2px 2px 0 #c9a800, 3px 3px 0 #222;
       }
       #top-bar-right {
         display: flex;
@@ -84,14 +88,14 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 0 16px 16px;
+        padding: 8px;
         min-height: 0;
       }
 
-      /* Game container — 16:9 aspect ratio, responsive, pixel frame */
+      /* Game container — 16:9 aspect ratio, fills viewport */
       #game-container {
         width: 100%;
-        max-width: calc((100vh - 60px) * 16 / 9);
+        max-width: calc((100vh - 16px) * 16 / 9);
         aspect-ratio: 16 / 9;
         border: 4px solid #ffee58;
         box-shadow:
@@ -493,17 +497,16 @@
     </style>
   </head>
   <body>
-    <div id="top-bar">
-      <h1>CHICKENZ</h1>
-      <div id="top-bar-right">
-        <span id="top-bar-address"></span>
-        <span id="top-bar-username"></span>
-        <button id="btn-mute" class="btn-icon" title="Toggle mute" aria-label="Toggle audio">&#128266;</button>
-      </div>
-    </div>
-
     <div id="game-wrapper">
       <div id="game-container">
+        <div id="top-bar">
+          <h1>CHICKENZ</h1>
+          <div id="top-bar-right">
+            <span id="top-bar-address"></span>
+            <span id="top-bar-username"></span>
+            <button id="btn-mute" class="btn-icon" title="Toggle mute" aria-label="Toggle audio">&#128266;</button>
+          </div>
+        </div>
         <!-- Gate overlay: wallet + username before playing -->
         <div id="gate-overlay">
           <div id="gate-card">
