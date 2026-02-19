@@ -238,12 +238,11 @@ export class GameScene extends Phaser.Scene {
       align: "center",
     }).setOrigin(0.5, 1).setResolution(DPR).setDepth(100);
 
-    this.versionText = this.add.text(VIEW_W - 20, 30, "v4", {
-      fontSize: "8px",
-      color: "#555555",
+    this.versionText = this.add.text(10, 30, "v5", {
+      fontSize: "10px",
+      color: "#ff0000",
       fontFamily: PIXEL_FONT,
-      align: "right",
-    }).setOrigin(1, 0).setResolution(DPR).setDepth(100);
+    }).setResolution(DPR).setDepth(100);
 
     // Player name texts (rendered on main camera, move with players)
     for (let i = 0; i < 2; i++) {
