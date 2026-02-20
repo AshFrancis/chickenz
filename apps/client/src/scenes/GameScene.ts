@@ -504,7 +504,7 @@ export class GameScene extends Phaser.Scene {
     this.playing = false; // not a real match
     this.prediction = null;
     hideAnnounce();
-    this.suddenDeathText.setVisible(false);
+    this.suddenDeathText?.setVisible(false);
     this.currentZoom = 1.0;
     this.cameraX = 480;
     this.cameraY = 270;
@@ -516,8 +516,8 @@ export class GameScene extends Phaser.Scene {
     const codeEl = document.getElementById("warmup-code");
     if (codeEl) codeEl.textContent = joinCode;
     warmupEl?.classList.add("visible");
-    this.roundText.setVisible(false);
-    this.replayInfoText.setVisible(false);
+    this.roundText?.setVisible(false);
+    this.replayInfoText?.setVisible(false);
   }
 
   get isWarmup(): boolean {
@@ -685,7 +685,7 @@ export class GameScene extends Phaser.Scene {
             "terrain",
             frame,
           ).setDepth(0);
-          this.hudCamera.ignore(img);
+          this.hudCamera?.ignore(img);
           this.platformTiles.push(img);
         }
       }
