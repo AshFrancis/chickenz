@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { gameConfig } from "./game";
+import { gameConfig, recalcDimensions } from "./game";
 import { GameScene } from "./scenes/GameScene";
 
 import { NetworkManager, type RoomInfo, type GameMode } from "./net/NetworkManager";
@@ -58,23 +58,17 @@ function getGameScene(): GameScene | null {
 }
 
 // ── Resize handling ───────────────────────────────────────────────────────────
-// Phaser's internal resolution is fixed at creation. On resize, debounce and
-// reload so the canvas is recreated at the correct size. Only during warmup/lobby
-// — never during an active match (would disconnect WebSocket).
+// Recalculate DPR/VIEW_W, resize the Phaser canvas, then reposition HUD/cameras.
 
 let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 window.addEventListener("resize", () => {
   if (resizeTimer) clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
+    const { canvasW, canvasH } = recalcDimensions();
+    game.scale.resize(canvasW, canvasH);
     const scene = getGameScene();
-    // Only reload if not in an active match (would lose connection)
-    if (!scene || !scene.isPlaying) {
-      location.reload();
-    } else {
-      // During match: just let FIT mode rescale (slight letterboxing is OK)
-      scene.handleResize();
-    }
-  }, 500);
+    if (scene) scene.handleResize();
+  }, 200);
 });
 
 // ── Session state ──────────────────────────────────────────────────────────────

@@ -815,9 +815,32 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Handle browser window resize — let Phaser FIT mode rescale the canvas. */
+  /** Handle browser window resize — reposition HUD, update cameras, resize background. */
   handleResize() {
-    this.scale.refresh();
+    // Reposition HUD texts to new viewport edges
+    this.timerText.setPosition(VIEW_W - 20, 10).setResolution(DPR);
+    this.suddenDeathText.setPosition(VIEW_W / 2, this.suddenDeathText.y).setResolution(DPR);
+    this.controlsText.setPosition(10, VIEW_H - 25).setResolution(DPR);
+    this.weaponText.setPosition(VIEW_W / 2, VIEW_H - 20).setResolution(DPR);
+    this.roundText.setResolution(DPR);
+    this.replayInfoText.setPosition(VIEW_W / 2, VIEW_H - 10).setResolution(DPR);
+
+    // Update main camera bounds and zoom
+    const padX = VIEW_W / 2;
+    const padY = VIEW_H / 2;
+    this.cameras.main.setBounds(-padX, -padY, 960 + padX * 2, 540 + padY * 2);
+    this.cameras.main.setZoom(this.currentZoom * DPR);
+
+    // Update HUD camera viewport and zoom
+    if (this.hudCamera) {
+      this.hudCamera.setSize(Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
+      this.hudCamera.setZoom(DPR);
+    }
+
+    // Update background tile to cover new viewport
+    if (this.bgTile) {
+      this.bgTile.setSize(960 + VIEW_W, 540 + VIEW_H);
+    }
   }
 
   update(_time: number, delta: number) {
