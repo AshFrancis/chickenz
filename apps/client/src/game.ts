@@ -33,8 +33,7 @@ export const gameConfig: Phaser.Types.Core.GameConfig = {
   pixelArt: true,
   roundPixels: true,
   scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
+    mode: Phaser.Scale.NONE,
   },
   // NO Phaser physics — sim core handles everything
   scene: [GameScene],
