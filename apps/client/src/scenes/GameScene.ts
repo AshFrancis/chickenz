@@ -2060,7 +2060,7 @@ export class GameScene extends Phaser.Scene {
         if ((pp.stateFlags & PlayerStateFlag.Alive) && !(cp.stateFlags & PlayerStateFlag.Alive)) {
           this.playSound("death");
         }
-        if (cp.weapon !== null && pp.weapon === null) {
+        if (cp.weapon !== null && cp.weapon !== pp.weapon) {
           this.playSound("pickup");
         }
         // Jump: jumpsLeft decreased while alive
