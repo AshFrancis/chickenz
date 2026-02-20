@@ -1039,16 +1039,15 @@ export class GameScene extends Phaser.Scene {
           smooth.y = cp.y;
           smooth.initialized = true;
         }
-        const teleported = Math.abs(smooth.x - cp.x) > 60
-          || Math.abs(smooth.y - cp.y) > 60;
+        const teleported = Math.abs(smooth.x - cp.x) > 60;
         if (teleported) {
           smooth.x = cp.x;
-          smooth.y = cp.y;
         } else {
           smooth.x = smoothLerp(smooth.x, cp.x, 0.85, delta ?? 16.667);
-          // Snap Y on landing so character doesn't float above platform
-          smooth.y = cp.grounded ? cp.y : smoothLerp(smooth.y, cp.y, 0.85, delta ?? 16.667);
         }
+        // Snap Y — prediction is authoritative; lerping Y causes visible
+        // rebounce when reconciliation shifts the target by a few pixels.
+        smooth.y = cp.y;
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
