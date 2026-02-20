@@ -2039,9 +2039,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private detectAudioEvents(prev: GameState, curr: GameState) {
-    // New projectiles → shoot
+    // New projectiles → shoot (interrupt previous to avoid stacking on rapid-fire weapons)
     if (curr.projectiles.length > prev.projectiles.length) {
-      this.playSound("shoot");
+      this.playSoundInterrupt("shoot");
     }
 
     // Per-player events
