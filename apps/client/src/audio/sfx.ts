@@ -148,18 +148,32 @@ function matchEnd(c: AudioContext, vol: number) {
   });
 }
 
+// Pre-rendered SMG tick buffer — avoids creating new oscillator nodes per shot
+let smgBuffer: AudioBuffer | null = null;
+function getSmgBuffer(c: AudioContext): AudioBuffer {
+  if (smgBuffer && smgBuffer.sampleRate === c.sampleRate) return smgBuffer;
+  const duration = 0.02;
+  const len = Math.floor(c.sampleRate * duration);
+  const buf = c.createBuffer(1, len, c.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / c.sampleRate;
+    // Square wave sweeping 900→1200Hz over 20ms, with linear fade-out
+    const freq = 900 + (1200 - 900) * (t / duration);
+    const envelope = 1 - t / duration;
+    data[i] = (Math.sin(2 * Math.PI * freq * t) > 0 ? 1 : -1) * 0.4 * envelope;
+  }
+  smgBuffer = buf;
+  return buf;
+}
+
 function shootSmg(c: AudioContext, vol: number) {
-  // Very short high-pitched tick for rapid-fire SMG
-  const osc = c.createOscillator();
+  const src = c.createBufferSource();
+  src.buffer = getSmgBuffer(c);
   const gain = c.createGain();
-  osc.type = "square";
-  osc.frequency.setValueAtTime(900, c.currentTime);
-  osc.frequency.linearRampToValueAtTime(1200, c.currentTime + 0.02);
-  gain.gain.setValueAtTime(vol * 0.4, c.currentTime);
-  gain.gain.linearRampToValueAtTime(0, c.currentTime + 0.02);
-  osc.connect(gain).connect(c.destination);
-  osc.start();
-  osc.stop(c.currentTime + 0.02);
+  gain.gain.value = vol;
+  src.connect(gain).connect(c.destination);
+  src.start();
 }
 
 const SFX_MAP: Record<string, SFXDef> = {
