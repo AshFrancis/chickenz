@@ -99,21 +99,42 @@ export function moveAndCollide(
   let vy = p.vy;
   let grounded = false;
 
-  // Platform collision (one-way: top surface only)
+  // Platform collision (full AABB — all four sides)
+  let vx = p.vx;
   for (const plat of map.platforms) {
-    const feetBefore = p.y + PLAYER_HEIGHT;
-    const feetAfter = y + PLAYER_HEIGHT;
-    const platTop = plat.y;
-
+    // Check if player overlaps platform after movement
     if (
-      feetBefore <= platTop &&
-      feetAfter >= platTop &&
       x + PLAYER_WIDTH > plat.x &&
-      x < plat.x + plat.width
+      x < plat.x + plat.width &&
+      y + PLAYER_HEIGHT > plat.y &&
+      y < plat.y + plat.height
     ) {
-      y = platTop - PLAYER_HEIGHT;
-      vy = 0;
-      grounded = true;
+      // Determine smallest penetration axis to resolve
+      const overlapLeft = (x + PLAYER_WIDTH) - plat.x;
+      const overlapRight = (plat.x + plat.width) - x;
+      const overlapTop = (y + PLAYER_HEIGHT) - plat.y;
+      const overlapBottom = (plat.y + plat.height) - y;
+
+      const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+      if (minOverlap === overlapTop) {
+        // Landing on top
+        y = plat.y - PLAYER_HEIGHT;
+        vy = 0;
+        grounded = true;
+      } else if (minOverlap === overlapBottom) {
+        // Hitting from below (head bonk)
+        y = plat.y + plat.height;
+        vy = 0;
+      } else if (minOverlap === overlapLeft) {
+        // Hitting from left side
+        x = plat.x - PLAYER_WIDTH;
+        vx = 0;
+      } else {
+        // Hitting from right side
+        x = plat.x + plat.width;
+        vx = 0;
+      }
     }
   }
 
@@ -130,12 +151,13 @@ export function moveAndCollide(
     grounded = true;
   }
 
-  // Wall slide detection — airborne, falling, pressing into arena boundary
+  // Wall slide detection — airborne, falling, pressing into arena boundary or platform side
   let wallSliding = false;
   let wallDir = 0;
   if (!grounded && vy > 0) {
     const pressingLeft = !!(buttons & Button.Left);
     const pressingRight = !!(buttons & Button.Right);
+    // Arena walls
     if (x <= arenaLeft && pressingLeft) {
       wallSliding = true;
       wallDir = -1;
@@ -143,6 +165,26 @@ export function moveAndCollide(
     if (x + PLAYER_WIDTH >= arenaRight && pressingRight) {
       wallSliding = true;
       wallDir = 1;
+    }
+    // Platform sides
+    if (!wallSliding) {
+      for (const plat of map.platforms) {
+        // Player must be vertically overlapping the platform
+        if (y + PLAYER_HEIGHT > plat.y && y < plat.y + plat.height) {
+          // Pressing right into left side of platform
+          if (pressingRight && x + PLAYER_WIDTH >= plat.x && x + PLAYER_WIDTH <= plat.x + 2) {
+            wallSliding = true;
+            wallDir = 1;
+            break;
+          }
+          // Pressing left into right side of platform
+          if (pressingLeft && x <= plat.x + plat.width && x >= plat.x + plat.width - 2) {
+            wallSliding = true;
+            wallDir = -1;
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -154,5 +196,5 @@ export function moveAndCollide(
     jumpsLeft = 1;
   }
 
-  return { ...p, x, y, vy, grounded, wallSliding, wallDir, jumpsLeft };
+  return { ...p, x, y, vx, vy, grounded, wallSliding, wallDir, jumpsLeft };
 }

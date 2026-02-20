@@ -46,6 +46,7 @@ export async function connectWallet(): Promise<string | null> {
           const { address } = await kit!.getAddress();
           if (address) {
             connectedAddress = address;
+            localStorage.removeItem("chickenz-wallet-disconnected");
             window.dispatchEvent(
               new CustomEvent("walletChanged", { detail: { address } }),
             );
@@ -64,6 +65,7 @@ export async function connectWallet(): Promise<string | null> {
 /** Disconnect wallet and clear state. */
 export function disconnectWallet() {
   connectedAddress = null;
+  localStorage.setItem("chickenz-wallet-disconnected", "1");
   window.dispatchEvent(
     new CustomEvent("walletChanged", { detail: { address: null } }),
   );
@@ -72,6 +74,7 @@ export function disconnectWallet() {
 /** Try to silently reconnect to Freighter if previously connected. */
 export async function tryReconnectWallet(): Promise<boolean> {
   if (!kit) return false;
+  if (localStorage.getItem("chickenz-wallet-disconnected")) return false;
   try {
     kit.setWallet(FREIGHTER_ID);
     const { address } = await kit.getAddress();

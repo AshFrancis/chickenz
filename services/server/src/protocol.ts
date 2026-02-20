@@ -169,6 +169,9 @@ export interface SerializedPlayer {
   jumpsLeft: number;
   wallSliding: boolean;
   wallDir: number;
+  stompedBy: number | null;
+  stompingOn: number | null;
+  stompShakeProgress: number;
 }
 
 export interface SerializedProjectile {

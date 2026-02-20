@@ -24,6 +24,7 @@ export interface SocketData {
   playerId: number;
   username: string;
   walletAddress: string;
+  character: number; // chosen character index (0-3)
 }
 
 type GameSocket = ServerWebSocket<SocketData>;
@@ -108,9 +109,12 @@ export class GameRoom {
       this.inputChanges[playerId]++;
       this.lastButtonState[playerId] = incoming.buttons;
     }
-    if (msg.tick !== undefined && msg.tick > this.state.tick) {
+    if (msg.tick !== undefined && msg.tick > this.state.tick && msg.tick < this.state.tick + 120) {
       // Future tick — queue for exact tick alignment (prevents phantom edges)
-      this.inputQueues[playerId].set(msg.tick, incoming);
+      // Cap at 120 ticks ahead (~2s) to prevent memory abuse
+      if (this.inputQueues[playerId].size < 120) {
+        this.inputQueues[playerId].set(msg.tick, incoming);
+      }
     } else {
       // Current/past tick or no tick tag — apply immediately
       this.rawInput[playerId] = incoming;
@@ -191,11 +195,15 @@ export class GameRoom {
       }
     }
 
-    // Assign random characters: P1 random from 4, P2 random from remaining 3
+    // P1 keeps their chosen character; P2 gets theirs if it doesn't conflict, else random
     const NUM_CHARACTERS = 4;
-    const p1Char = Math.floor(Math.random() * NUM_CHARACTERS);
-    let p2Char = Math.floor(Math.random() * (NUM_CHARACTERS - 1));
-    if (p2Char >= p1Char) p2Char++;
+    const p1Char = this.sockets[0]?.data.character ?? Math.floor(Math.random() * NUM_CHARACTERS);
+    let p2Char = this.sockets[1]?.data.character ?? -1;
+    if (p2Char === p1Char || p2Char < 0 || p2Char >= NUM_CHARACTERS) {
+      // Conflict or no choice — assign random from remaining pool
+      p2Char = Math.floor(Math.random() * (NUM_CHARACTERS - 1));
+      if (p2Char >= p1Char) p2Char++;
+    }
     this.characterSlots = [p1Char, p2Char];
 
     // Notify both players with initial round info
@@ -257,7 +265,7 @@ export class GameRoom {
     const currentTick = this.state.tick + 1;
 
     // Apply tick-tagged inputs — aligns edge detection with client prediction
-    for (let id = 0; id < 2; id++) {
+    for (const id of [0, 1] as const) {
       const queued = this.inputQueues[id].get(currentTick);
       if (queued !== undefined) {
         this.accInput[id] = queued;
@@ -270,8 +278,12 @@ export class GameRoom {
       [1, this.accInput[1]],
     ]);
 
-    // Record for transcript
-    this.transcript.push([this.accInput[0], this.accInput[1]]);
+    // Record for transcript (strip Taunt bit — cosmetic only, not part of ZK proof)
+    const TAUNT_MASK = ~16;
+    this.transcript.push([
+      { ...this.accInput[0], buttons: this.accInput[0].buttons & TAUNT_MASK },
+      { ...this.accInput[1], buttons: this.accInput[1].buttons & TAUNT_MASK },
+    ]);
 
     this.state = step(this.state, inputs, this.prevInputs, this.config);
     this.prevInputs = inputs;
@@ -281,7 +293,7 @@ export class GameRoom {
     this.accInput[1] = { ...this.rawInput[1] };
 
     // Prune consumed/stale queue entries
-    for (let id = 0; id < 2; id++) {
+    for (const id of [0, 1] as const) {
       for (const [tick] of this.inputQueues[id]) {
         if (tick <= currentTick) this.inputQueues[id].delete(tick);
       }
@@ -326,6 +338,10 @@ export class GameRoom {
         jumpsLeft: p.jumpsLeft,
         wallSliding: p.wallSliding,
         wallDir: p.wallDir,
+        stompedBy: p.stompedBy,
+        stompingOn: p.stompingOn,
+        stompShakeProgress: p.stompShakeProgress,
+        stompCooldown: p.stompCooldown,
       })),
       projectiles: this.state.projectiles.map((proj) => ({
         id: proj.id,

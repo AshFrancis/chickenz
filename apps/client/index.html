@@ -72,9 +72,10 @@
         padding: 4px 10px;
       }
       #top-bar-address {
-        color: #66bb6a;
+        color: #ffffff;
         font-size: 14px;
         letter-spacing: 1px;
+        text-shadow: 1px 1px 0 #000, 2px 2px 0 rgba(0,0,0,0.3);
       }
       #top-bar-address:empty { display: none; }
       #top-bar-username {
@@ -493,6 +494,27 @@
         white-space: pre-line;
       }
 
+      /* Sudden death countdown (DOM overlay, guaranteed visible) */
+      #sudden-death-overlay {
+        display: none;
+        position: absolute;
+        top: 50px; left: 0;
+        width: 100%;
+        z-index: 160;
+        pointer-events: none;
+        text-align: center;
+      }
+      #sudden-death-overlay.visible { display: block; }
+      #sudden-death-text {
+        font-size: 20px;
+        font-weight: 700;
+        color: #ff4444;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+        font-family: 'Press Start 2P', 'Courier New', monospace;
+      }
+
       /* Warmup overlay (DOM, over canvas) */
       #warmup-overlay {
         display: none;
@@ -505,16 +527,16 @@
       }
       #warmup-overlay.visible { display: block; }
       #warmup-label {
-        font-size: 14px;
+        font-size: 10px;
         color: #fff;
         letter-spacing: 2px;
         text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-        margin-top: -12px;
+        margin-top: -32px;
       }
       #warmup-code-section {
         position: absolute;
-        top: 32px; right: 20px;
-        text-align: right;
+        top: 37px; left: 20px;
+        text-align: left;
       }
       #warmup-code-label {
         font-size: 10px;
@@ -524,13 +546,259 @@
         text-shadow: 0 2px 4px rgba(0,0,0,0.5);
       }
       #warmup-code {
-        font-size: 36px;
+        font-size: 24px;
         font-weight: 700;
         color: #ffee58;
         letter-spacing: 6px;
         text-shadow:
           2px 2px 0 #c9a800,
           4px 4px 0 #222;
+      }
+
+      /* Fullscreen button */
+      #btn-fullscreen {
+        background: none;
+        border: none;
+        color: #ccc;
+        font-size: 18px;
+        cursor: pointer;
+        line-height: 1;
+        padding: 2px 6px;
+      }
+      #btn-fullscreen:hover { color: #fff; }
+
+      /* Settings gear */
+      #btn-settings {
+        background: none;
+        border: none;
+        color: #ccc;
+        font-size: 20px;
+        cursor: pointer;
+        padding: 2px 6px;
+        line-height: 1;
+      }
+      #btn-settings:hover { color: #fff; }
+
+      /* Settings overlay */
+      #settings-overlay {
+        display: none;
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(10, 10, 20, 0.95);
+        z-index: 175;
+        align-items: center;
+        justify-content: center;
+      }
+      #settings-overlay.visible { display: flex; }
+      #settings-frame {
+        position: relative;
+        max-width: 500px;
+        width: 90%;
+        image-rendering: pixelated;
+        overflow: hidden;
+      }
+      .frame-tile {
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        background-image: url('/sprites/terrain.png');
+        background-repeat: no-repeat;
+        image-rendering: pixelated;
+        z-index: 1;
+      }
+      #settings-card {
+        position: relative;
+        max-height: 85vh;
+        overflow-y: auto;
+        padding: 24px;
+        margin: 12px;
+        background: #0d0d1a;
+        border: 2px solid #333;
+        z-index: 2;
+      }
+      #settings-card h2 {
+        font-size: 20px;
+        color: #ffee58;
+        text-shadow: 2px 2px 0 #c9a800;
+        margin-bottom: 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      #settings-close {
+        background: none;
+        border: none;
+        color: #888;
+        font-size: 20px;
+        cursor: pointer;
+        font-family: "Silkscreen", monospace;
+      }
+      #settings-close:hover { color: #fff; }
+      .settings-section {
+        margin-bottom: 16px;
+      }
+      .settings-section h3 {
+        font-size: 12px;
+        color: #ffa726;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        border-bottom: 1px solid #333;
+        padding-bottom: 4px;
+      }
+      .settings-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 0;
+        font-size: 12px;
+      }
+      .settings-row label {
+        color: #ccc;
+      }
+      .key-pair {
+        display: flex;
+        gap: 6px;
+      }
+      .key-btn {
+        background: #222;
+        border: 2px solid #555;
+        color: #ffee58;
+        padding: 4px 0;
+        font-family: "Silkscreen", monospace;
+        font-size: 12px;
+        cursor: pointer;
+        width: 72px;
+        text-align: center;
+        text-transform: uppercase;
+      }
+      .key-btn:hover { border-color: #888; }
+      .key-btn.listening {
+        border-color: #ffee58;
+        color: #fff;
+        animation: pulse-border 0.8s ease-in-out infinite;
+      }
+      @keyframes pulse-border {
+        0%, 100% { border-color: #ffee58; }
+        50% { border-color: #c9a800; }
+      }
+      .settings-slider {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .settings-slider input[type="range"] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 120px;
+        height: 6px;
+        background: #333;
+        border: 1px solid #555;
+        outline: none;
+        box-shadow: none;
+        padding: 0;
+      }
+      .settings-slider input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 14px;
+        height: 14px;
+        background: #ffee58;
+        border: 2px solid #c9a800;
+        cursor: pointer;
+      }
+      .settings-slider .slider-val {
+        color: #888;
+        font-size: 10px;
+        min-width: 28px;
+        text-align: right;
+      }
+      .settings-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .settings-check input[type="checkbox"] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        min-width: 16px;
+        min-height: 16px;
+        max-width: 16px;
+        max-height: 16px;
+        background: #222;
+        border: 2px solid #555;
+        cursor: pointer;
+        position: relative;
+        padding: 0;
+        margin: 0;
+        flex-shrink: 0;
+      }
+      .settings-check input[type="checkbox"]:checked {
+        background: #1a6b3c;
+        border-color: #2a9d5c;
+      }
+      .settings-check input[type="checkbox"]:checked::after {
+        content: "";
+        position: absolute;
+        top: 0px; left: 3px;
+        width: 4px; height: 8px;
+        border: solid #fff;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+      #btn-reset-keys {
+        margin-top: 8px;
+      }
+
+      /* Diamond transition overlay — uses rotated squares for perfect diamonds */
+      #transition-overlay {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        z-index: 190;
+        pointer-events: none;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        grid-template-rows: repeat(3, 1fr);
+        overflow: hidden;
+        visibility: hidden;
+      }
+      #transition-overlay.active {
+        visibility: visible;
+      }
+      .t-cell {
+        position: relative;
+        overflow: visible;
+      }
+      .t-cell::before {
+        content: '';
+        position: absolute;
+        top: 50%; left: 50%;
+        width: 50vmax; height: 50vmax;
+        background: #111122;
+        transform: translate(-50%, -50%) rotate(45deg) scale(0);
+        will-change: transform;
+      }
+      .t-cell.grow::before {
+        transform: translate(-50%, -50%) rotate(45deg) scale(1);
+        transition-property: transform;
+        transition-duration: 0.18s;
+        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        transition-delay: var(--td, 0ms);
+      }
+      .t-cell.pre-shrink::before {
+        transform: translate(-50%, -50%) rotate(45deg) scale(1);
+        transition: none !important;
+      }
+      .t-cell.shrink::before {
+        transform: translate(-50%, -50%) rotate(45deg) scale(0);
+        transition-property: transform;
+        transition-duration: 0.18s;
+        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        transition-delay: var(--td, 0ms);
       }
     </style>
   </head>
@@ -541,6 +809,9 @@
         <div id="top-bar">
           <div></div>
           <div id="top-bar-right">
+            <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
+            <button id="btn-mute" title="Toggle sound" style="background:none;border:none;cursor:pointer;padding:2px 6px;line-height:1;display:flex;align-items:center"><svg id="mute-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/></svg></button>
+            <button id="btn-settings" title="Settings">&#9881;</button>
             <button id="btn-wallet" class="btn btn-sm" title="Connect Stellar wallet">Connect Wallet</button>
             <span id="top-bar-address"></span>
             <span id="top-bar-username"></span>
@@ -568,6 +839,11 @@
           <div id="announce-text"></div>
         </div>
 
+        <!-- Sudden death countdown -->
+        <div id="sudden-death-overlay">
+          <span id="sudden-death-text"></span>
+        </div>
+
         <!-- Warmup overlay (DOM, crisp at any scale) -->
         <div id="warmup-overlay">
           <div id="warmup-label">WAITING FOR OPPONENT...</div>
@@ -575,6 +851,109 @@
             <div id="warmup-code-label">JOIN CODE</div>
             <div id="warmup-code"></div>
           </div>
+        </div>
+
+        <!-- Settings overlay -->
+        <div id="settings-overlay">
+          <div id="settings-frame">
+          <div id="settings-card">
+            <h2>SETTINGS <button id="settings-close">X</button></h2>
+
+            <div class="settings-section">
+              <h3>Profile</h3>
+              <div class="settings-row">
+                <label>Username</label>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <input type="text" id="settings-username" maxlength="7" spellcheck="false" autocomplete="off"
+                    style="width:80px;background:#222;border:2px solid #555;color:#fff;padding:4px 6px;font-size:12px;font-family:inherit;text-transform:uppercase;border-radius:0" />
+                  <button id="btn-save-username" class="btn btn-sm">Save</button>
+                </div>
+              </div>
+              <div id="settings-username-error" style="color:#ef5350;font-size:11px;text-align:right;min-height:14px"></div>
+            </div>
+
+            <div class="settings-section">
+              <h3>Controls</h3>
+              <div class="settings-row">
+                <label>Move Left</label>
+                <div class="key-pair">
+                  <button class="key-btn" data-action="left" data-slot="0">A</button>
+                  <button class="key-btn" data-action="left" data-slot="1">LEFT</button>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>Move Right</label>
+                <div class="key-pair">
+                  <button class="key-btn" data-action="right" data-slot="0">D</button>
+                  <button class="key-btn" data-action="right" data-slot="1">RIGHT</button>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>Jump</label>
+                <div class="key-pair">
+                  <button class="key-btn" data-action="jump" data-slot="0">W</button>
+                  <button class="key-btn" data-action="jump" data-slot="1">UP</button>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>Shoot</label>
+                <div class="key-pair">
+                  <button class="key-btn" data-action="shoot" data-slot="0">SPACE</button>
+                  <button class="key-btn" data-action="shoot" data-slot="1">MOUSE1</button>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>Taunt</label>
+                <div class="key-pair">
+                  <button class="key-btn" data-action="taunt" data-slot="0">S</button>
+                  <button class="key-btn" data-action="taunt" data-slot="1">DOWN</button>
+                </div>
+              </div>
+              <button id="btn-reset-keys" class="btn btn-sm">Reset Defaults</button>
+            </div>
+
+            <div class="settings-section">
+              <h3>Audio</h3>
+              <div class="settings-row">
+                <label>Mute All</label>
+                <div class="settings-check">
+                  <input type="checkbox" id="check-mute-all" />
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>Music</label>
+                <div class="settings-slider">
+                  <input type="range" id="slider-bgm" min="0" max="100" value="10" />
+                  <span class="slider-val" id="val-bgm">10</span>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>SFX</label>
+                <div class="settings-slider">
+                  <input type="range" id="slider-sfx" min="0" max="100" value="80" />
+                  <span class="slider-val" id="val-sfx">80</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>Display</h3>
+              <div class="settings-row">
+                <label>Dynamic Camera</label>
+                <div class="settings-check">
+                  <input type="checkbox" id="check-dynamic-zoom" checked />
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+
+        <!-- Diamond transition overlay -->
+        <div id="transition-overlay">
+          <div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div>
+          <div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div>
+          <div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div>
         </div>
 
         <!-- Lobby overlay -->

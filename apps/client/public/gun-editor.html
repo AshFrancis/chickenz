@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chickenz — Gun Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Silkscreen&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #080e0e; color: #ccc; font-family: 'Silkscreen', monospace;
+    display: flex; height: 100vh; overflow: hidden; font-size: 12px;
+  }
+  #gun-list {
+    width: 180px; background: #0d0d1a; border-right: 1px solid #333;
+    display: flex; flex-direction: column; padding: 8px; gap: 4px;
+  }
+  #gun-list h2 { color: #ffee58; font-size: 14px; margin-bottom: 8px; }
+  .gun-btn {
+    background: #1a1a2e; border: 2px solid #333; color: #ccc; padding: 8px;
+    cursor: pointer; font-family: inherit; font-size: 11px; text-align: left;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .gun-btn:hover { border-color: #555; }
+  .gun-btn.active { border-color: #ffee58; background: #222240; }
+  .gun-btn img { width: 32px; height: 16px; object-fit: contain; image-rendering: pixelated; }
+
+  #canvas-wrap {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; position: relative;
+  }
+  canvas { image-rendering: pixelated; border: 1px solid #333; }
+  #canvas-controls {
+    position: absolute; bottom: 12px; display: flex; gap: 12px; color: #888; font-size: 10px;
+  }
+  #canvas-controls label { display: flex; align-items: center; gap: 4px; }
+  #canvas-controls select, #canvas-controls input[type=checkbox] {
+    background: #1a1a2e; border: 1px solid #444; color: #ccc;
+    font-family: inherit; font-size: 10px; padding: 2px 4px;
+  }
+
+  #props {
+    width: 240px; background: #0d0d1a; border-left: 1px solid #333;
+    padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+  }
+  #props h2 { color: #ffee58; font-size: 14px; }
+  .prop-group { display: flex; flex-direction: column; gap: 6px; }
+  .prop-group h3 { color: #888; font-size: 11px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .prop-row { display: flex; align-items: center; gap: 8px; }
+  .prop-row label { width: 70px; color: #aaa; font-size: 11px; }
+  .prop-row input[type=range] { flex: 1; accent-color: #ffee58; }
+  .prop-row .val { width: 40px; text-align: right; color: #ffee58; font-size: 11px; }
+
+  #frame-bar {
+    display: flex; gap: 2px; align-items: center; flex-wrap: wrap;
+    margin-top: 4px;
+  }
+  .frame-cell {
+    width: 20px; height: 20px; background: #1a1a2e; border: 1px solid #333;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: #888; cursor: default;
+  }
+  .frame-cell.current { border-color: #ffee58; background: #222240; color: #ffee58; }
+
+  #export-bar {
+    position: absolute; top: 12px; right: 260px; display: flex; gap: 8px;
+  }
+  #export-bar button {
+    background: #ffee58; color: #080e0e; border: none; padding: 6px 12px;
+    font-family: inherit; font-size: 11px; cursor: pointer;
+  }
+  #export-bar button:hover { background: #fff176; }
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #ffee58; color: #080e0e; padding: 8px 16px; font-size: 12px;
+    opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="gun-list">
+  <h2>WEAPONS</h2>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="c" width="640" height="480"></canvas>
+  <div id="canvas-controls">
+    <label>Character:
+      <select id="char-select">
+        <option value="ninja-frog">Ninja Frog</option>
+        <option value="mask-dude">Mask Dude</option>
+        <option value="pink-man">Pink Man</option>
+        <option value="virtual-guy">Virtual Guy</option>
+      </select>
+    </label>
+    <label>Anim:
+      <select id="anim-select">
+        <option value="idle">Idle</option>
+        <option value="run">Run</option>
+        <option value="jump">Jump</option>
+        <option value="fall">Fall</option>
+      </select>
+    </label>
+    <label>Facing:
+      <select id="facing-select">
+        <option value="1">Right</option>
+        <option value="-1">Left</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="show-hitbox" checked> Hitbox</label>
+    <label><input type="checkbox" id="show-muzzle" checked> Muzzle</label>
+    <label><input type="checkbox" id="show-grid" checked> Grid</label>
+  </div>
+</div>
+
+<div id="props">
+  <h2>GUN CONFIG</h2>
+  <div class="prop-group">
+    <h3>Position Offset</h3>
+    <div class="prop-row">
+      <label>offsetX</label>
+      <input type="range" id="r-offsetX" min="-20" max="20" step="0.5" value="10">
+      <span class="val" id="v-offsetX">10</span>
+    </div>
+    <div class="prop-row">
+      <label>offsetY</label>
+      <input type="range" id="r-offsetY" min="-20" max="20" step="0.5" value="4">
+      <span class="val" id="v-offsetY">4</span>
+    </div>
+  </div>
+  <div class="prop-group">
+    <h3>Scale</h3>
+    <div class="prop-row">
+      <label>scale</label>
+      <input type="range" id="r-scale" min="0.1" max="1.5" step="0.05" value="0.5">
+      <span class="val" id="v-scale">0.50</span>
+    </div>
+  </div>
+  <div class="prop-group">
+    <h3>Muzzle (Shot Origin)</h3>
+    <div class="prop-row">
+      <label>muzzleX</label>
+      <input type="range" id="r-muzzleX" min="-10" max="40" step="0.5" value="16">
+      <span class="val" id="v-muzzleX">16</span>
+    </div>
+    <div class="prop-row">
+      <label>muzzleY</label>
+      <input type="range" id="r-muzzleY" min="-20" max="20" step="0.5" value="0">
+      <span class="val" id="v-muzzleY">0</span>
+    </div>
+  </div>
+  <div class="prop-group">
+    <h3>Bob (synced to anim frames)</h3>
+    <div class="prop-row">
+      <label>bobAmp</label>
+      <input type="range" id="r-bobAmplitude" min="0" max="4" step="0.1" value="1">
+      <span class="val" id="v-bobAmplitude">1.0</span>
+    </div>
+    <div id="frame-bar-wrap">
+      <h3 style="color:#888;font-size:11px;margin-top:8px;">Frame bob preview</h3>
+      <div id="frame-bar"></div>
+    </div>
+  </div>
+</div>
+
+<div id="export-bar">
+  <button id="btn-export-ts">Export TS</button>
+  <button id="btn-export-json">Export JSON</button>
+  <button id="btn-import-json">Import JSON</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const GUNS = [
+  { id: 0, name: "Pistol",  src: "/sprites/gun-pistol.png" },
+  { id: 1, name: "Shotgun", src: "/sprites/gun-shotgun.png" },
+  { id: 2, name: "Sniper",  src: "/sprites/gun-sniper.png" },
+  { id: 3, name: "Rocket",  src: "/sprites/gun-rocket.png" },
+  { id: 4, name: "SMG",     src: "/sprites/gun-smg.png" },
+];
+
+const CHARACTERS = ["ninja-frog", "mask-dude", "pink-man", "virtual-guy"];
+const ANIMS = {
+  "idle": { frames: 11, rate: 20 },
+  "run":  { frames: 12, rate: 20 },
+  "jump": { frames: 1,  rate: 20 },
+  "fall": { frames: 1,  rate: 20 },
+};
+
+const PLAYER_WIDTH = 24;
+const PLAYER_HEIGHT = 32;
+
+// Per-gun config (matches GameScene GUN_CONFIG)
+const gunConfigs = {};
+for (const g of GUNS) {
+  gunConfigs[g.id] = {
+    offsetX: 10, offsetY: 4, scale: 0.5,
+    muzzleX: 16, muzzleY: 0,
+    bobAmplitude: 1.0,
+  };
+}
+
+let selectedGunId = 0;
+let facing = 1;
+
+// ── Image loading ────────────────────────────────────────────────────
+const gunImages = {};
+const charSheets = {};
+let loadCount = 0;
+let totalLoads = 0;
+
+function onLoad() {
+  loadCount++;
+  if (loadCount >= totalLoads) requestAnimationFrame(loop);
+}
+
+for (const g of GUNS) {
+  totalLoads++;
+  const img = new Image();
+  img.onload = onLoad;
+  img.onerror = onLoad;
+  img.src = g.src;
+  gunImages[g.id] = img;
+}
+
+for (const slug of CHARACTERS) {
+  for (const [animKey, animDef] of Object.entries(ANIMS)) {
+    totalLoads++;
+    const img = new Image();
+    const key = `${slug}-${animKey}`;
+    img.onload = () => {
+      charSheets[key] = { img, frameW: 32, frameH: 32, frames: animDef.frames };
+      onLoad();
+    };
+    img.onerror = onLoad;
+    img.src = `/sprites/characters/${key}.png`;
+  }
+}
+
+// ── UI wiring ────────────────────────────────────────────────────────
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const gunListEl = document.getElementById("gun-list");
+
+for (const g of GUNS) {
+  const btn = document.createElement("button");
+  btn.className = "gun-btn" + (g.id === 0 ? " active" : "");
+  btn.innerHTML = `<img src="${g.src}"> ${g.name}`;
+  btn.dataset.id = g.id;
+  btn.onclick = () => selectGun(g.id);
+  gunListEl.appendChild(btn);
+}
+
+function selectGun(id) {
+  selectedGunId = id;
+  document.querySelectorAll(".gun-btn").forEach(b => {
+    b.classList.toggle("active", +b.dataset.id === id);
+  });
+  loadConfigToUI();
+}
+
+const sliderIds = ["offsetX", "offsetY", "scale", "muzzleX", "muzzleY", "bobAmplitude"];
+for (const key of sliderIds) {
+  const range = document.getElementById(`r-${key}`);
+  const val = document.getElementById(`v-${key}`);
+  range.addEventListener("input", () => {
+    const v = parseFloat(range.value);
+    gunConfigs[selectedGunId][key] = v;
+    val.textContent = key === "scale" ? v.toFixed(2) : key === "bobAmplitude" ? v.toFixed(1) : v;
+  });
+}
+
+function loadConfigToUI() {
+  const cfg = gunConfigs[selectedGunId];
+  for (const key of sliderIds) {
+    const range = document.getElementById(`r-${key}`);
+    const val = document.getElementById(`v-${key}`);
+    range.value = cfg[key];
+    val.textContent = key === "scale" ? cfg[key].toFixed(2) : key === "bobAmplitude" ? cfg[key].toFixed(1) : cfg[key];
+  }
+}
+
+document.getElementById("facing-select").addEventListener("change", (e) => {
+  facing = parseInt(e.target.value);
+});
+
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), 1500);
+}
+
+// ── Export ────────────────────────────────────────────────────────────
+document.getElementById("btn-export-ts").addEventListener("click", () => {
+  const names = ["Pistol", "Shotgun", "Sniper", "Rocket", "SMG"];
+  let ts = "const GUN_CONFIG: Record<number, GunConfig> = {\n";
+  for (const g of GUNS) {
+    const c = gunConfigs[g.id];
+    ts += `  [WeaponType.${names[g.id]}]: { offsetX: ${c.offsetX}, offsetY: ${c.offsetY}, scale: ${c.scale}, muzzleX: ${c.muzzleX}, muzzleY: ${c.muzzleY}, bobAmplitude: ${c.bobAmplitude} },\n`;
+  }
+  ts += "};\n";
+  navigator.clipboard.writeText(ts).then(() => toast("TypeScript copied to clipboard!"));
+});
+
+document.getElementById("btn-export-json").addEventListener("click", () => {
+  const json = JSON.stringify(gunConfigs, null, 2);
+  navigator.clipboard.writeText(json).then(() => toast("JSON copied to clipboard!"));
+});
+
+document.getElementById("btn-import-json").addEventListener("click", () => {
+  const input = prompt("Paste JSON config:");
+  if (!input) return;
+  try {
+    const parsed = JSON.parse(input);
+    for (const [k, v] of Object.entries(parsed)) {
+      if (gunConfigs[k]) Object.assign(gunConfigs[k], v);
+    }
+    loadConfigToUI();
+    toast("Config imported!");
+  } catch (e) {
+    toast("Invalid JSON: " + e.message);
+  }
+});
+
+// ── Bob helper (matches GameScene exactly) ───────────────────────────
+function computeBob(frameIdx, totalFrames, amplitude) {
+  if (totalFrames <= 1) return 0;
+  return Math.sin((frameIdx / totalFrames) * Math.PI * 2) * amplitude;
+}
+
+// ── Frame bar display ────────────────────────────────────────────────
+function updateFrameBar(currentFrame, totalFrames, amplitude) {
+  const bar = document.getElementById("frame-bar");
+  // Rebuild if frame count changed
+  if (bar.children.length !== totalFrames) {
+    bar.innerHTML = "";
+    for (let i = 0; i < totalFrames; i++) {
+      const cell = document.createElement("div");
+      cell.className = "frame-cell";
+      bar.appendChild(cell);
+    }
+  }
+  for (let i = 0; i < totalFrames; i++) {
+    const cell = bar.children[i];
+    const bob = computeBob(i, totalFrames, amplitude);
+    cell.textContent = bob.toFixed(1);
+    cell.className = "frame-cell" + (i === currentFrame ? " current" : "");
+  }
+}
+
+// ── Render loop ──────────────────────────────────────────────────────
+const SCALE = 6;
+let animFrame = 0;
+let lastFrameTime = 0;
+let frameAccum = 0;
+
+function loop(t) {
+  requestAnimationFrame(loop);
+
+  const charSlug = document.getElementById("char-select").value;
+  const animKey = document.getElementById("anim-select").value;
+  const showHitbox = document.getElementById("show-hitbox").checked;
+  const showMuzzle = document.getElementById("show-muzzle").checked;
+  const showGrid = document.getElementById("show-grid").checked;
+  facing = parseInt(document.getElementById("facing-select").value);
+
+  const dt = lastFrameTime ? t - lastFrameTime : 16;
+  lastFrameTime = t;
+
+  const sheet = charSheets[`${charSlug}-${animKey}`];
+  const totalFrames = sheet ? sheet.frames : 1;
+
+  // Advance animation frame at the anim's framerate (20fps)
+  if (sheet && totalFrames > 1) {
+    frameAccum += dt;
+    const frameDur = 1000 / ANIMS[animKey].rate;
+    while (frameAccum >= frameDur) {
+      frameAccum -= frameDur;
+      animFrame = (animFrame + 1) % totalFrames;
+    }
+  } else {
+    animFrame = 0;
+  }
+
+  const cfg = gunConfigs[selectedGunId];
+  const bobY = computeBob(animFrame, totalFrames, cfg.bobAmplitude);
+
+  // Update frame bar
+  updateFrameBar(animFrame, totalFrames, cfg.bobAmplitude);
+
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(0, 0, W, H);
+
+  const cx = W / 2;
+  const cy = H / 2;
+
+  // Grid
+  if (showGrid) {
+    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.lineWidth = 1;
+    const gridPx = 16 * SCALE;
+    for (let x = cx % gridPx; x < W; x += gridPx) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = cy % gridPx; y < H; y += gridPx) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    ctx.strokeStyle = "rgba(255,238,88,0.3)";
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  }
+
+  // Hitbox
+  if (showHitbox) {
+    ctx.strokeStyle = "rgba(79,195,247,0.5)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      cx - (PLAYER_WIDTH / 2) * SCALE, cy - (PLAYER_HEIGHT / 2) * SCALE,
+      PLAYER_WIDTH * SCALE, PLAYER_HEIGHT * SCALE,
+    );
+    ctx.fillStyle = "rgba(79,195,247,0.08)";
+    ctx.fillRect(
+      cx - (PLAYER_WIDTH / 2) * SCALE, cy - (PLAYER_HEIGHT / 2) * SCALE,
+      PLAYER_WIDTH * SCALE, PLAYER_HEIGHT * SCALE,
+    );
+  }
+
+  // Character sprite
+  if (sheet) {
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    const spriteSize = 32 * SCALE;
+    const sx = animFrame * 32;
+    if (facing === -1) {
+      ctx.translate(cx, cy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sheet.img, sx, 0, 32, 32, -spriteSize / 2, -spriteSize / 2, spriteSize, spriteSize);
+    } else {
+      ctx.drawImage(sheet.img, sx, 0, 32, 32, cx - spriteSize / 2, cy - spriteSize / 2, spriteSize, spriteSize);
+    }
+    ctx.restore();
+  }
+
+  // Gun sprite
+  const gunImg = gunImages[selectedGunId];
+  if (gunImg && gunImg.naturalWidth) {
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+
+    const gx = cfg.offsetX * facing;
+    const gy = cfg.offsetY + bobY;
+
+    const drawW = gunImg.naturalWidth * cfg.scale * SCALE;
+    const drawH = gunImg.naturalHeight * cfg.scale * SCALE;
+
+    if (facing === -1) {
+      ctx.translate(cx + gx * SCALE, cy + gy * SCALE);
+      ctx.scale(-1, 1);
+      ctx.drawImage(gunImg, -drawW / 2, -drawH / 2, drawW, drawH);
+    } else {
+      ctx.drawImage(gunImg,
+        cx + gx * SCALE - drawW / 2,
+        cy + gy * SCALE - drawH / 2,
+        drawW, drawH,
+      );
+    }
+    ctx.restore();
+
+    // Muzzle marker
+    if (showMuzzle) {
+      const mx = gx + cfg.muzzleX * facing * cfg.scale;
+      const my = gy + cfg.muzzleY * cfg.scale;
+      const screenMx = cx + mx * SCALE;
+      const screenMy = cy + my * SCALE;
+
+      ctx.strokeStyle = "#ff4444";
+      ctx.lineWidth = 2;
+      const r = 6;
+      ctx.beginPath(); ctx.moveTo(screenMx - r, screenMy); ctx.lineTo(screenMx + r, screenMy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(screenMx, screenMy - r); ctx.lineTo(screenMx, screenMy + r); ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(screenMx, screenMy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,68,68,0.6)";
+      ctx.fill();
+
+      ctx.fillStyle = "#ff4444";
+      ctx.font = "10px monospace";
+      ctx.fillText(`muzzle (${mx.toFixed(1)}, ${my.toFixed(1)})`, screenMx + 10, screenMy - 6);
+    }
+  }
+
+  // Info
+  ctx.fillStyle = "#888";
+  ctx.font = "11px 'Silkscreen', monospace";
+  ctx.fillText(`${GUNS[selectedGunId].name} | ${charSlug} | ${animKey} | facing: ${facing === 1 ? "R" : "L"} | frame: ${animFrame}/${totalFrames}`, 12, 20);
+  if (gunImg && gunImg.naturalWidth) {
+    ctx.fillText(`Sprite: ${gunImg.naturalWidth}x${gunImg.naturalHeight}px | Display: ${(gunImg.naturalWidth * cfg.scale).toFixed(0)}x${(gunImg.naturalHeight * cfg.scale).toFixed(0)}px | bob: ${bobY.toFixed(1)}px`, 12, 36);
+  }
+}
+
+loadConfigToUI();
+</script>
+</body>
+</html>

@@ -31,6 +31,9 @@ interface RawPlayerState {
   jumpsLeft?: number;
   wallSliding?: boolean;
   wallDir?: number;
+  stompedBy?: number | null;
+  stompingOn?: number | null;
+  stompShakeProgress?: number;
 }
 
 interface RawProjectile {
@@ -177,24 +180,24 @@ export class NetworkManager {
     this.send({ type: "set_username", username });
   }
 
-  sendQuickplay(mode: GameMode = "casual") {
-    this.send({ type: "quickplay", mode });
+  sendQuickplay(mode: GameMode = "casual", character?: number) {
+    this.send({ type: "quickplay", mode, character });
   }
 
-  sendCreate(isPrivate: boolean = false, mode: GameMode = "casual") {
-    this.send({ type: "create", isPrivate, mode });
+  sendCreate(isPrivate: boolean = false, mode: GameMode = "casual", character?: number) {
+    this.send({ type: "create", isPrivate, mode, character });
   }
 
   sendSetWallet(address: string) {
     this.send({ type: "set_wallet", address });
   }
 
-  sendJoinRoom(roomId: string) {
-    this.send({ type: "join_room", roomId });
+  sendJoinRoom(roomId: string, character?: number) {
+    this.send({ type: "join_room", roomId, character });
   }
 
-  sendJoinByCode(code: string) {
-    this.send({ type: "join_code", code });
+  sendJoinByCode(code: string, character?: number) {
+    this.send({ type: "join_code", code, character });
   }
 
   /** Reset throttle state so next input sends immediately. Call on round/match start. */
@@ -268,6 +271,13 @@ function deserializeState(msg: ServerMessage): GameState {
         jumpsLeft: p.jumpsLeft ?? 2,
         wallSliding: p.wallSliding ?? false,
         wallDir: p.wallDir ?? 0,
+        stompedBy: p.stompedBy ?? null,
+        stompingOn: p.stompingOn ?? null,
+        stompShakeProgress: p.stompShakeProgress ?? 0,
+        stompLastShakeDir: 0,
+        stompAutoRunDir: 1,
+        stompAutoRunTimer: 0,
+        stompCooldown: (p as any).stompCooldown ?? 0,
       }),
     ),
     projectiles: msg.projectiles!.map(

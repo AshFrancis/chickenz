@@ -12,6 +12,7 @@ import {
   TICK_DT_MS,
   MAX_JUMPS,
   WEAPON_STATS,
+  Button,
   PlayerStateFlag,
   WeaponType,
   Facing,
@@ -19,10 +20,11 @@ import {
   step,
   NULL_INPUT,
 } from "@chickenz/sim";
-import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, Projectile, WeaponPickup, InputMap } from "@chickenz/sim";
+import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, WeaponPickup, InputMap } from "@chickenz/sim";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
 import { DPR, VIEW_W, VIEW_H } from "../game";
+import { playSFX } from "../audio/sfx";
 
 interface TranscriptInput {
   buttons: number;
@@ -81,6 +83,14 @@ const CHARACTER_ANIMS = [
   { key: "wall-jump", frames: 5, repeat: -1, rate: 20 },
 ] as const;
 
+// Per-character crouch/taunt sound, indexed by CHARACTER_SLUGS
+const CROUCH_SOUNDS: Record<string, string> = {
+  "ninja-frog": "frog-croak",
+  "mask-dude": "ooga",
+  "pink-man": "wub",
+  "virtual-guy": "pop",
+};
+
 /** Compute the spritesheet frame index for a tile at (tx,ty) in a platform grid. */
 function getTerrainFrame(tx: number, ty: number, tilesW: number, tilesH: number): number {
   let cx: number, cy: number;
@@ -122,6 +132,7 @@ const WEAPON_NAMES: Record<number, string> = {
   [WeaponType.SMG]: "SMG",
 };
 
+const BG_KEYS = ["bg-blue", "bg-brown", "bg-gray", "bg-green", "bg-pink", "bg-purple", "bg-yellow"];
 const PIXEL_FONT = '"Silkscreen", monospace';
 
 const announceEl = document.getElementById("announce-text")!;
@@ -148,9 +159,8 @@ function smoothLerp(a: number, b: number, factor: number, dt: number): number {
 export class GameScene extends Phaser.Scene {
   private prevState: GameState | null = null;
   private currState: GameState | null = null;
-  private snapshotTime = 0;
   private config!: MatchConfig;
-  private inputManager = new InputManager();
+  readonly inputManager = new InputManager();
   private playing = false;
   private localPlayerId = 0;
   private prediction: PredictionManager | null = null;
@@ -168,6 +178,7 @@ export class GameScene extends Phaser.Scene {
 
   // Graphics objects
   private gfx!: Phaser.GameObjects.Graphics;
+  private gfxOverlay!: Phaser.GameObjects.Graphics; // high-depth layer for stomp bars
   private timerText!: Phaser.GameObjects.Text;
   private suddenDeathText!: Phaser.GameObjects.Text;
   // winText + roundPopupText are DOM-based (see #announce-overlay)
@@ -177,15 +188,24 @@ export class GameScene extends Phaser.Scene {
 
   // Rocket explosion effects
   private explosions: { x: number; y: number; timer: number }[] = [];
+  private prevRockets: Map<number, { x: number; y: number }> = new Map();
 
   // Tile-based platform sprites + background
   private platformTiles: Phaser.GameObjects.Image[] = [];
+  private borderTiles: Phaser.GameObjects.Image[] = [];
   private bgTile: Phaser.GameObjects.TileSprite | null = null;
+  private bgScrollX = 0;
+  private bgScrollY = 0;
 
   // Character sprites (animated)
   private playerSprites: Phaser.GameObjects.Sprite[] = [];
   private gunSprites: Phaser.GameObjects.Image[] = [];
   private characterSlots: [number, number] = [0, 1]; // indices into CHARACTER_SLUGS
+
+  // Weapon pickup sprites and collection tracking
+  private pickupSprites: Map<number, Phaser.GameObjects.Image> = new Map();
+  private pickupGlowEmitter: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
+  private prevPickupActive: Map<number, boolean> = new Map(); // track active→inactive transitions
 
   // Dust particle effects
   private dustEmitter: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
@@ -211,6 +231,12 @@ export class GameScene extends Phaser.Scene {
   private _muted = false;
   private bgm: Phaser.Sound.BaseSound | null = null;
   private audioLoaded = false;
+  private bgmVolume = 0.1;
+  private sfxVolume = 0.8;
+  private lastBgmTrack = 0;
+
+  // Display settings
+  private dynamicZoom = true;
 
   // Warmup mode (waiting room with jumping)
   private warmupMode = false;
@@ -220,6 +246,20 @@ export class GameScene extends Phaser.Scene {
   private warmupAccum = 0;
   private warmupJoinCode = "";
   // Warmup overlay is DOM-based (see index.html #warmup-overlay)
+
+  // Diamond transition
+  private transitionActive = false;
+
+  // Stomp alert texts (one per player, like nameTexts)
+  private stompAlertTexts: Phaser.GameObjects.Text[] = [];
+
+  // Button tracking for crouch animation (per player)
+  private lastReceivedButtons: [number, number] = [0, 0];
+  private prevFrameButtons: [number, number] = [0, 0];
+
+  // Scene lifecycle — create() may not have run yet when network callbacks fire
+  private sceneReady = false;
+  private readyQueue: (() => void)[] = [];
 
   // Replay mode
   private replayMode = false;
@@ -237,27 +277,38 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload() {
-    // Try to load audio assets — silently fail if not found
+    // Load BGM tracks (SFX use Web Audio synth fallback, no MP3s needed)
     try {
-      this.load.audio("bgm", "/audio/bgm.mp3");
-      this.load.audio("shoot", "/audio/shoot.mp3");
-      this.load.audio("hit", "/audio/hit.mp3");
-      this.load.audio("death", "/audio/death.mp3");
-      this.load.audio("pickup", "/audio/pickup.mp3");
-      this.load.audio("match-start", "/audio/match-start.mp3");
-      this.load.audio("match-end", "/audio/match-end.mp3");
+      for (let i = 1; i <= 5; i++) {
+        this.load.audio(`bgm-${i}`, `/audio/bgm-${i}.mp3`);
+      }
+    } catch {
+      // Audio files may not exist yet
+    }
+    // Crouch/taunt sounds per character
+    try {
+      for (const key of Object.values(CROUCH_SOUNDS)) {
+        this.load.audio(key, `/audio/${key}.mp3`);
+      }
     } catch {
       // Audio files may not exist yet
     }
     // Terrain spritesheet (16×16 tiles, 22 cols × 11 rows)
     this.load.spritesheet("terrain", "/sprites/terrain.png", { frameWidth: 16, frameHeight: 16 });
-    this.load.image("bg-tile", "/sprites/bg-green.png");
+    // Background tiles (one per color, chosen deterministically per match)
+    const BG_NAMES = ["blue", "brown", "gray", "green", "pink", "purple", "yellow"];
+    for (const name of BG_NAMES) {
+      this.load.image(`bg-${name}`, `/sprites/bg-${name}.png`);
+    }
     this.load.image("dust", "/sprites/dust.png");
 
     // Gun sprites
     for (const [, tex] of Object.entries(GUN_TEXTURES)) {
       this.load.image(tex, `/sprites/${tex}.png`);
     }
+
+    // Pickup collection animation (6 frames, 32x32 each)
+    this.load.spritesheet("collected", "/sprites/collected.png", { frameWidth: 32, frameHeight: 32 });
 
     // Character spritesheets (32×32 frames)
     for (const slug of CHARACTER_SLUGS) {
@@ -272,11 +323,22 @@ export class GameScene extends Phaser.Scene {
 
     this.load.on("complete", () => {
       this.audioLoaded = true;
+      // Try to start BGM now that audio is loaded (requires prior user gesture)
+      this.startBGM();
     });
+
+    // Load persisted settings
+    const storedBGM = localStorage.getItem("chickenz-bgm-volume");
+    if (storedBGM !== null) this.bgmVolume = parseInt(storedBGM, 10) / 100;
+    const storedSFX = localStorage.getItem("chickenz-sfx-volume");
+    if (storedSFX !== null) this.sfxVolume = parseInt(storedSFX, 10) / 100;
+    const storedZoom = localStorage.getItem("chickenz-dynamic-zoom");
+    if (storedZoom !== null) this.dynamicZoom = storedZoom !== "false";
   }
 
   create() {
     this.gfx = this.add.graphics();
+    this.gfxOverlay = this.add.graphics();
 
     // Warm up font: create a hidden text to force Phaser to rasterize the font atlas
     const warmFont = this.add.text(-100, -100, "ABCabc123", {
@@ -317,6 +379,8 @@ export class GameScene extends Phaser.Scene {
         color: "#ff4444",
         fontFamily: PIXEL_FONT,
         align: "center",
+        stroke: "#000000",
+        strokeThickness: 3,
       })
       .setOrigin(0.5, 0)
       .setResolution(DPR)
@@ -324,7 +388,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(100);
     this.inputManager.init(this.game.canvas);
 
-    this.controlsText = this.add.text(10, VIEW_H - 25, "WASD + Space to play", {
+    this.controlsText = this.add.text(10, VIEW_H - 25, "", {
       fontSize: "8px",
       color: "#888888",
       fontFamily: PIXEL_FONT,
@@ -344,8 +408,22 @@ export class GameScene extends Phaser.Scene {
         color: "#ffffff",
         fontFamily: PIXEL_FONT,
         align: "center",
-      }).setOrigin(0.5, 1).setResolution(DPR).setDepth(50);
+      }).setOrigin(0.5, 1).setResolution(DPR).setDepth(50)
+        .setShadow(1, 1, "#000000", 0);
       this.nameTexts.push(text);
+    }
+
+    // Stomp alert texts (one per player, world-space below player)
+    for (let i = 0; i < 2; i++) {
+      const alertText = this.add.text(0, 0, "SHAKE HIM OFF!", {
+        fontSize: "7px",
+        color: "#ffffff",
+        fontFamily: PIXEL_FONT,
+        align: "center",
+        stroke: "#000000",
+        strokeThickness: 2,
+      }).setOrigin(0.5, 0).setDepth(50).setResolution(DPR).setAlpha(0);
+      this.stompAlertTexts.push(alertText);
     }
 
     // Round indicator (top-left)
@@ -366,9 +444,11 @@ export class GameScene extends Phaser.Scene {
     // Camera setup — main camera for game world, HUD camera for overlay
     // DPR-scaled canvas: zoom by DPR so world coords map to pixels
     // Bounds extend beyond map so wider viewports can see background
+    const mapW = this.config?.map?.width ?? 960;
+    const mapH = this.config?.map?.height ?? 540;
     const padX = VIEW_W / 2;
     const padY = VIEW_H / 2;
-    this.cameras.main.setBounds(-padX, -padY, 960 + padX * 2, 540 + padY * 2);
+    this.cameras.main.setBounds(-padX, -padY, mapW + padX * 2, mapH + padY * 2);
     this.cameras.main.setZoom(DPR);
 
     // HUD camera: fixed zoom at DPR, covers full canvas viewport
@@ -378,6 +458,8 @@ export class GameScene extends Phaser.Scene {
 
     // Collect HUD elements (rendered only on hudCamera)
     const hudElements = [this.timerText, this.suddenDeathText, this.controlsText, this.weaponText, this.roundText, this.replayInfoText];
+    // stompAlertTexts are world-space (not HUD) — HUD camera should ignore them
+    for (const at of this.stompAlertTexts) this.hudCamera.ignore(at);
 
     // Main camera ignores HUD texts
     for (const el of hudElements) {
@@ -386,18 +468,17 @@ export class GameScene extends Phaser.Scene {
 
     // HUD camera ignores game graphics and name texts
     this.hudCamera.ignore(this.gfx);
+    this.hudCamera.ignore(this.gfxOverlay);
     for (const nt of this.nameTexts) {
       this.hudCamera.ignore(nt);
     }
 
-    // Tiling background — covers the camera bounds area
-    this.bgTile = this.add.tileSprite(480, 270, 960 + VIEW_W, 540 + VIEW_H, "bg-tile")
-      .setDepth(-100);
-    this.cameras.main.ignore([]); // main camera sees bg
-    this.hudCamera.ignore(this.bgTile);
+    // Dark blue background outside arena (scene background color)
+    this.cameras.main.setBackgroundColor(0x211f30);
 
     // Graphics layer above platform tiles
     this.gfx.setDepth(10);
+    this.gfxOverlay.setDepth(30); // above all sprites, for stomped player bars
 
     // Character animations + sprites
     for (const slug of CHARACTER_SLUGS) {
@@ -410,6 +491,13 @@ export class GameScene extends Phaser.Scene {
           repeat: anim.repeat,
         });
       }
+      // Crouch animation: hit spritesheet frames 2-6, play once per press
+      this.anims.create({
+        key: `${slug}-crouch`,
+        frames: this.anims.generateFrameNumbers(`${slug}-hit`, { start: 2, end: 6 }),
+        frameRate: 20,
+        repeat: 0,
+      });
     }
     for (let i = 0; i < 2; i++) {
       const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
@@ -464,6 +552,64 @@ export class GameScene extends Phaser.Scene {
     });
     this.dustGroundEmitR.setDepth(19);
     this.hudCamera.ignore(this.dustGroundEmitR);
+
+    // Pickup collection animation
+    this.anims.create({
+      key: "collected",
+      frames: this.anims.generateFrameNumbers("collected", { start: 0, end: 5 }),
+      frameRate: 20,
+      repeat: 0,
+    });
+
+    // Pickup glow particle emitter (soft dust particles floating around pickups)
+    this.pickupGlowEmitter = this.add.particles(0, 0, "dust", {
+      speed: { min: 5, max: 15 },
+      angle: { min: 0, max: 360 },
+      scale: { start: 0.4, end: 0 },
+      alpha: { start: 0.5, end: 0 },
+      lifespan: { min: 600, max: 1000 },
+      gravityY: -10,
+      emitting: false,
+    });
+    this.pickupGlowEmitter.setDepth(14);
+    this.hudCamera.ignore(this.pickupGlowEmitter);
+
+    // Disable Phaser's default audio pause-on-blur (abrupt stop/start).
+    // We handle it manually with a fade below.
+    this.sound.pauseOnBlur = false;
+
+    // Fade BGM out/in on window/tab focus change instead of abrupt pause
+    const fadeOut = () => {
+      if (!this.bgm || !this.bgm.isPlaying) return;
+      this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, (this.bgm as Phaser.Sound.WebAudioSound).volume, 0, 400);
+    };
+    const fadeIn = () => {
+      if (!this.bgm) return;
+      const ctx = (this.sound as Phaser.Sound.WebAudioSoundManager).context;
+      if (ctx.state === "suspended") ctx.resume();
+      this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, 0, this.bgmVolume, 400);
+    };
+    // visibilitychange fires on tab switch; blur/focus fires on window switch
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) fadeOut(); else fadeIn();
+    });
+    window.addEventListener("blur", fadeOut);
+    window.addEventListener("focus", fadeIn);
+
+    this.sceneReady = true;
+
+    // Flush any deferred calls that arrived before create() finished
+    for (const fn of this.readyQueue) fn();
+    this.readyQueue = [];
+  }
+
+  /** Defer a function call until create() has finished (scene is ready). */
+  private onReady(fn: () => void) {
+    if (this.sceneReady) {
+      fn();
+    } else {
+      this.readyQueue.push(fn);
+    }
   }
 
   // ── Warmup Mode ──────────────────────────────────────────────────────────
@@ -475,8 +621,22 @@ export class GameScene extends Phaser.Scene {
     this.characterSlots = [p1, p2];
   }
 
-  startWarmup(joinCode: string, username?: string) {
-    this.assignCharacters();
+  startWarmup(joinCode: string, username?: string, onStarted?: () => void, character?: number) {
+    if (!this.sceneReady) {
+      console.log(`[startWarmup] deferred — scene not ready yet`);
+      this.onReady(() => this.startWarmup(joinCode, username, onStarted, character));
+      return;
+    }
+    if (character !== undefined) {
+      // Use the pre-chosen character for P1, random for P2
+      const NUM_CHARS = 4;
+      let p2 = Math.floor(Math.random() * (NUM_CHARS - 1));
+      if (p2 >= character) p2++;
+      this.characterSlots = [character, p2];
+    } else {
+      this.assignCharacters();
+    }
+    onStarted?.();
     this.warmupMode = true;
     this.warmupJoinCode = joinCode;
     this.playerUsernames = [username || "", ""];
@@ -484,7 +644,7 @@ export class GameScene extends Phaser.Scene {
     this.warmupPrevInputs = new Map();
 
     const map = ARENA;
-    this.createMapTiles(map);
+    this.createMapTiles(map, Date.now() >>> 0);
     this.warmupConfig = {
       seed: 0,
       map,
@@ -504,7 +664,7 @@ export class GameScene extends Phaser.Scene {
     this.playing = false; // not a real match
     this.prediction = null;
     hideAnnounce();
-    this.suddenDeathText?.setVisible(false);
+    document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.currentZoom = 1.0;
     this.cameraX = 480;
     this.cameraY = 270;
@@ -546,6 +706,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3, characters?: [number, number]) {
+    if (!this.sceneReady) {
+      console.log(`[startOnlineMatch] deferred — scene not ready yet`);
+      this.onReady(() => this.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters));
+      return;
+    }
     this.localPlayerId = playerId;
     if (characters) {
       this.characterSlots = characters;
@@ -560,19 +725,20 @@ export class GameScene extends Phaser.Scene {
     this.roundWins = [0, 0];
     this.roundTransition = false;
 
-    this.warmupMode = false;
-    document.getElementById("warmup-overlay")?.classList.remove("visible");
-
-    this.initRound(seed, mapIndex);
-
-    // Countdown: 3..2..1..GO before accepting input
-    this.playing = false; // block input during countdown
-    this.showCountdown(() => {
-      // Reset accumulator so first frame after GO doesn't run burst of ticks
-      this.predictionAccum = 0;
-      this.playing = true;
-      this.showRoundPopup(1);
-      this.playSound("match-start");
+    // Diamond transition covers screen, THEN swap map at midpoint (fully black)
+    // Keep warmupMode alive during grow-in so camera stays stable (P2 is at -9999)
+    this.playing = false;
+    this.playTransition(() => {
+      this.warmupMode = false;
+      this.warmupState = null;
+      document.getElementById("warmup-overlay")?.classList.remove("visible");
+      this.initRound(seed, mapIndex);
+      this.showCountdown(() => {
+        this.predictionAccum = 0;
+        this.playing = true;
+        this.showRoundPopup(1);
+        this.playSound("match-start");
+      });
     });
 
     this.startBGM();
@@ -582,9 +748,13 @@ export class GameScene extends Phaser.Scene {
   startNewRound(seed: number, mapIndex: number, round: number) {
     this.currentRound = round;
     this.roundTransition = false;
-    this.initRound(seed, mapIndex);
-    this.showRoundPopup(round + 1);
-    this.playSound("match-start");
+
+    // Transition covers screen, swap map at midpoint (fully black), then reveal
+    this.playTransition(() => {
+      this.initRound(seed, mapIndex);
+      this.showRoundPopup(round + 1);
+      this.playSound("match-start");
+    });
   }
 
   private showRoundPopup(roundNumber: number) {
@@ -615,6 +785,78 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(350, advance);
   }
 
+  // Transition timing constants
+  private static readonly TRANS_COLS = 5;
+  private static readonly TRANS_WAVE_DELAY = 60;
+  private static readonly TRANS_GROW_MS = 180;
+  private static readonly TRANS_HOLD_MS = 250;
+  private static readonly TRANS_SHRINK_MS = 180;
+
+  /** Play a diamond wipe transition using a DOM overlay (bypasses Phaser camera issues). */
+  private playTransition(onMidpoint: () => void) {
+    if (this.transitionActive) { onMidpoint(); return; }
+    this.transitionActive = true;
+
+    const overlay = document.getElementById("transition-overlay");
+    if (!overlay) { onMidpoint(); this.transitionActive = false; return; }
+    const cells = overlay.querySelectorAll<HTMLElement>(".t-cell");
+
+    const { TRANS_COLS: cols, TRANS_WAVE_DELAY: WAVE_DELAY,
+            TRANS_GROW_MS: GROW_MS, TRANS_HOLD_MS: HOLD_MS, TRANS_SHRINK_MS: SHRINK_MS } = GameScene;
+
+    // Reset all cells
+    for (const cell of cells) {
+      cell.className = "t-cell";
+      cell.style.setProperty("--td", "0ms");
+    }
+
+    overlay.classList.add("active");
+
+    // Phase 1: Grow — stagger columns left-to-right
+    requestAnimationFrame(() => {
+      for (let i = 0; i < cells.length; i++) {
+        const col = i % cols;
+        cells[i]!.style.setProperty("--td", `${col * WAVE_DELAY}ms`);
+        cells[i]!.classList.add("grow");
+      }
+    });
+
+    // Phase 2: At midpoint (all columns grown), fire callback.
+    // Diamonds stay at scale(1) with overlap = full coverage, no "hold" class needed.
+    const totalIn = GROW_MS + WAVE_DELAY * (cols - 1);
+    setTimeout(() => {
+      onMidpoint();
+
+      // Phase 3: After hold, shrink out with column wave
+      setTimeout(() => {
+        // Pre-shrink: keep scale(1), disable transition
+        for (const cell of cells) {
+          cell.className = "t-cell pre-shrink";
+          cell.style.setProperty("--td", "0ms");
+        }
+        // Force reflow so browser commits scale(1) state
+        void overlay.offsetHeight;
+        // Shrink: animate scale(1) → scale(0) with staggered delays
+        for (let i = 0; i < cells.length; i++) {
+          const col = i % cols;
+          cells[i]!.className = "t-cell shrink";
+          cells[i]!.style.setProperty("--td", `${col * WAVE_DELAY}ms`);
+        }
+
+        // Phase 4: Clean up after shrink completes
+        const totalOut = SHRINK_MS + WAVE_DELAY * (cols - 1);
+        setTimeout(() => {
+          overlay.classList.remove("active");
+          for (const cell of cells) {
+            cell.className = "t-cell";
+            cell.style.setProperty("--td", "0ms");
+          }
+          this.transitionActive = false;
+        }, totalOut + 50);
+      }, HOLD_MS);
+    }, totalIn + 30);
+  }
+
   /** Handle round end — show result, let players keep moving. */
   handleRoundEnd(round: number, winner: number, roundWins: [number, number]) {
     this.roundWins = roundWins;
@@ -625,7 +867,7 @@ export class GameScene extends Phaser.Scene {
 
   private initRound(seed: number, mapIndex: number) {
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0] ?? ARENA;
-    this.createMapTiles(map);
+    this.createMapTiles(map, seed);
     this.config = {
       seed,
       map,
@@ -638,10 +880,9 @@ export class GameScene extends Phaser.Scene {
     const initial = createInitialState(this.config);
     this.prevState = initial;
     this.currState = initial;
-    this.snapshotTime = performance.now();
     this.playing = true;
     hideAnnounce();
-    this.suddenDeathText.setVisible(false);
+    document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
     this.prediction = new PredictionManager(initial, this.config, this.localPlayerId);
     this.predictionAccum = 0;
@@ -672,10 +913,37 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Create tile sprites for all platforms in the map using 9-slice terrain tiles. */
-  private createMapTiles(map: GameMap) {
+  private createMapTiles(map: GameMap, seed: number) {
+    if (!this.hudCamera) console.warn(`[createMapTiles] hudCamera not set — tiles will render on both cameras!`);
     // Destroy previous round's tiles
     for (const t of this.platformTiles) t.destroy();
     this.platformTiles = [];
+    for (const t of this.borderTiles) t.destroy();
+    this.borderTiles = [];
+    // Clean up pickup sprites from previous round
+    for (const [, sprite] of this.pickupSprites) sprite.destroy();
+    this.pickupSprites.clear();
+    this.prevPickupActive.clear();
+
+    // Deterministic background: hash seed for better distribution
+    // Mulberry32-style mix to spread bits evenly
+    let h = seed | 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+    h = Math.imul(h ^ (h >>> 13), 0x45d9f3b);
+    h = (h ^ (h >>> 16)) >>> 0;
+    const bgKey = BG_KEYS[h % BG_KEYS.length]!;
+    const angle = ((h >>> 8) & 0xffff) / 0xffff * Math.PI * 2;
+    this.bgScrollX = Math.cos(angle) * 0.3;
+    this.bgScrollY = Math.sin(angle) * 0.3;
+
+    // Create/update background tileSprite clipped to arena bounds
+    if (this.bgTile) this.bgTile.destroy();
+    this.bgTile = this.add.tileSprite(
+      map.width / 2, map.height / 2,
+      map.width, map.height,
+      bgKey,
+    ).setDepth(-100);
+    this.hudCamera?.ignore(this.bgTile);
 
     for (const plat of map.platforms) {
       const tilesW = Math.max(1, Math.round(plat.width / 16));
@@ -694,9 +962,71 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
+
+    // Pedestal tiles under weapon spawn points (3 tiles wide: L=17, M=18, R=19)
+    // Visual content is at top ~3px of the 16x16 tile frame.
+    // Position so the visual sits on the platform surface below the spawn point.
+    const PEDESTAL_FRAMES = [17, 18, 19]; // col 17-19 row 0 in terrain spritesheet
+    for (const sp of map.weaponSpawnPoints) {
+      // Find the nearest platform surface below this spawn point
+      let platformTop = map.height; // fallback to bottom
+      for (const plat of map.platforms) {
+        if (plat.y > sp.y && plat.y < platformTop &&
+            sp.x >= plat.x && sp.x <= plat.x + plat.width) {
+          platformTop = plat.y;
+        }
+      }
+      // Place tile so visual (top 3px of frame) rests on platform: center = platformTop + 5
+      const tileY = platformTop + 5;
+      for (let i = 0; i < 3; i++) {
+        const img = this.add.image(
+          sp.x + (i - 1) * 16,
+          tileY,
+          "terrain",
+          PEDESTAL_FRAMES[i]!,
+        ).setDepth(0);
+        this.hudCamera?.ignore(img);
+        this.platformTiles.push(img);
+      }
+    }
+
+    // Border tiles around arena using dark stone 9-slice (cols 0-2, rows 0-2)
+    const TC = TERRAIN_COLS; // 22 tiles per row
+    const B_TL = 3, B_T = 2 * TC + 1, B_TR = 4;
+    const B_ML = TC + 2, B_MR = TC;
+    const B_BL = TC + 3, B_B = 1, B_BR = TC + 4;
+    const mw = map.width, mh = map.height;
+    const tilesX = Math.ceil(mw / 16);
+    const tilesY = Math.ceil(mh / 16);
+
+    const addBorder = (x: number, y: number, frame: number) => {
+      const img = this.add.image(x, y, "terrain", frame).setDepth(1);
+      this.hudCamera?.ignore(img);
+      this.borderTiles.push(img);
+    };
+
+    // Border shifted inward so tile content sits flush against arena edge
+    const bo = -4; // outward offset
+    // Left column
+    for (let ty = 0; ty < tilesY; ty++) addBorder(bo, ty * 16 + 8, B_ML);
+    // Right column
+    for (let ty = 0; ty < tilesY; ty++) addBorder(mw - bo, ty * 16 + 8, B_MR);
+    // Top row
+    for (let tx = 0; tx < tilesX; tx++) addBorder(tx * 16 + 8, bo, B_T);
+    // Bottom row
+    for (let tx = 0; tx < tilesX; tx++) addBorder(tx * 16 + 8, mh - bo, B_B);
+    // Corners on top (rendered last = highest z within same depth)
+    addBorder(bo, bo, B_TL);
+    addBorder(mw - bo, bo, B_TR);
+    addBorder(bo, mh - bo, B_BL);
+    addBorder(mw - bo, mh - bo, B_BR);
   }
 
   startReplay(transcript: TickInputPair[], seed: number) {
+    if (!this.sceneReady) {
+      this.onReady(() => this.startReplay(transcript, seed));
+      return;
+    }
     this.assignCharacters();
     this.replayMode = true;
     this.replayTranscript = transcript;
@@ -709,7 +1039,7 @@ export class GameScene extends Phaser.Scene {
     this.playerUsernames = ["P1", "P2"];
     this.prediction = null;
 
-    this.createMapTiles(ARENA);
+    this.createMapTiles(ARENA, seed);
     this.config = {
       seed,
       map: ARENA,
@@ -722,10 +1052,9 @@ export class GameScene extends Phaser.Scene {
     const initial = createInitialState(this.config);
     this.prevState = initial;
     this.currState = initial;
-    this.snapshotTime = performance.now();
     this.playing = true;
     hideAnnounce();
-    this.suddenDeathText.setVisible(false);
+    document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
     this.currentZoom = 1.0;
     this.cameraX = 480;
@@ -767,16 +1096,9 @@ export class GameScene extends Phaser.Scene {
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
 
-    // Detect rocket explosions
-    if (this.currState) {
-      for (const prev of this.currState.projectiles) {
-        if (prev.weapon === WeaponType.Rocket) {
-          const stillExists = state.projectiles.some((p) => p.id === prev.id);
-          if (!stillExists && prev.lifetime > 1) {
-            this.explosions.push({ x: prev.x, y: prev.y, timer: 15 });
-          }
-        }
-      }
+    // Track button state for crouch animation
+    if (lastButtons) {
+      this.lastReceivedButtons = [...lastButtons] as [number, number];
     }
 
     // Detect events for audio
@@ -786,7 +1108,6 @@ export class GameScene extends Phaser.Scene {
 
     this.prevState = this.currState;
     this.currState = state;
-    this.snapshotTime = performance.now();
 
     // Feed server state to prediction manager for reconciliation
     if (this.prediction) {
@@ -796,6 +1117,7 @@ export class GameScene extends Phaser.Scene {
 
   endOnlineMatch(winner: number) {
     this.playing = false;
+    document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     if (winner === -1) {
       showAnnounce("DRAW!");
     } else {
@@ -803,16 +1125,39 @@ export class GameScene extends Phaser.Scene {
       showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
     }
     this.playSound("match-end");
-    this.stopBGM();
+    // Music keeps playing between matches — no stopBGM()
   }
 
   setMuted(muted: boolean) {
     this._muted = muted;
-    if (muted && this.bgm?.isPlaying) {
-      this.bgm.pause();
-    } else if (!muted && this.bgm && !this.bgm.isPlaying && this.playing) {
-      this.bgm.resume();
+    if (muted) {
+      if (this.bgm?.isPlaying) this.bgm.pause();
+    } else {
+      if (this.bgm && !this.bgm.isPlaying) {
+        this.bgm.resume();
+      } else if (!this.bgm || !this.bgm.isPlaying) {
+        this.startBGM();
+      }
     }
+  }
+
+  setBGMVolume(vol: number) {
+    this.bgmVolume = vol;
+    if (this.bgm && "volume" in this.bgm) {
+      (this.bgm as Phaser.Sound.WebAudioSound).volume = vol;
+    }
+  }
+
+  setSFXVolume(vol: number) {
+    this.sfxVolume = vol;
+  }
+
+  setDynamicZoom(enabled: boolean) {
+    this.dynamicZoom = enabled;
+  }
+
+  setControlsHint(text: string) {
+    if (this.controlsText) this.controlsText.setText(text);
   }
 
   /** Handle browser window resize — reposition HUD, update cameras, resize background. */
@@ -824,11 +1169,12 @@ export class GameScene extends Phaser.Scene {
     this.weaponText.setPosition(VIEW_W / 2, VIEW_H - 20).setResolution(DPR);
     this.roundText.setResolution(DPR);
     this.replayInfoText.setPosition(VIEW_W / 2, VIEW_H - 10).setResolution(DPR);
-
     // Update main camera bounds and zoom
+    const mapW = this.config?.map?.width ?? 960;
+    const mapH = this.config?.map?.height ?? 540;
     const padX = VIEW_W / 2;
     const padY = VIEW_H / 2;
-    this.cameras.main.setBounds(-padX, -padY, 960 + padX * 2, 540 + padY * 2);
+    this.cameras.main.setBounds(-padX, -padY, mapW + padX * 2, mapH + padY * 2);
     this.cameras.main.setZoom(this.currentZoom * DPR);
 
     // Update HUD camera viewport and zoom
@@ -837,10 +1183,7 @@ export class GameScene extends Phaser.Scene {
       this.hudCamera.setZoom(DPR);
     }
 
-    // Update background tile to cover new viewport
-    if (this.bgTile) {
-      this.bgTile.setSize(960 + VIEW_W, 540 + VIEW_H);
-    }
+    // bgTile is arena-sized (clipped to border), no resize needed
   }
 
   update(_time: number, delta: number) {
@@ -866,7 +1209,9 @@ export class GameScene extends Phaser.Scene {
           [0, input],
           [1, NULL_INPUT],
         ]);
+        const prevWarmup = this.warmupState;
         this.warmupState = step(this.warmupState, inputs, this.warmupPrevInputs, this.warmupConfig);
+        this.detectAudioEvents(prevWarmup, this.warmupState);
         this.banishWarmupPlayer2(this.warmupState);
         this.warmupPrevInputs = inputs;
       }
@@ -957,14 +1302,41 @@ export class GameScene extends Phaser.Scene {
   }
 
   private render(delta: number) {
+    // Animate background scroll
+    if (this.bgTile) {
+      this.bgTile.tilePositionX += this.bgScrollX * (delta / 16.667);
+      this.bgTile.tilePositionY += this.bgScrollY * (delta / 16.667);
+    }
+
     const g = this.gfx;
     g.clear();
+    this.gfxOverlay.clear();
 
     const curr = this.currState;
     if (!curr) return;
 
     const predicted = this.replayMode ? null : this.prediction?.predictedState;
     const displayState = predicted ?? curr;
+
+    // Detect rocket explosions from predicted/display state (instant, no server delay)
+    const currentRocketIds = new Set<number>();
+    for (const proj of displayState.projectiles) {
+      if (proj.weapon === WeaponType.Rocket) currentRocketIds.add(proj.id);
+    }
+    for (const [id, pos] of this.prevRockets) {
+      if (!currentRocketIds.has(id)) {
+        this.explosions.push({ x: pos.x, y: pos.y, timer: 15 });
+        this.playSound("explosion");
+      }
+    }
+    this.prevRockets.clear();
+    for (const proj of displayState.projectiles) {
+      if (proj.weapon === WeaponType.Rocket) {
+        const rcfg = GUN_CONFIG[WeaponType.Rocket];
+        const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
+        this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
+      }
+    }
 
     this.updateCamera(curr, predicted, delta);
     this.drawArena(g, displayState);
@@ -986,42 +1358,72 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawPickups(g: Phaser.GameObjects.Graphics, displayState: GameState) {
+  private drawPickups(_g: Phaser.GameObjects.Graphics, displayState: GameState) {
     const tick = displayState.tick;
+    const activeIds = new Set<number>();
+
     for (const pickup of displayState.weaponPickups) {
+      activeIds.add(pickup.id);
+      const wasActive = this.prevPickupActive.get(pickup.id) ?? (pickup.respawnTimer <= 0);
+
       if (pickup.respawnTimer > 0) {
-        // Respawning: faint outline
-        const color = WEAPON_PICKUP_COLORS[pickup.weapon] ?? 0x888888;
-        g.lineStyle(1, color, 0.4);
-        g.strokeCircle(pickup.x, pickup.y, 10);
+        // Respawning — hide sprite, show faint outline via graphics
+        this.getPickupSprite(pickup.id)?.setVisible(false);
+        this.prevPickupActive.set(pickup.id, false);
+
+        // Detect collection: was active, now respawning → play collection animation
+        if (wasActive) {
+          const fx = this.add.sprite(pickup.x, pickup.y + 20, "collected")
+            .setDepth(25)
+            .setScale(1);
+          this.hudCamera.ignore(fx);
+          fx.play("collected");
+          fx.once("animationcomplete", () => fx.destroy());
+        }
         continue;
       }
-      const color = WEAPON_PICKUP_COLORS[pickup.weapon] ?? 0xffffff;
-      const bob = Math.sin(tick * 0.08) * 3;
-      const py = pickup.y + bob;
 
-      // Glow circle (brighter)
-      const glowAlpha = 0.25 + Math.sin(tick * 0.06) * 0.1;
-      g.fillStyle(color, glowAlpha);
-      g.fillCircle(pickup.x, py, 20);
+      this.prevPickupActive.set(pickup.id, true);
 
-      // Diamond using fillTriangle (more reliable than fillPath)
-      g.fillStyle(color, 0.9);
-      g.fillTriangle(
-        pickup.x, py - 14,
-        pickup.x + 10, py,
-        pickup.x, py + 14,
-      );
-      g.fillTriangle(
-        pickup.x, py - 14,
-        pickup.x - 10, py,
-        pickup.x, py + 14,
-      );
+      // Active pickup — show gun icon sprite with bob, lowered to sit above stand
+      const bob = Math.sin(tick * 0.08) * 2;
+      const py = pickup.y + 20 + bob;
+      const tex = GUN_TEXTURES[pickup.weapon];
+      let sprite = this.getPickupSprite(pickup.id);
+      if (!sprite) {
+        sprite = this.add.image(pickup.x, py, tex ?? "gun-pistol")
+          .setDepth(15)
+          .setScale(0.6);
+        this.hudCamera.ignore(sprite);
+        this.pickupSprites.set(pickup.id, sprite);
+      }
+      if (tex && sprite.texture.key !== tex) {
+        sprite.setTexture(tex);
+      }
+      sprite.setPosition(pickup.x, py);
+      sprite.setVisible(true);
+      sprite.setAlpha(0.9 + Math.sin(tick * 0.06) * 0.1);
 
-      // White outline
-      g.lineStyle(2, 0xffffff, 1);
-      g.strokeCircle(pickup.x, py, 14);
+      // Emit glow particles around active pickups
+      if (this.pickupGlowEmitter && tick % 8 === 0) {
+        this.pickupGlowEmitter.emitParticleAt(
+          pickup.x + (Math.random() - 0.5) * 16,
+          py + (Math.random() - 0.5) * 16,
+          1,
+        );
+      }
     }
+
+    // Hide sprites for pickups no longer in the state
+    for (const [id, sprite] of this.pickupSprites) {
+      if (!activeIds.has(id)) {
+        sprite.setVisible(false);
+      }
+    }
+  }
+
+  private getPickupSprite(id: number): Phaser.GameObjects.Image | undefined {
+    return this.pickupSprites.get(id);
   }
 
   private drawPlayers(
@@ -1030,20 +1432,18 @@ export class GameScene extends Phaser.Scene {
     predicted: GameState | null | undefined,
     delta?: number,
   ) {
+    // First pass: compute draw positions for all players
+    const drawPositions: { x: number; y: number }[] = [];
+    const playerStates: (PlayerState | null)[] = [];
+
     for (let i = 0; i < curr.players.length; i++) {
-      // Hide player 1 during warmup
       if (this.warmupMode && i === 1) {
-        this.playerSprites[i]?.setVisible(false);
-        this.gunSprites[i]?.setVisible(false);
-        this.nameTexts[i]?.setVisible(false);
+        drawPositions.push({ x: 0, y: 0 });
+        playerStates.push(null);
         continue;
       }
       const isLocal = i === this.localPlayerId && !this.replayMode;
       const raw = curr.players[i]!;
-
-      // Build cp: for local player use predicted state, for remote use
-      // interpolated stateFlags/facing so alive/invincible checks match
-      // the rendered position (not the latest server state which is ahead).
       let cp: PlayerState;
       let drawX: number, drawY: number;
 
@@ -1053,53 +1453,62 @@ export class GameScene extends Phaser.Scene {
         drawY = cp.y;
       } else if (isLocal) {
         cp = predicted ? predicted.players[i]! : raw;
-        // Smooth lerp absorbs prediction rollback snaps
         const smooth = this.localSmooth;
-        if (!smooth.initialized) {
-          smooth.x = cp.x;
-          smooth.y = cp.y;
-          smooth.initialized = true;
-        }
-        const teleported = Math.abs(smooth.x - cp.x) > 60
-          || Math.abs(smooth.y - cp.y) > 60;
-        if (teleported) {
-          smooth.x = cp.x;
-          smooth.y = cp.y;
-        } else {
+        if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
+        const teleported = Math.abs(smooth.x - cp.x) > 60 || Math.abs(smooth.y - cp.y) > 60;
+        if (teleported) { smooth.x = cp.x; smooth.y = cp.y; }
+        else {
           const prevSmoothY = smooth.y;
           smooth.x = smoothLerp(smooth.x, cp.x, 0.85, delta ?? 16.667);
           smooth.y = smoothLerp(smooth.y, cp.y, 0.95, delta ?? 16.667);
-          // During upward jump phase, don't allow visual position to dip back
-          // down — reconciliation detects the jump edge one tick late due to
-          // input latency, causing a brief ~8px downward correction artifact.
-          if (cp.vy < 0 && smooth.y > prevSmoothY) {
-            smooth.y = prevSmoothY;
-          }
+          if (cp.vy < 0 && smooth.y > prevSmoothY) smooth.y = prevSmoothY;
         }
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
-        // Remote: use server state (raw) — prediction runs NULL_INPUT for
-        // remote so predicted position diverges and causes teleporting
-        cp = raw;
+        const predRemote = predicted?.players[i];
+        cp = predRemote
+          ? { ...raw, health: predRemote.health, stateFlags: predRemote.stateFlags, lives: predRemote.lives }
+          : raw;
         const smooth = this.remoteSmooth;
-        if (!smooth.initialized) {
-          smooth.x = cp.x;
-          smooth.y = cp.y;
-          smooth.initialized = true;
-        }
-        const teleported = Math.abs(smooth.x - cp.x) > 80
-          || Math.abs(smooth.y - cp.y) > 80;
-        if (teleported) {
-          smooth.x = cp.x;
-          smooth.y = cp.y;
-        } else {
+        if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
+        const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
+        if (teleported) { smooth.x = cp.x; smooth.y = cp.y; }
+        else {
           smooth.x = smoothLerp(smooth.x, cp.x, 0.5, delta ?? 16.667);
           smooth.y = cp.grounded ? cp.y : smoothLerp(smooth.y, cp.y, 0.5, delta ?? 16.667);
         }
         drawX = smooth.x;
         drawY = smooth.y;
       }
+      drawPositions.push({ x: drawX, y: drawY });
+      playerStates.push(cp);
+    }
+
+    // Snap riders to victim draw positions so they match exactly
+    for (let i = 0; i < playerStates.length; i++) {
+      const cp = playerStates[i];
+      if (!cp || cp.stompingOn === null) continue;
+      const victimIdx = curr.players.findIndex(p => p.id === cp.stompingOn);
+      if (victimIdx >= 0 && drawPositions[victimIdx]) {
+        drawPositions[i] = {
+          x: drawPositions[victimIdx]!.x,
+          y: drawPositions[victimIdx]!.y - PLAYER_HEIGHT + 10,
+        };
+      }
+    }
+
+    // Second pass: render all players
+    for (let i = 0; i < curr.players.length; i++) {
+      if (this.warmupMode && i === 1) {
+        this.playerSprites[i]?.setVisible(false);
+        this.gunSprites[i]?.setVisible(false);
+        this.nameTexts[i]?.setVisible(false);
+        continue;
+      }
+      const cp = playerStates[i]!;
+      const drawX = drawPositions[i]!.x;
+      const drawY = drawPositions[i]!.y;
 
       const sprite = this.playerSprites[i];
       const alive = !!(cp.stateFlags & PlayerStateFlag.Alive);
@@ -1107,6 +1516,7 @@ export class GameScene extends Phaser.Scene {
       if (!alive) {
         sprite?.setVisible(false);
         this.gunSprites[i]?.setVisible(false);
+        this.stompAlertTexts[i]?.setAlpha(0);
         if (cp.lives > 0) {
           const currentMap = this.config?.map ?? ARENA;
           const spawn = currentMap.spawnPoints[cp.id % currentMap.spawnPoints.length]!;
@@ -1134,7 +1544,25 @@ export class GameScene extends Phaser.Scene {
         const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
         let animKey: string;
         const hasGun = cp.weapon !== null;
-        if (cp.wallSliding) {
+        // Determine crouch button state for edge detection
+        // Local player: read inputManager directly (no round-trip delay)
+        const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
+        const playerBtns = isLocal
+          ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
+          : this.lastReceivedButtons[i];
+        const tauntNow = !!(playerBtns & Button.Taunt);
+        const tauntPrev = !!(this.prevFrameButtons[i] & Button.Taunt);
+        const tauntEdge = tauntNow && !tauntPrev && cp.grounded;
+        const tauntPlaying = sprite.anims.currentAnim?.key === `${slug}-crouch` && sprite.anims.isPlaying;
+        if (tauntEdge) {
+          // Restart animation + sound immediately (interrupts previous)
+          sprite.play(`${slug}-crouch`);
+          const soundKey = CROUCH_SOUNDS[slug];
+          if (soundKey) this.playSoundInterrupt(soundKey);
+          animKey = `${slug}-crouch`;
+        } else if (tauntPlaying) {
+          animKey = `${slug}-crouch`;
+        } else if (cp.wallSliding) {
           animKey = `${slug}-wall-jump`;
         } else if (!cp.grounded && cp.vy < 0 && cp.jumpsLeft === 0 && !hasGun) {
           animKey = `${slug}-double-jump`;
@@ -1147,13 +1575,21 @@ export class GameScene extends Phaser.Scene {
         } else {
           animKey = `${slug}-idle`;
         }
-        if (sprite.anims.currentAnim?.key !== animKey) {
+        if (!tauntEdge && !tauntPlaying && sprite.anims.currentAnim?.key !== animKey) {
           sprite.play(animKey);
         }
         sprite.setPosition(drawX + PLAYER_WIDTH / 2, drawY + PLAYER_HEIGHT / 2);
         sprite.setFlipX(cp.facing === Facing.Left);
         sprite.setVisible(true);
         sprite.setAlpha(invincible ? 0.6 : 1);
+        // Rider renders behind victim; victim on top so their bars are visible
+        if (cp.stompingOn !== null) {
+          sprite.setDepth(18);
+        } else if (cp.stompedBy !== null) {
+          sprite.setDepth(22);
+        } else {
+          sprite.setDepth(20);
+        }
       }
 
       // Gun sprite — position at character's hand, bob synced to animation frame
@@ -1165,23 +1601,26 @@ export class GameScene extends Phaser.Scene {
             gunSprite.setTexture(tex);
           }
           const gcfg = GUN_CONFIG[cp.weapon];
-          const facingDir = cp.facing as number;
+          // When wall sliding, point gun AWAY from wall (opposite of facing)
+          const gunFacing = cp.wallSliding ? -(cp.facing as number) : (cp.facing as number);
           // Bob derived from current animation frame — steps at 20fps, in sync with the sprite
           const frameIdx = sprite?.anims?.currentFrame?.index ?? 0;
           const totalFrames = sprite?.anims?.currentAnim?.frames?.length ?? 1;
           const bobY = gcfg && totalFrames > 1
             ? Math.sin((frameIdx / totalFrames) * Math.PI * 2) * gcfg.bobAmplitude
             : 0;
-          const gunOffX = facingDir * (gcfg?.offsetX ?? 10);
+          const gunOffX = gunFacing * (gcfg?.offsetX ?? 10);
           const gunOffY = (gcfg?.offsetY ?? 4) + bobY;
           gunSprite.setPosition(
             drawX + PLAYER_WIDTH / 2 + gunOffX,
             drawY + PLAYER_HEIGHT / 2 + gunOffY,
           );
           gunSprite.setScale(gcfg?.scale ?? 0.5);
-          gunSprite.setFlipX(cp.facing === Facing.Left);
+          gunSprite.setFlipX(gunFacing === -1);
           gunSprite.setVisible(true);
           gunSprite.setAlpha(invincible ? 0.6 : 1);
+          // Match sprite depth for stomp layering
+          gunSprite.setDepth(cp.stompingOn !== null ? 19 : cp.stompedBy !== null ? 23 : 21);
         } else {
           gunSprite.setVisible(false);
         }
@@ -1227,6 +1666,17 @@ export class GameScene extends Phaser.Scene {
 
       this.drawPlayerOverlays(g, cp, drawX, drawY, i, predicted, curr);
     }
+
+    // Update prevFrameButtons for next frame's edge detection
+    for (let i = 0; i < 2; i++) {
+      const cp = playerStates[i];
+      if (!cp) continue;
+      const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
+      const btns = isLocal
+        ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
+        : this.lastReceivedButtons[i];
+      this.prevFrameButtons[i] = btns;
+    }
   }
 
   private drawPlayerOverlays(
@@ -1238,18 +1688,42 @@ export class GameScene extends Phaser.Scene {
     predicted: GameState | null | undefined,
     curr: GameState,
   ) {
-    // Health bar
-    const barY = drawY - 8;
-    const healthPct = cp.health / 100;
-    g.fillStyle(0x333333);
-    g.fillRect(drawX, barY, PLAYER_WIDTH, 4);
-    g.fillStyle(healthPct > 0.5 ? 0x66bb6a : healthPct > 0.25 ? 0xffa726 : 0xef5350);
-    g.fillRect(drawX, barY, PLAYER_WIDTH * healthPct, 4);
+    // Stomped victims draw bars on high-depth overlay so they render above rider sprite
+    const barGfx = cp.stompedBy !== null ? this.gfxOverlay : g;
 
-    // Weapon color indicator (thin line under gun sprite)
-    if (cp.weapon !== null) {
-      g.fillStyle(WEAPON_PICKUP_COLORS[cp.weapon] ?? 0xffffff);
-      g.fillRect(drawX, drawY + PLAYER_HEIGHT, PLAYER_WIDTH, 1);
+    // Health bar with black stroke
+    const barY = drawY - 3;
+    const healthPct = cp.health / 100;
+    barGfx.fillStyle(0x000000);
+    barGfx.fillRect(drawX - 1, barY - 1, PLAYER_WIDTH + 2, 6);
+    barGfx.fillStyle(0x333333);
+    barGfx.fillRect(drawX, barY, PLAYER_WIDTH, 4);
+    barGfx.fillStyle(healthPct > 0.5 ? 0x66bb6a : healthPct > 0.25 ? 0xffa726 : 0xef5350);
+    barGfx.fillRect(drawX, barY, PLAYER_WIDTH * healthPct, 4);
+
+    // "Shake him off!" alert + progress bar below stomped player
+    const alertText = this.stompAlertTexts[index];
+    const shakeBarBelow = drawY + PLAYER_HEIGHT + 2;
+    if (cp.stompedBy !== null && cp.stompShakeProgress > 0) {
+      const shakePct = cp.stompShakeProgress / 100;
+      barGfx.fillStyle(0x000000);
+      barGfx.fillRect(drawX - 1, shakeBarBelow - 1, PLAYER_WIDTH + 2, 5);
+      barGfx.fillStyle(0x444444);
+      barGfx.fillRect(drawX, shakeBarBelow, PLAYER_WIDTH, 3);
+      barGfx.fillStyle(0xffee58);
+      barGfx.fillRect(drawX, shakeBarBelow, PLAYER_WIDTH * shakePct, 3);
+    }
+    if (alertText) {
+      const alertY = (cp.stompedBy !== null && cp.stompShakeProgress > 0)
+        ? shakeBarBelow + 6
+        : drawY + PLAYER_HEIGHT + 2;
+      alertText.setPosition(drawX + PLAYER_WIDTH / 2, alertY);
+      if (cp.stompedBy !== null) {
+        const pulse = Math.sin((predicted?.tick ?? curr.tick) * 0.2) * 0.3 + 0.7;
+        alertText.setAlpha(pulse);
+      } else {
+        alertText.setAlpha(0);
+      }
     }
 
     // Username above player
@@ -1258,7 +1732,7 @@ export class GameScene extends Phaser.Scene {
     const uname = this.playerUsernames[index];
     if (uname) {
       nameText.setText(uname);
-      nameText.setPosition(drawX + PLAYER_WIDTH / 2, drawY - 12);
+      nameText.setPosition(drawX + PLAYER_WIDTH / 2, drawY - 6);
       nameText.setVisible(true);
     } else {
       nameText.setVisible(false);
@@ -1275,22 +1749,37 @@ export class GameScene extends Phaser.Scene {
     const projectiles = displayState.projectiles;
     for (const p of projectiles) {
       let px = p.x;
-      let py = p.y;
+      const gcfg = GUN_CONFIG[p.weapon];
+      // Consistent Y offset: shift to gun height on every frame (avoids vertical jump)
+      const yOff = gcfg ? gcfg.offsetY + gcfg.muzzleY * gcfg.scale : 0;
 
-      // Offset freshly spawned projectiles to the gun muzzle position
+      // First frame only: snap X to muzzle position (forward motion masks the transition)
       const maxLife = WEAPON_STATS[p.weapon as WeaponType]?.lifetime ?? 90;
-      if (p.lifetime >= maxLife - 1) {
+      if (p.lifetime >= maxLife - 1 && gcfg) {
         const owner = displayState.players.find(pl => pl.id === p.ownerId);
-        const gcfg = GUN_CONFIG[p.weapon];
-        if (owner && gcfg) {
-          const fdir = owner.facing as number;
+        if (owner) {
+          // When wall sliding, gun points away from wall (same logic as gun sprite)
+          const fdir = owner.wallSliding ? -(owner.facing as number) : (owner.facing as number);
           px = owner.x + PLAYER_WIDTH / 2 + fdir * (gcfg.offsetX + gcfg.muzzleX * gcfg.scale);
-          py = owner.y + PLAYER_HEIGHT / 2 + gcfg.offsetY + gcfg.muzzleY * gcfg.scale;
         }
       }
 
-      g.fillStyle(WEAPON_PROJECTILE_COLORS[p.weapon] ?? 0xffee58);
-      g.fillCircle(px, py, p.weapon === WeaponType.Rocket ? 6 : PROJECTILE_RADIUS);
+      const py = p.y + yOff;
+      // Per-weapon bullet size (w × h)
+      let bw: number, bh: number;
+      switch (p.weapon) {
+        case WeaponType.Pistol:  bw = 3; bh = 2; break;
+        case WeaponType.SMG:     bw = 3; bh = 2; break;
+        case WeaponType.Shotgun: bw = 4; bh = 2; break;
+        case WeaponType.Sniper:  bw = 6; bh = 2; break;
+        case WeaponType.Rocket:  bw = 6; bh = 4; break;
+        default:                 bw = 3; bh = 2; break;
+      }
+      // Black shadow behind white rectangular bullet
+      g.fillStyle(0x000000, 0.6);
+      g.fillRect(px - bw / 2 - 1, py - bh / 2 - 1, bw + 2, bh + 2);
+      g.fillStyle(0xffffff);
+      g.fillRect(px - bw / 2, py - bh / 2, bw, bh);
     }
   }
 
@@ -1312,7 +1801,7 @@ export class GameScene extends Phaser.Scene {
     // Warmup mode — hide all game HUD
     if (this.warmupMode) {
       this.timerText.setText("");
-      this.suddenDeathText.setVisible(false);
+      document.getElementById("sudden-death-overlay")?.classList.remove("visible");
       this.roundText.setVisible(false);
       this.weaponText.setText("");
       return;
@@ -1323,10 +1812,28 @@ export class GameScene extends Phaser.Scene {
     const secondsRemaining = Math.max(0, Math.ceil(ticksRemaining / TICK_RATE));
     this.timerText.setText(`${secondsRemaining}s`);
 
-    // Sudden death
-    const inSuddenDeath = displayState.tick >= (this.config?.suddenDeathStartTick ?? 1200);
-    this.suddenDeathText.setVisible(inSuddenDeath);
-    if (inSuddenDeath) this.suddenDeathText.setY(55);
+    // Sudden death countdown + text (DOM overlay for guaranteed visibility)
+    const sdTick = this.config?.suddenDeathStartTick ?? 1200;
+    const ticksUntilSD = sdTick - displayState.tick;
+    const inSuddenDeath = displayState.tick >= sdTick;
+    const sdOverlay = document.getElementById("sudden-death-overlay");
+    const sdText = document.getElementById("sudden-death-text");
+    if (sdOverlay && sdText) {
+      if (!this.playing) {
+        sdOverlay.classList.remove("visible");
+      } else if (inSuddenDeath) {
+        sdText.textContent = "SUDDEN DEATH";
+        sdText.style.fontSize = "16px";
+        sdOverlay.classList.add("visible");
+      } else if (ticksUntilSD <= 180 && ticksUntilSD > 0) {
+        const countNum = Math.ceil(ticksUntilSD / 60);
+        sdText.textContent = `SUDDEN DEATH IN ${countNum}`;
+        sdText.style.fontSize = "20px";
+        sdOverlay.classList.add("visible");
+      } else {
+        sdOverlay.classList.remove("visible");
+      }
+    }
 
     // Round info
     if (!this.replayMode) {
@@ -1355,6 +1862,8 @@ export class GameScene extends Phaser.Scene {
       this.weaponText.setText("");
     }
 
+    // Stomp alert alpha reset (drawPlayerOverlays sets alpha when active)
+
     // Replay controls
     if (this.replayMode) {
       const status = this.replayPaused ? "PAUSED" : "PLAYING";
@@ -1365,22 +1874,46 @@ export class GameScene extends Phaser.Scene {
   private updateCamera(curr: GameState, predicted: GameState | null | undefined, delta: number) {
     const cam = this.cameras.main;
 
+    // Fixed zoom mode: show whole arena, centered (with padding so edges aren't clipped)
+    if (!this.dynamicZoom && !this.warmupMode) {
+      const mapW = this.config?.map.width ?? 960;
+      const mapH = this.config?.map.height ?? 540;
+      const PAD = 40;
+      const fitZoom = Math.min(VIEW_W / (mapW + PAD * 2), VIEW_H / (mapH + PAD * 2));
+      this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.1, delta);
+      this.cameraX = smoothLerp(this.cameraX, mapW / 2, 0.15, delta);
+      this.cameraY = smoothLerp(this.cameraY, mapH / 2, 0.15, delta);
+      cam.setZoom(this.currentZoom * DPR);
+      cam.centerOn(this.cameraX, this.cameraY);
+      return;
+    }
+
     // Local player from predicted state, remote from server state (curr)
     const localP = (predicted ?? curr).players[this.localPlayerId];
     const remoteP = curr.players[1 - this.localPlayerId];
 
-    // Warmup or single-player: follow local player only
+    // Warmup or single-player
     if (!localP || !remoteP || this.warmupMode) {
-      if (localP) {
+      if (this.warmupMode && this.dynamicZoom && localP) {
+        // Dynamic zoom in warmup: follow the player
         const aliveLocal = !!(localP.stateFlags & PlayerStateFlag.Alive);
         const targetX = aliveLocal ? localP.x + PLAYER_WIDTH / 2 : 480;
         const targetY = aliveLocal ? localP.y + PLAYER_HEIGHT / 2 : 270;
-        this.currentZoom = smoothLerp(this.currentZoom, 1.0, 0.05, delta);
+        this.currentZoom = smoothLerp(this.currentZoom, 1.3, 0.05, delta);
         this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
         this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
-        cam.setZoom(this.currentZoom * DPR);
-        cam.centerOn(this.cameraX, this.cameraY);
+      } else {
+        // Static zoom: show full arena
+        const mapW = (this.warmupMode ? this.warmupConfig?.map.width : this.config?.map.width) ?? 960;
+        const mapH = (this.warmupMode ? this.warmupConfig?.map.height : this.config?.map.height) ?? 540;
+        const PAD = 40;
+        const fitZoom = Math.min(VIEW_W / (mapW + PAD * 2), VIEW_H / (mapH + PAD * 2));
+        this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.05, delta);
+        this.cameraX = smoothLerp(this.cameraX, mapW / 2, 0.15, delta);
+        this.cameraY = smoothLerp(this.cameraY, mapH / 2, 0.15, delta);
       }
+      cam.setZoom(this.currentZoom * DPR);
+      cam.centerOn(this.cameraX, this.cameraY);
       return;
     }
 
@@ -1430,31 +1963,77 @@ export class GameScene extends Phaser.Scene {
   // ── Audio ──────────────────────────────────────────────────────────────────
 
   private playSound(key: string) {
-    if (this._muted || !this.audioLoaded) return;
-    try {
-      this.sound.play(key, { volume: 0.5 });
-    } catch {
-      // Sound not loaded
+    if (this.sfxVolume === 0) return;
+    // Try Phaser audio first (check asset cache, not sound manager), fall back to Web Audio synth
+    if (this.audioLoaded && this.cache.audio.exists(key)) {
+      try {
+        this.sound.play(key, { volume: this.sfxVolume });
+        return;
+      } catch { /* fall through */ }
     }
+    playSFX(key, this.sfxVolume);
   }
 
-  private startBGM() {
-    if (this._muted || !this.audioLoaded) return;
+  /** Play a sound, stopping any previous instance first (for spammable SFX like taunt). */
+  private playSoundInterrupt(key: string) {
+    if (this.sfxVolume === 0) return;
+    if (this.audioLoaded && this.cache.audio.exists(key)) {
+      try {
+        // Stop all existing instances of this sound
+        this.sound.stopByKey(key);
+        this.sound.play(key, { volume: this.sfxVolume });
+        return;
+      } catch { /* fall through */ }
+    }
+    playSFX(key, this.sfxVolume);
+  }
+
+  /** Smoothly fade a WebAudio track's volume from `from` to `to` over `ms` milliseconds. */
+  private fadeVolume(track: Phaser.Sound.WebAudioSound, from: number, to: number, ms: number) {
+    const steps = 20;
+    const interval = ms / steps;
+    let step = 0;
+    const timer = setInterval(() => {
+      step++;
+      track.volume = from + (to - from) * (step / steps);
+      if (step >= steps) clearInterval(timer);
+    }, interval);
+  }
+
+  private pickBgmTrack(): string {
+    let track: number;
+    do {
+      track = 1 + Math.floor(Math.random() * 5);
+    } while (track === this.lastBgmTrack && 5 > 1);
+    this.lastBgmTrack = track;
+    return `bgm-${track}`;
+  }
+
+  /** Start BGM if not already playing. Idempotent — safe to call multiple times. */
+  startBGM() {
+    if (this.bgmVolume === 0 || !this.audioLoaded || this._muted) return;
+    if (this.bgm?.isPlaying) return; // already playing, don't restart
+    this.playNextTrack();
+  }
+
+  private playNextTrack() {
+    if (this.bgmVolume === 0 || !this.audioLoaded) return;
     try {
-      if (!this.bgm) {
-        this.bgm = this.sound.add("bgm", { loop: true, volume: 0.3 });
+      const key = this.pickBgmTrack();
+      const newTrack = this.sound.add(key, { loop: false, volume: this.bgmVolume }) as Phaser.Sound.WebAudioSound;
+      // Crossfade: fade out old track over 1s, then destroy it
+      if (this.bgm?.isPlaying && "volume" in this.bgm) {
+        const oldTrack = this.bgm as Phaser.Sound.WebAudioSound;
+        this.fadeVolume(oldTrack, oldTrack.volume, 0, 1000);
+        setTimeout(() => { oldTrack.stop(); oldTrack.destroy(); }, 1050);
+      } else if (this.bgm) {
+        this.bgm.destroy();
       }
-      if (!this.bgm.isPlaying) {
-        this.bgm.play();
-      }
+      this.bgm = newTrack;
+      newTrack.on("complete", () => this.playNextTrack());
+      newTrack.play();
     } catch {
       // BGM not available
-    }
-  }
-
-  private stopBGM() {
-    if (this.bgm?.isPlaying) {
-      this.bgm.stop();
     }
   }
 
@@ -1464,7 +2043,7 @@ export class GameScene extends Phaser.Scene {
       this.playSound("shoot");
     }
 
-    // Health decreased → hit
+    // Per-player events
     for (let i = 0; i < curr.players.length; i++) {
       const pp = prev.players[i];
       const cp = curr.players[i];
@@ -1477,6 +2056,10 @@ export class GameScene extends Phaser.Scene {
         }
         if (cp.weapon !== null && pp.weapon === null) {
           this.playSound("pickup");
+        }
+        // Jump: jumpsLeft decreased while alive
+        if (cp.jumpsLeft < pp.jumpsLeft && (cp.stateFlags & PlayerStateFlag.Alive)) {
+          this.playSound("jump");
         }
       }
     }

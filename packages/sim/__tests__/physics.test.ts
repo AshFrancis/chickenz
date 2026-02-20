@@ -204,7 +204,7 @@ describe("moveAndCollide", () => {
     expect(result.vy).toBe(0);
   });
 
-  test("one-way platform — no collision from below", () => {
+  test("full platform collision — blocked from below", () => {
     const mapWithPlat: GameMap = {
       width: 800,
       height: 600,
@@ -214,7 +214,8 @@ describe("moveAndCollide", () => {
     };
     const p = makePlayer({ x: 100, y: 310, vy: -5 });
     const result = moveAndCollide(p, mapWithPlat, 0, mapWithPlat.width, 0);
-    expect(result.y).toBe(305);
+    expect(result.y).toBe(316); // pushed below platform
+    expect(result.vy).toBe(0);
     expect(result.grounded).toBe(false);
   });
 

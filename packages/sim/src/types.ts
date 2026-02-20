@@ -17,6 +17,7 @@ export const Button = {
   Right: 2,
   Jump: 4,
   Shoot: 8,
+  Taunt: 16,
 } as const;
 
 export interface PlayerInput {
@@ -89,6 +90,14 @@ export interface PlayerState {
   readonly jumpsLeft: number;     // 0..MAX_JUMPS, reset on ground
   readonly wallSliding: boolean;  // true when sliding down a wall
   readonly wallDir: number;       // -1 wall on left, 1 wall on right, 0 none
+  // Stomp mechanic
+  readonly stompedBy: PlayerId | null;      // who is riding on my head
+  readonly stompingOn: PlayerId | null;     // who I'm standing on
+  readonly stompShakeProgress: number;      // 0-100, alternating L/R fills this
+  readonly stompLastShakeDir: number;       // last shake direction pressed: -1=L, 1=R, 0=none
+  readonly stompAutoRunDir: number;         // auto-run direction when being stomped: -1 or 1
+  readonly stompAutoRunTimer: number;       // ticks until direction change
+  readonly stompCooldown: number;           // ticks of immunity after being shaken off
 }
 
 // ── Projectile ──────────────────────────────────────────────

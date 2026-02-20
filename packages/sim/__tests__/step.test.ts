@@ -445,13 +445,14 @@ describe("lives system", () => {
     expect(s.winner).toBe(0);
   });
 
-  test("matchOver early return prevents further state changes", () => {
+  test("matchOver keeps advancing tick but preserves winner", () => {
     let state = createInitialState(config);
     state = { ...state, matchOver: true, winner: 0, tick: 100, deathLingerTimer: 0 };
 
     const s = step(state, NO_INPUTS, NO_INPUTS, config);
-    expect(s.tick).toBe(100);
-    expect(s).toBe(state);
+    expect(s.tick).toBe(101);
+    expect(s.matchOver).toBe(true);
+    expect(s.winner).toBe(0);
   });
 
   test("death linger delays matchOver by DEATH_LINGER_TICKS", () => {

@@ -78,7 +78,7 @@ export class PredictionManager {
     // received it yet — using the client's buffer would mask the edge.
     let state = serverState;
     const seedInput = serverLastButtons
-      ? { buttons: serverLastButtons[this.localPlayerId], aimX: 0, aimY: 0 }
+      ? { buttons: serverLastButtons[this.localPlayerId] ?? 0, aimX: 0, aimY: 0 }
       : this.inputBuffer.get(serverTick);
     let prevInputs: InputMap = new Map([
       [this.localPlayerId, seedInput],

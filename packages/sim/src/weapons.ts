@@ -118,15 +118,20 @@ export function createWeaponProjectiles(
 
   const stats = WEAPON_STATS[weapon];
 
-  // Normalize aim vector
-  const len = Math.sqrt(aimX * aimX + aimY * aimY);
+  // Normalize aim vector; when wall sliding, always shoot away from wall
+  let ax = aimX, ay = aimY;
+  if (player.wallSliding) {
+    ax = -player.facing;
+    ay = 0;
+  }
+  const len = Math.sqrt(ax * ax + ay * ay);
   let nx: number, ny: number;
   if (len < 0.001) {
     nx = player.facing;
     ny = 0;
   } else {
-    nx = aimX / len;
-    ny = aimY / len;
+    nx = ax / len;
+    ny = ay / len;
   }
 
   // Spawn offset: edge of player hitbox in aim direction
@@ -143,12 +148,12 @@ export function createWeaponProjectiles(
 
     // Apply spread for shotgun
     if (stats.spreadDeg > 0 && stats.pellets > 1) {
-      // Deterministic spread: evenly space pellets across spread arc, with slight PRNG jitter
+      // Deterministic spread: evenly space pellets across spread arc, biased upward
       const spreadRad = (stats.spreadDeg * Math.PI) / 180;
       const baseAngle = Math.atan2(ny, nx);
-      // Evenly spaced from -spread to +spread
+      const arcStart = baseAngle - spreadRad;
       const step = (2 * spreadRad) / (stats.pellets - 1);
-      const pelletAngle = baseAngle - spreadRad + step * i;
+      const pelletAngle = arcStart + step * i;
       // Add small PRNG jitter
       let jitter: number;
       [jitter, rng] = prngNext(rng);
@@ -156,6 +161,11 @@ export function createWeaponProjectiles(
       const finalAngle = pelletAngle + jitterAngle;
       dx = Math.cos(finalAngle);
       dy = Math.sin(finalAngle);
+      // Nudge pellets slightly upward (negative Y = up in screen coords)
+      dy -= 0.06;
+      const len2 = Math.sqrt(dx * dx + dy * dy);
+      dx /= len2;
+      dy /= len2;
     }
 
     projectiles.push({

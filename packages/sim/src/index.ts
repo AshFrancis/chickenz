@@ -36,6 +36,13 @@ export function createInitialState(config: MatchConfig): GameState {
       jumpsLeft: 2,
       wallSliding: false,
       wallDir: 0,
+      stompedBy: null,
+      stompingOn: null,
+      stompShakeProgress: 0,
+      stompLastShakeDir: 0,
+      stompAutoRunDir: 1,
+      stompAutoRunTimer: 0,
+      stompCooldown: 0,
     });
   }
 

@@ -22,7 +22,7 @@ interface MatchRecord {
   winner: number;
   scores: [number, number];
   timestamp: number;
-  proofStatus: "pending" | "proving" | "verified" | "settled";
+  proofStatus: "none" | "pending" | "proving" | "verified" | "settled";
   roomId: string;
   mode: GameMode;
   proofArtifacts?: { seal: string; journal: string; imageId: string };
@@ -52,7 +52,7 @@ function broadcastLobby() {
     try {
       ws.send(msg);
     } catch {
-      // socket closed
+      lobbySockets.delete(ws);
     }
   }
 }
@@ -91,7 +91,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       winner,
       scores,
       timestamp: Date.now(),
-      proofStatus: mode === "ranked" ? "pending" : "pending",
+      proofStatus: mode === "ranked" ? "pending" : "none",
       roomId,
       mode,
     };
@@ -209,7 +209,7 @@ const server = Bun.serve<SocketData>({
     // WebSocket upgrade
     if (url.pathname === "/ws") {
       const upgraded = server.upgrade(req, {
-        data: { roomId: null, playerId: -1, username: "", walletAddress: "" },
+        data: { roomId: null, playerId: -1, username: "", walletAddress: "", character: 0 },
       });
       if (!upgraded) {
         return new Response("WebSocket upgrade failed", {
@@ -419,6 +419,12 @@ const server = Bun.serve<SocketData>({
         return;
       }
 
+      // Store character choice from any room-related message
+      if (typeof (msg as any).character === "number") {
+        const ch = (msg as any).character;
+        if (ch >= 0 && ch <= 3) ws.data.character = ch;
+      }
+
       // ── Create room ─────────────────────────────────────
       if (msg.type === "create") {
         if (ws.data.roomId) {
@@ -556,15 +562,11 @@ setInterval(() => {
   }
 }, 30_000);
 
-// Periodic sweep: clean up stale rooms (waiting rooms with no players,
-// ended rooms that missed cleanup, etc.)
+// Periodic sweep: clean up waiting rooms with no players.
+// Ended rooms are cleaned by cleanupRoom()'s 2-minute timeout.
 setInterval(() => {
   for (const [id, room] of rooms) {
-    if (room.isEnded()) {
-      // Ended rooms that slipped through cleanupRoom — delete after 2 min
-      // (cleanupRoom already schedules this, but this catches any misses)
-      rooms.delete(id);
-    } else if (room.isWaiting() && room.playerCount === 0) {
+    if (room.isWaiting() && room.playerCount === 0) {
       rooms.delete(id);
     }
   }
