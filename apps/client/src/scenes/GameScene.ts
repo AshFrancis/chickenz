@@ -1452,7 +1452,10 @@ export class GameScene extends Phaser.Scene {
         drawX = cp.x;
         drawY = cp.y;
       } else if (isLocal) {
-        cp = predicted ? predicted.players[i]! : raw;
+        // Use predicted position for responsiveness, but server-authoritative combat fields
+        // (health, lives, deaths) to avoid desync artifacts like "healing" when server disagrees
+        const pred = predicted?.players[i];
+        cp = pred ? { ...pred, health: raw.health, lives: raw.lives, alive: raw.alive, stateFlags: raw.stateFlags, stompedBy: raw.stompedBy, stompingOn: raw.stompingOn, stompShakeProgress: raw.stompShakeProgress } : raw;
         const smooth = this.localSmooth;
         if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
         const teleported = Math.abs(smooth.x - cp.x) > 60 || Math.abs(smooth.y - cp.y) > 60;
@@ -1466,10 +1469,8 @@ export class GameScene extends Phaser.Scene {
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
-        const predRemote = predicted?.players[i];
-        cp = predRemote
-          ? { ...raw, health: predRemote.health, stateFlags: predRemote.stateFlags, lives: predRemote.lives }
-          : raw;
+        // Remote player: always use server state (no predicted combat overlay)
+        cp = raw;
         const smooth = this.remoteSmooth;
         if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
         const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
