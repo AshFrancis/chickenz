@@ -2039,9 +2039,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private detectAudioEvents(prev: GameState, curr: GameState) {
-    // New projectiles → shoot (interrupt previous to avoid stacking on rapid-fire weapons)
+    // New projectiles → shoot sound (weapon-specific for rapid-fire)
     if (curr.projectiles.length > prev.projectiles.length) {
-      this.playSoundInterrupt("shoot");
+      const newProj = curr.projectiles[curr.projectiles.length - 1];
+      if (newProj && newProj.weapon === WeaponType.SMG) {
+        this.playSound("shoot-smg");
+      } else {
+        this.playSoundInterrupt("shoot");
+      }
     }
 
     // Per-player events

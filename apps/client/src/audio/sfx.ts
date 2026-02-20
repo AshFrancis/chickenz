@@ -148,8 +148,23 @@ function matchEnd(c: AudioContext, vol: number) {
   });
 }
 
+function shootSmg(c: AudioContext, vol: number) {
+  // Very short high-pitched tick for rapid-fire SMG
+  const osc = c.createOscillator();
+  const gain = c.createGain();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(900, c.currentTime);
+  osc.frequency.linearRampToValueAtTime(1200, c.currentTime + 0.02);
+  gain.gain.setValueAtTime(vol * 0.4, c.currentTime);
+  gain.gain.linearRampToValueAtTime(0, c.currentTime + 0.02);
+  osc.connect(gain).connect(c.destination);
+  osc.start();
+  osc.stop(c.currentTime + 0.02);
+}
+
 const SFX_MAP: Record<string, SFXDef> = {
   shoot,
+  "shoot-smg": shootSmg,
   hit,
   death,
   pickup,
