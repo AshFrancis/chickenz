@@ -8,6 +8,7 @@
     "typecheck": "tsc -b packages/sim apps/client"
   },
   "devDependencies": {
+    "sharp": "^0.34.5",
     "typescript": "^5.7.0"
   }
 }

@@ -10,8 +10,11 @@ import {
   SUDDEN_DEATH_START_TICK,
   TICK_RATE,
   TICK_DT_MS,
+  MAX_JUMPS,
+  WEAPON_STATS,
   PlayerStateFlag,
   WeaponType,
+  Facing,
   createInitialState,
   step,
   NULL_INPUT,
@@ -32,8 +35,68 @@ interface TranscriptInput {
 type TickInputPair = [TranscriptInput, TranscriptInput];
 
 const PLAYER_COLORS = [0x4fc3f7, 0xef5350]; // blue, red
-const PLATFORM_COLOR = 0x666666;
 const WALL_COLOR = 0xff0000;
+
+// ── Terrain tileset constants ──────────────────────────────────────────────
+const TERRAIN_COLS = 22; // tiles per row in terrain spritesheet
+const GRASS_TERRAIN = { col: 6, row: 0 }; // green grass 9-slice: TL=(6,0) T=(7,0) TR=(8,0)
+const THIN_PLATFORM = { col: 12, row: 0 }; // thin platform tiles: L=(12,0) M=(13,0) R=(14,0)
+
+// ── Character sprite constants ───────────────────────────────────────────
+const CHARACTER_SLUGS = ["ninja-frog", "mask-dude", "pink-man", "virtual-guy"] as const;
+// Weapon sprite texture keys, indexed by WeaponType
+const GUN_TEXTURES: Record<number, string> = {
+  [WeaponType.Pistol]: "gun-pistol",
+  [WeaponType.Shotgun]: "gun-shotgun",
+  [WeaponType.Sniper]: "gun-sniper",
+  [WeaponType.Rocket]: "gun-rocket",
+  [WeaponType.SMG]: "gun-smg",
+};
+
+// Per-gun visual config: position offset, scale, muzzle (shot origin), bob
+interface GunConfig {
+  offsetX: number;   // from character center, before facing flip
+  offsetY: number;
+  scale: number;
+  muzzleX: number;   // from gun center, before facing flip (scaled)
+  muzzleY: number;
+  bobAmplitude: number; // max pixels of vertical bob (synced to anim frames)
+}
+
+const GUN_CONFIG: Record<number, GunConfig> = {
+  [WeaponType.Pistol]:  { offsetX: 14, offsetY: 6.5, scale: 0.5, muzzleX: 13.5, muzzleY: -5, bobAmplitude: 0.6 },
+  [WeaponType.Shotgun]: { offsetX: 4.5, offsetY: 8, scale: 0.5, muzzleX: 29, muzzleY: -3, bobAmplitude: 0.9 },
+  [WeaponType.Sniper]:  { offsetX: 7, offsetY: 8.5, scale: 0.5, muzzleX: 27, muzzleY: -2, bobAmplitude: 0.6 },
+  [WeaponType.Rocket]:  { offsetX: 5, offsetY: 8, scale: 0.5, muzzleX: 23.5, muzzleY: 0, bobAmplitude: 1 },
+  [WeaponType.SMG]:     { offsetX: 11.5, offsetY: 6.5, scale: 0.5, muzzleX: 14, muzzleY: -4.5, bobAmplitude: 1 },
+};
+
+const CHARACTER_ANIMS = [
+  { key: "idle", frames: 11, repeat: -1, rate: 20 },
+  { key: "run", frames: 12, repeat: -1, rate: 20 },
+  { key: "jump", frames: 1, repeat: 0, rate: 20 },
+  { key: "double-jump", frames: 6, repeat: 0, rate: 20 },
+  { key: "fall", frames: 1, repeat: 0, rate: 20 },
+  { key: "hit", frames: 7, repeat: 0, rate: 20 },
+  { key: "wall-jump", frames: 5, repeat: -1, rate: 20 },
+] as const;
+
+/** Compute the spritesheet frame index for a tile at (tx,ty) in a platform grid. */
+function getTerrainFrame(tx: number, ty: number, tilesW: number, tilesH: number): number {
+  let cx: number, cy: number;
+
+  // Single-height platforms use dedicated thin platform tiles
+  if (tilesH === 1) {
+    const p = THIN_PLATFORM;
+    cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
+    return p.row * TERRAIN_COLS + (p.col + cx);
+  }
+  // Multi-height platforms use green grass 9-slice
+  const t = GRASS_TERRAIN;
+  cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
+  cy = ty === 0 ? 0 : ty === tilesH - 1 ? 2 : 1;
+  return (t.row + cy) * TERRAIN_COLS + (t.col + cx);
+}
 
 const WEAPON_PROJECTILE_COLORS: Record<number, number> = {
   [WeaponType.Pistol]: 0xffee58,
@@ -92,7 +155,7 @@ export class GameScene extends Phaser.Scene {
   private localPlayerId = 0;
   private prediction: PredictionManager | null = null;
   private predictionAccum = 0;
-  onLocalInput?: (input: PlayerInput) => void;
+  onLocalInput?: (input: PlayerInput, tick: number) => void;
 
   // Player usernames
   private playerUsernames: [string, string] = ["", ""];
@@ -114,6 +177,22 @@ export class GameScene extends Phaser.Scene {
 
   // Rocket explosion effects
   private explosions: { x: number; y: number; timer: number }[] = [];
+
+  // Tile-based platform sprites + background
+  private platformTiles: Phaser.GameObjects.Image[] = [];
+  private bgTile: Phaser.GameObjects.TileSprite | null = null;
+
+  // Character sprites (animated)
+  private playerSprites: Phaser.GameObjects.Sprite[] = [];
+  private gunSprites: Phaser.GameObjects.Image[] = [];
+  private characterSlots: [number, number] = [0, 1]; // indices into CHARACTER_SLUGS
+
+  // Dust particle effects
+  private dustEmitter: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
+  private dustGroundEmitL: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
+  private dustGroundEmitR: Phaser.GameObjects.Particles.ParticleEmitter | null = null;
+  private prevPlayerGrounded: boolean[] = [false, false];
+  private prevPlayerJumpsLeft: number[] = [2, 2];
 
   // Smooth render positions (per-frame lerp absorbs prediction/reconciliation snaps)
   private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
@@ -170,6 +249,27 @@ export class GameScene extends Phaser.Scene {
     } catch {
       // Audio files may not exist yet
     }
+    // Terrain spritesheet (16×16 tiles, 22 cols × 11 rows)
+    this.load.spritesheet("terrain", "/sprites/terrain.png", { frameWidth: 16, frameHeight: 16 });
+    this.load.image("bg-tile", "/sprites/bg-green.png");
+    this.load.image("dust", "/sprites/dust.png");
+
+    // Gun sprites
+    for (const [, tex] of Object.entries(GUN_TEXTURES)) {
+      this.load.image(tex, `/sprites/${tex}.png`);
+    }
+
+    // Character spritesheets (32×32 frames)
+    for (const slug of CHARACTER_SLUGS) {
+      for (const anim of CHARACTER_ANIMS) {
+        this.load.spritesheet(
+          `${slug}-${anim.key}`,
+          `/sprites/characters/${slug}-${anim.key}.png`,
+          { frameWidth: 32, frameHeight: 32 },
+        );
+      }
+    }
+
     this.load.on("complete", () => {
       this.audioLoaded = true;
     });
@@ -289,11 +389,94 @@ export class GameScene extends Phaser.Scene {
     for (const nt of this.nameTexts) {
       this.hudCamera.ignore(nt);
     }
+
+    // Tiling background — covers the camera bounds area
+    this.bgTile = this.add.tileSprite(480, 270, 960 + VIEW_W, 540 + VIEW_H, "bg-tile")
+      .setDepth(-100);
+    this.cameras.main.ignore([]); // main camera sees bg
+    this.hudCamera.ignore(this.bgTile);
+
+    // Graphics layer above platform tiles
+    this.gfx.setDepth(10);
+
+    // Character animations + sprites
+    for (const slug of CHARACTER_SLUGS) {
+      for (const anim of CHARACTER_ANIMS) {
+        const key = `${slug}-${anim.key}`;
+        this.anims.create({
+          key,
+          frames: this.anims.generateFrameNumbers(key, { start: 0, end: anim.frames - 1 }),
+          frameRate: anim.rate,
+          repeat: anim.repeat,
+        });
+      }
+    }
+    for (let i = 0; i < 2; i++) {
+      const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
+      const sprite = this.add.sprite(0, 0, `${slug}-idle`)
+        .setDepth(20)
+        .setVisible(false);
+      this.hudCamera.ignore(sprite);
+      this.playerSprites.push(sprite);
+
+      // Gun sprite (rendered on top of character, scale set per-weapon in drawPlayers)
+      const gun = this.add.image(0, 0, "gun-pistol")
+        .setDepth(21)
+        .setVisible(false);
+      this.hudCamera.ignore(gun);
+      this.gunSprites.push(gun);
+    }
+
+    // Dust emitter for airborne effects (jump, double jump) — puffs upward
+    this.dustEmitter = this.add.particles(0, 0, "dust", {
+      speed: { min: 20, max: 60 },
+      angle: { min: 200, max: 340 },
+      scale: { start: 0.6, end: 0 },
+      alpha: { start: 0.7, end: 0 },
+      lifespan: { min: 350, max: 600 },
+      gravityY: 20,
+      emitting: false,
+    });
+    this.dustEmitter.setDepth(19);
+    this.hudCamera.ignore(this.dustEmitter);
+
+    // Dust emitters for ground effects — one spreads left, one spreads right
+    this.dustGroundEmitL = this.add.particles(0, 0, "dust", {
+      speed: { min: 25, max: 55 },
+      angle: { min: 160, max: 200 },
+      scale: { start: 0.6, end: 0 },
+      alpha: { start: 0.7, end: 0 },
+      lifespan: { min: 350, max: 600 },
+      gravityY: -5,
+      emitting: false,
+    });
+    this.dustGroundEmitL.setDepth(19);
+    this.hudCamera.ignore(this.dustGroundEmitL);
+
+    this.dustGroundEmitR = this.add.particles(0, 0, "dust", {
+      speed: { min: 25, max: 55 },
+      angle: { min: -20, max: 20 },
+      scale: { start: 0.6, end: 0 },
+      alpha: { start: 0.7, end: 0 },
+      lifespan: { min: 350, max: 600 },
+      gravityY: -5,
+      emitting: false,
+    });
+    this.dustGroundEmitR.setDepth(19);
+    this.hudCamera.ignore(this.dustGroundEmitR);
   }
 
   // ── Warmup Mode ──────────────────────────────────────────────────────────
 
+  private assignCharacters() {
+    const p1 = Math.floor(Math.random() * CHARACTER_SLUGS.length);
+    let p2 = Math.floor(Math.random() * (CHARACTER_SLUGS.length - 1));
+    if (p2 >= p1) p2++;
+    this.characterSlots = [p1, p2];
+  }
+
   startWarmup(joinCode: string, username?: string) {
+    this.assignCharacters();
     this.warmupMode = true;
     this.warmupJoinCode = joinCode;
     this.playerUsernames = [username || "", ""];
@@ -301,6 +484,7 @@ export class GameScene extends Phaser.Scene {
     this.warmupPrevInputs = new Map();
 
     const map = ARENA;
+    this.createMapTiles(map);
     this.warmupConfig = {
       seed: 0,
       map,
@@ -357,8 +541,13 @@ export class GameScene extends Phaser.Scene {
     document.getElementById("warmup-overlay")?.classList.remove("visible");
   }
 
-  startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3) {
+  startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3, characters?: [number, number]) {
     this.localPlayerId = playerId;
+    if (characters) {
+      this.characterSlots = characters;
+    } else {
+      this.assignCharacters();
+    }
     this.playerUsernames = usernames ?? ["", ""];
     this.replayMode = false;
     this.replayInfoText.setVisible(false);
@@ -432,6 +621,7 @@ export class GameScene extends Phaser.Scene {
 
   private initRound(seed: number, mapIndex: number) {
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0] ?? ARENA;
+    this.createMapTiles(map);
     this.config = {
       seed,
       map,
@@ -477,7 +667,33 @@ export class GameScene extends Phaser.Scene {
     this.lastServerTick = 0;
   }
 
+  /** Create tile sprites for all platforms in the map using 9-slice terrain tiles. */
+  private createMapTiles(map: GameMap) {
+    // Destroy previous round's tiles
+    for (const t of this.platformTiles) t.destroy();
+    this.platformTiles = [];
+
+    for (const plat of map.platforms) {
+      const tilesW = Math.max(1, Math.round(plat.width / 16));
+      const tilesH = Math.max(1, Math.round(plat.height / 16));
+      for (let ty = 0; ty < tilesH; ty++) {
+        for (let tx = 0; tx < tilesW; tx++) {
+          const frame = getTerrainFrame(tx, ty, tilesW, tilesH);
+          const img = this.add.image(
+            plat.x + tx * 16 + 8, // center of tile
+            plat.y + ty * 16 + 8,
+            "terrain",
+            frame,
+          ).setDepth(0);
+          this.hudCamera.ignore(img);
+          this.platformTiles.push(img);
+        }
+      }
+    }
+  }
+
   startReplay(transcript: TickInputPair[], seed: number) {
+    this.assignCharacters();
     this.replayMode = true;
     this.replayTranscript = transcript;
     this.replayTick = 0;
@@ -489,6 +705,7 @@ export class GameScene extends Phaser.Scene {
     this.playerUsernames = ["P1", "P2"];
     this.prediction = null;
 
+    this.createMapTiles(ARENA);
     this.config = {
       seed,
       map: ARENA,
@@ -671,7 +888,8 @@ export class GameScene extends Phaser.Scene {
             player.x + PLAYER_WIDTH / 2,
             player.y + PLAYER_HEIGHT / 2,
           );
-          this.onLocalInput?.(input);
+          const nextTick = this.prediction.currentTick + 1;
+          this.onLocalInput?.(input, nextTick);
           this.prediction.predictTick(input);
         }
       }
@@ -706,11 +924,8 @@ export class GameScene extends Phaser.Scene {
 
   private drawArena(g: Phaser.GameObjects.Graphics, displayState: GameState) {
     const map = this.config?.map ?? ARENA;
-    g.fillStyle(PLATFORM_COLOR);
-    for (const plat of map.platforms) {
-      g.fillRect(plat.x, plat.y, plat.width, plat.height);
-    }
-
+    // Platforms are rendered by tile sprites (createMapTiles), not Graphics.
+    // Only draw sudden death walls here.
     if (displayState.arenaLeft > 0) {
       g.fillStyle(WALL_COLOR, 0.5);
       g.fillRect(0, 0, displayState.arenaLeft, map.height);
@@ -765,6 +980,8 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < curr.players.length; i++) {
       // Hide player 1 during warmup
       if (this.warmupMode && i === 1) {
+        this.playerSprites[i]?.setVisible(false);
+        this.gunSprites[i]?.setVisible(false);
         this.nameTexts[i]?.setVisible(false);
         continue;
       }
@@ -790,48 +1007,53 @@ export class GameScene extends Phaser.Scene {
           smooth.y = cp.y;
           smooth.initialized = true;
         }
-        const teleported = Math.abs(smooth.x - cp.x) > 100
-          || Math.abs(smooth.y - cp.y) > 100;
+        const teleported = Math.abs(smooth.x - cp.x) > 60
+          || Math.abs(smooth.y - cp.y) > 60;
         if (teleported) {
           smooth.x = cp.x;
           smooth.y = cp.y;
         } else {
-          smooth.x = smoothLerp(smooth.x, cp.x, 0.7, delta ?? 16.667);
-          smooth.y = smoothLerp(smooth.y, cp.y, 0.7, delta ?? 16.667);
+          smooth.x = smoothLerp(smooth.x, cp.x, 0.85, delta ?? 16.667);
+          // Snap Y on landing so character doesn't float above platform
+          smooth.y = cp.grounded ? cp.y : smoothLerp(smooth.y, cp.y, 0.85, delta ?? 16.667);
         }
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
-        // Remote: use predicted state (same timeline as bullets) + smooth lerp
-        cp = predicted ? predicted.players[i]! : raw;
+        // Remote: use server state (raw) — prediction runs NULL_INPUT for
+        // remote so predicted position diverges and causes teleporting
+        cp = raw;
         const smooth = this.remoteSmooth;
         if (!smooth.initialized) {
           smooth.x = cp.x;
           smooth.y = cp.y;
           smooth.initialized = true;
         }
-        const teleported = Math.abs(smooth.x - cp.x) > 100
-          || Math.abs(smooth.y - cp.y) > 100;
+        const teleported = Math.abs(smooth.x - cp.x) > 80
+          || Math.abs(smooth.y - cp.y) > 80;
         if (teleported) {
           smooth.x = cp.x;
           smooth.y = cp.y;
         } else {
           smooth.x = smoothLerp(smooth.x, cp.x, 0.5, delta ?? 16.667);
-          smooth.y = smoothLerp(smooth.y, cp.y, 0.5, delta ?? 16.667);
+          smooth.y = cp.grounded ? cp.y : smoothLerp(smooth.y, cp.y, 0.5, delta ?? 16.667);
         }
         drawX = smooth.x;
         drawY = smooth.y;
       }
 
-      const color = PLAYER_COLORS[cp.id] ?? 0xffffff;
+      const sprite = this.playerSprites[i];
       const alive = !!(cp.stateFlags & PlayerStateFlag.Alive);
 
       if (!alive) {
+        sprite?.setVisible(false);
+        this.gunSprites[i]?.setVisible(false);
         if (cp.lives > 0) {
           const currentMap = this.config?.map ?? ARENA;
           const spawn = currentMap.spawnPoints[cp.id % currentMap.spawnPoints.length]!;
           const displayTick = predicted?.tick ?? curr.tick;
           const pulse = Math.sin(displayTick * 0.15) * 0.3 + 0.5;
+          const color = PLAYER_COLORS[cp.id] ?? 0xffffff;
           g.fillStyle(color, pulse);
           g.fillRect(spawn.x, spawn.y, PLAYER_WIDTH, PLAYER_HEIGHT);
         }
@@ -842,12 +1064,108 @@ export class GameScene extends Phaser.Scene {
       const invincible = !!(cp.stateFlags & PlayerStateFlag.Invincible);
       const displayTick = predicted?.tick ?? curr.tick;
       if (invincible && displayTick % 6 < 3) {
+        sprite?.setVisible(false);
+        this.gunSprites[i]?.setVisible(false);
         this.nameTexts[i]?.setVisible(false);
         continue;
       }
 
-      g.fillStyle(color);
-      g.fillRect(drawX, drawY, PLAYER_WIDTH, PLAYER_HEIGHT);
+      // Update character sprite
+      if (sprite) {
+        const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
+        let animKey: string;
+        const hasGun = cp.weapon !== null;
+        if (cp.wallSliding) {
+          animKey = `${slug}-wall-jump`;
+        } else if (!cp.grounded && cp.vy < 0 && cp.jumpsLeft === 0 && !hasGun) {
+          animKey = `${slug}-double-jump`;
+        } else if (!cp.grounded && cp.vy < 0) {
+          animKey = `${slug}-jump`;
+        } else if (!cp.grounded) {
+          animKey = `${slug}-fall`;
+        } else if (Math.abs(cp.vx) > 0.5) {
+          animKey = `${slug}-run`;
+        } else {
+          animKey = `${slug}-idle`;
+        }
+        if (sprite.anims.currentAnim?.key !== animKey) {
+          sprite.play(animKey);
+        }
+        sprite.setPosition(drawX + PLAYER_WIDTH / 2, drawY + PLAYER_HEIGHT / 2);
+        sprite.setFlipX(cp.facing === Facing.Left);
+        sprite.setVisible(true);
+        sprite.setAlpha(invincible ? 0.6 : 1);
+      }
+
+      // Gun sprite — position at character's hand, bob synced to animation frame
+      const gunSprite = this.gunSprites[i];
+      if (gunSprite) {
+        if (cp.weapon !== null && alive) {
+          const tex = GUN_TEXTURES[cp.weapon];
+          if (tex && gunSprite.texture.key !== tex) {
+            gunSprite.setTexture(tex);
+          }
+          const gcfg = GUN_CONFIG[cp.weapon];
+          const facingDir = cp.facing as number;
+          // Bob derived from current animation frame — steps at 20fps, in sync with the sprite
+          const frameIdx = sprite?.anims?.currentFrame?.index ?? 0;
+          const totalFrames = sprite?.anims?.currentAnim?.frames?.length ?? 1;
+          const bobY = gcfg && totalFrames > 1
+            ? Math.sin((frameIdx / totalFrames) * Math.PI * 2) * gcfg.bobAmplitude
+            : 0;
+          const gunOffX = facingDir * (gcfg?.offsetX ?? 10);
+          const gunOffY = (gcfg?.offsetY ?? 4) + bobY;
+          gunSprite.setPosition(
+            drawX + PLAYER_WIDTH / 2 + gunOffX,
+            drawY + PLAYER_HEIGHT / 2 + gunOffY,
+          );
+          gunSprite.setScale(gcfg?.scale ?? 0.5);
+          gunSprite.setFlipX(cp.facing === Facing.Left);
+          gunSprite.setVisible(true);
+          gunSprite.setAlpha(invincible ? 0.6 : 1);
+        } else {
+          gunSprite.setVisible(false);
+        }
+      }
+
+      // Dust particle effects: jump, double jump, landing
+      {
+        const feetX = drawX + PLAYER_WIDTH / 2;
+        const feetY = drawY + PLAYER_HEIGHT;
+        const wasGrounded = this.prevPlayerGrounded[i];
+        const prevJumps = this.prevPlayerJumpsLeft[i];
+
+        // Landing: sideways cloud at feet level — bursts left + right
+        // Use physics y (cp.y) instead of smoothed drawY so dust is at actual ground
+        if (!wasGrounded && cp.grounded && this.dustGroundEmitL && this.dustGroundEmitR) {
+          const groundY = cp.y + PLAYER_HEIGHT;
+          for (let p = 0; p < 5; p++) {
+            this.dustGroundEmitL.emitParticleAt(feetX - Math.random() * 6, groundY, 1);
+            this.dustGroundEmitR.emitParticleAt(feetX + Math.random() * 6, groundY, 1);
+          }
+        }
+        // Jump from ground: sideways puff at feet — bursts left + right
+        if (wasGrounded && !cp.grounded && cp.jumpsLeft < prevJumps! && this.dustGroundEmitL && this.dustGroundEmitR) {
+          for (let p = 0; p < 4; p++) {
+            this.dustGroundEmitL.emitParticleAt(feetX - Math.random() * 4, feetY, 1);
+            this.dustGroundEmitR.emitParticleAt(feetX + Math.random() * 4, feetY, 1);
+          }
+        }
+        // Double jump in air: cloud arc below character
+        if (!wasGrounded && !cp.grounded && cp.jumpsLeft < prevJumps! && cp.vy < 0 && this.dustEmitter) {
+          for (let p = 0; p < 12; p++) {
+            this.dustEmitter.emitParticleAt(
+              feetX + (Math.random() - 0.5) * 24,
+              feetY - 4,
+              1,
+            );
+          }
+        }
+
+        this.prevPlayerGrounded[i] = cp.grounded;
+        this.prevPlayerJumpsLeft[i] = cp.jumpsLeft;
+      }
+
       this.drawPlayerOverlays(g, cp, drawX, drawY, i, predicted, curr);
     }
   }
@@ -869,18 +1187,11 @@ export class GameScene extends Phaser.Scene {
     g.fillStyle(healthPct > 0.5 ? 0x66bb6a : healthPct > 0.25 ? 0xffa726 : 0xef5350);
     g.fillRect(drawX, barY, PLAYER_WIDTH * healthPct, 4);
 
-    // Weapon color indicator
+    // Weapon color indicator (thin line under gun sprite)
     if (cp.weapon !== null) {
       g.fillStyle(WEAPON_PICKUP_COLORS[cp.weapon] ?? 0xffffff);
-      g.fillRect(drawX, drawY + PLAYER_HEIGHT, PLAYER_WIDTH, 2);
+      g.fillRect(drawX, drawY + PLAYER_HEIGHT, PLAYER_WIDTH, 1);
     }
-
-    // Facing indicator
-    const cx = drawX + PLAYER_WIDTH / 2;
-    const cy = drawY + PLAYER_HEIGHT / 2;
-    const fx = cx + cp.facing * 14;
-    g.fillStyle(0xffffff);
-    g.fillTriangle(fx, cy - 3, fx, cy + 3, fx + cp.facing * 6, cy);
 
     // Username above player
     const nameText = this.nameTexts[index];
@@ -901,12 +1212,26 @@ export class GameScene extends Phaser.Scene {
     predicted: GameState | null | undefined,
     _delta: number,
   ) {
-    // Render directly from sim state — no cache, no ID tracking.
-    // At 60fps/60Hz the sim provides a fresh position every frame.
-    const projectiles = (predicted ?? curr).projectiles;
+    const displayState = predicted ?? curr;
+    const projectiles = displayState.projectiles;
     for (const p of projectiles) {
+      let px = p.x;
+      let py = p.y;
+
+      // Offset freshly spawned projectiles to the gun muzzle position
+      const maxLife = WEAPON_STATS[p.weapon as WeaponType]?.lifetime ?? 90;
+      if (p.lifetime >= maxLife - 1) {
+        const owner = displayState.players.find(pl => pl.id === p.ownerId);
+        const gcfg = GUN_CONFIG[p.weapon];
+        if (owner && gcfg) {
+          const fdir = owner.facing as number;
+          px = owner.x + PLAYER_WIDTH / 2 + fdir * (gcfg.offsetX + gcfg.muzzleX * gcfg.scale);
+          py = owner.y + PLAYER_HEIGHT / 2 + gcfg.offsetY + gcfg.muzzleY * gcfg.scale;
+        }
+      }
+
       g.fillStyle(WEAPON_PROJECTILE_COLORS[p.weapon] ?? 0xffee58);
-      g.fillCircle(p.x, p.y, p.weapon === WeaponType.Rocket ? 6 : PROJECTILE_RADIUS);
+      g.fillCircle(px, py, p.weapon === WeaponType.Rocket ? 6 : PROJECTILE_RADIUS);
     }
   }
 
@@ -981,9 +1306,9 @@ export class GameScene extends Phaser.Scene {
   private updateCamera(curr: GameState, predicted: GameState | null | undefined, delta: number) {
     const cam = this.cameras.main;
 
-    // Use predicted state for both players — same timeline as bullets
+    // Local player from predicted state, remote from server state (curr)
     const localP = (predicted ?? curr).players[this.localPlayerId];
-    const remoteP = (predicted ?? curr).players[1 - this.localPlayerId];
+    const remoteP = curr.players[1 - this.localPlayerId];
 
     // Warmup or single-player: follow local player only
     if (!localP || !remoteP || this.warmupMode) {

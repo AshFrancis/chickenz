@@ -45,6 +45,7 @@ export class GameRoom {
   private prevInputs: InputMap = new Map();
   private rawInput: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
   private accInput: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
+  private inputQueues: [Map<number, PlayerInput>, Map<number, PlayerInput>] = [new Map(), new Map()];
   private transcript: [PlayerInput, PlayerInput][] = [];
   private lastButtonState: [number, number] = [0, 0];
   private inputChanges: [number, number] = [0, 0];
@@ -57,6 +58,7 @@ export class GameRoom {
   private currentRound = 0;
   private roundWins: [number, number] = [0, 0];
   private mapOrder: number[] = []; // indices into MAP_POOL
+  private characterSlots: [number, number] = [0, 1]; // character indices for each player
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -101,18 +103,23 @@ export class GameRoom {
     if (this._status !== "playing") return;
     if (playerId !== 0 && playerId !== 1) return;
     const incoming = inputFromMessage(msg);
-    this.rawInput[playerId] = incoming;
     // Track button state changes for activity detection
     if (incoming.buttons !== this.lastButtonState[playerId]) {
       this.inputChanges[playerId]++;
       this.lastButtonState[playerId] = incoming.buttons;
     }
-    // OR button bits together between ticks so brief presses aren't lost
-    this.accInput[playerId] = {
-      buttons: this.accInput[playerId].buttons | incoming.buttons,
-      aimX: incoming.aimX,
-      aimY: incoming.aimY,
-    };
+    if (msg.tick !== undefined && msg.tick > this.state.tick) {
+      // Future tick — queue for exact tick alignment (prevents phantom edges)
+      this.inputQueues[playerId].set(msg.tick, incoming);
+    } else {
+      // Current/past tick or no tick tag — apply immediately
+      this.rawInput[playerId] = incoming;
+      this.accInput[playerId] = {
+        buttons: incoming.buttons,
+        aimX: incoming.aimX,
+        aimY: incoming.aimY,
+      };
+    }
   }
 
   handleDisconnect(playerId: number) {
@@ -172,7 +179,7 @@ export class GameRoom {
     this.mapOrder = MAP_POOL.map((_, i) => i);
     for (let i = this.mapOrder.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [this.mapOrder[i], this.mapOrder[j]] = [this.mapOrder[j], this.mapOrder[i]];
+      [this.mapOrder[i]!, this.mapOrder[j]!] = [this.mapOrder[j]!, this.mapOrder[i]!];
     }
 
     // Auto-generate guest names for players without usernames
@@ -183,6 +190,13 @@ export class GameRoom {
         ws.data.username = `Chk${a}${b}`;
       }
     }
+
+    // Assign random characters: P1 random from 4, P2 random from remaining 3
+    const NUM_CHARACTERS = 4;
+    const p1Char = Math.floor(Math.random() * NUM_CHARACTERS);
+    let p2Char = Math.floor(Math.random() * (NUM_CHARACTERS - 1));
+    if (p2Char >= p1Char) p2Char++;
+    this.characterSlots = [p1Char, p2Char];
 
     // Notify both players with initial round info
     const usernames: [string, string] = [
@@ -200,6 +214,7 @@ export class GameRoom {
         mapIndex: this.mapOrder[0],
         totalRounds: TOTAL_ROUNDS,
         mode: this.mode,
+        characters: this.characterSlots,
       });
     }
 
@@ -208,8 +223,8 @@ export class GameRoom {
 
   private startRound() {
     this.seed = Date.now() >>> 0;
-    const mapIndex = this.mapOrder[this.currentRound % this.mapOrder.length];
-    const map = MAP_POOL[mapIndex] ?? MAP_POOL[0];
+    const mapIndex = this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
+    const map = MAP_POOL[mapIndex] ?? MAP_POOL[0]!;
 
     this.config = {
       seed: this.seed,
@@ -225,6 +240,7 @@ export class GameRoom {
     this.prevInputs = new Map();
     this.rawInput = [NULL_INPUT, NULL_INPUT];
     this.accInput = [NULL_INPUT, NULL_INPUT];
+    this.inputQueues = [new Map(), new Map()];
     this.transcript = [];
 
     // Start game loop at 60Hz
@@ -238,6 +254,17 @@ export class GameRoom {
   private tick() {
     if (this._status !== "playing") return;
 
+    const currentTick = this.state.tick + 1;
+
+    // Apply tick-tagged inputs — aligns edge detection with client prediction
+    for (let id = 0; id < 2; id++) {
+      const queued = this.inputQueues[id].get(currentTick);
+      if (queued !== undefined) {
+        this.accInput[id] = queued;
+        this.rawInput[id] = queued;
+      }
+    }
+
     const inputs: InputMap = new Map([
       [0, this.accInput[0]],
       [1, this.accInput[1]],
@@ -249,9 +276,16 @@ export class GameRoom {
     this.state = step(this.state, inputs, this.prevInputs, this.config);
     this.prevInputs = inputs;
 
-    // Reset accumulated to last raw input (not NULL) so held keys persist
+    // Reset accumulated to last raw input so held keys persist
     this.accInput[0] = { ...this.rawInput[0] };
     this.accInput[1] = { ...this.rawInput[1] };
+
+    // Prune consumed/stale queue entries
+    for (let id = 0; id < 2; id++) {
+      for (const [tick] of this.inputQueues[id]) {
+        if (tick <= currentTick) this.inputQueues[id].delete(tick);
+      }
+    }
 
     // Broadcast state at 20Hz
     if (this.state.tick % STATE_BROADCAST_INTERVAL === 0) {
@@ -285,6 +319,9 @@ export class GameRoom {
         respawnTimer: p.respawnTimer,
         weapon: p.weapon,
         ammo: p.ammo,
+        jumpsLeft: p.jumpsLeft,
+        wallSliding: p.wallSliding,
+        wallDir: p.wallDir,
       })),
       projectiles: this.state.projectiles.map((proj) => ({
         id: proj.id,
@@ -332,7 +369,7 @@ export class GameRoom {
       this.timer = null;
     }
 
-    this.roundWins[winner]++;
+    if (winner === 0 || winner === 1) this.roundWins[winner]++;
 
     // Send round_end to clients
     this.broadcast({

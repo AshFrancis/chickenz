@@ -18,6 +18,7 @@ export class PredictionManager {
   private inputBuffer = new InputBuffer();
   private predictedTick: number;
   private prevInputs: InputMap = new Map();
+  private lastLocalInput: PlayerInput = NULL_INPUT;
 
   constructor(initialState: GameState, config: MatchConfig, localPlayerId: number) {
     this.predictedState = initialState;
@@ -33,6 +34,7 @@ export class PredictionManager {
   predictTick(localInput: PlayerInput): GameState {
     this.predictedTick++;
     this.inputBuffer.store(this.predictedTick, localInput);
+    this.lastLocalInput = localInput;
 
     const inputs: InputMap = new Map([
       [this.localPlayerId, localInput],
@@ -59,14 +61,25 @@ export class PredictionManager {
       // Server is ahead or caught up — no replay needed
       this.predictedState = serverState;
       this.predictedTick = serverTick;
-      this.prevInputs = new Map();
+      // Use tracked lastLocalInput instead of inputBuffer (which may return
+      // NULL_INPUT for this tick) — guarantees correct edge detection
+      this.prevInputs = new Map([
+        [this.localPlayerId, this.lastLocalInput],
+        [1 - this.localPlayerId, NULL_INPUT],
+      ]);
       this.inputBuffer.prune(serverTick);
       return;
     }
 
-    // Rollback to server state and replay unconfirmed inputs
+    // Rollback to server state and replay unconfirmed inputs.
+    // Seed prevInputs from the input at serverTick so the first replayed tick
+    // has correct edge detection (prevents phantom jump on reconciliation).
     let state = serverState;
-    let prevInputs: InputMap = new Map();
+    const seedInput = this.inputBuffer.get(serverTick);
+    let prevInputs: InputMap = new Map([
+      [this.localPlayerId, seedInput],
+      [1 - this.localPlayerId, NULL_INPUT],
+    ]);
 
     for (let tick = serverTick + 1; tick <= this.predictedTick; tick++) {
       const localInput = this.inputBuffer.get(tick);

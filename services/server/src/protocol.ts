@@ -32,6 +32,7 @@ export interface JoinCodeMessage {
 
 export interface InputMessage {
   type: "input";
+  tick?: number;
   buttons: number;
   aimX: number;
   aimY: number;
@@ -74,6 +75,7 @@ export interface MatchedMessage {
   mapIndex: number;
   totalRounds: number;
   mode: GameMode;
+  characters: [number, number];
 }
 
 export interface RoundEndMessage {
@@ -162,6 +164,9 @@ export interface SerializedPlayer {
   respawnTimer: number;
   weapon: number | null;
   ammo: number;
+  jumpsLeft: number;
+  wallSliding: boolean;
+  wallDir: number;
 }
 
 export interface SerializedProjectile {

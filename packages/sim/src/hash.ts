@@ -56,6 +56,9 @@ export function hashGameState(state: GameState): number {
     h = fnvFeedInt32(h, p.lives);
     h = fnvFeedInt32(h, p.weapon ?? -1);
     h = fnvFeedInt32(h, p.ammo);
+    h = fnvFeedInt32(h, p.jumpsLeft);
+    h = fnvFeedInt32(h, p.wallSliding ? 1 : 0);
+    h = fnvFeedInt32(h, p.wallDir);
   }
 
   // Projectiles (sorted by id)

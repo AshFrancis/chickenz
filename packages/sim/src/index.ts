@@ -33,6 +33,9 @@ export function createInitialState(config: MatchConfig): GameState {
       respawnTimer: 0,
       weapon: null,
       ammo: 0,
+      jumpsLeft: 2,
+      wallSliding: false,
+      wallDir: 0,
     });
   }
 

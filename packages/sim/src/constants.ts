@@ -15,6 +15,12 @@ export const MAX_FALL_SPEED = 12.0;
 export const PLAYER_WIDTH = 24;
 export const PLAYER_HEIGHT = 32;
 
+// Double jump / wall slide
+export const MAX_JUMPS = 2;
+export const WALL_SLIDE_SPEED = 2.0;
+export const WALL_JUMP_VX = 7.0;
+export const WALL_JUMP_VY = -10.0;
+
 // Legacy projectile defaults (used as fallback)
 export const PROJECTILE_SPEED = 8.0;
 export const PROJECTILE_LIFETIME = 90; // ticks (1.5s)

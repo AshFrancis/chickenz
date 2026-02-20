@@ -116,14 +116,21 @@ export function step(
     return p;
   });
 
-  // 3. Apply player input
-  players = players.map((p) => applyPlayerInput(p, resolvedInputs.get(p.id)!));
+  // 3. Apply player input (with prevInput for jump edge detection)
+  players = players.map((p) => {
+    const input = resolvedInputs.get(p.id)!;
+    const prevInput = prevInputs.get(p.id) ?? NULL_INPUT;
+    return applyPlayerInput(p, input, prevInput);
+  });
 
   // 4. Apply gravity
   players = players.map(applyGravity);
 
-  // 5. Move + collide (with dynamic arena bounds)
-  players = players.map((p) => moveAndCollide(p, map, arenaLeft, arenaRight));
+  // 5. Move + collide (with dynamic arena bounds + wall slide detection)
+  players = players.map((p) => {
+    const input = resolvedInputs.get(p.id)!;
+    return moveAndCollide(p, map, arenaLeft, arenaRight, input.buttons);
+  });
 
   // 6. Weapon pickup collision
   let weaponPickups = [...prev.weaponPickups];
@@ -247,6 +254,9 @@ export function step(
             grounded: false,
             weapon: null,
             ammo: 0,
+            jumpsLeft: 2,
+            wallSliding: false,
+            wallDir: 0,
           };
         }
         return { ...p, respawnTimer: newTimer };

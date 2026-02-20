@@ -28,6 +28,9 @@ interface RawPlayerState {
   respawnTimer: number;
   weapon?: number | null;
   ammo?: number;
+  jumpsLeft?: number;
+  wallSliding?: boolean;
+  wallDir?: number;
 }
 
 interface RawProjectile {
@@ -66,6 +69,7 @@ interface ServerMessage {
   totalRounds?: number;
   round?: number;
   mode?: GameMode;
+  characters?: [number, number];
   // State fields (inlined when type === "state")
   tick?: number;
   players?: RawPlayerState[];
@@ -81,7 +85,7 @@ interface ServerMessage {
 
 export interface NetworkCallbacks {
   onWaiting: (roomId: string, roomName: string, joinCode: string) => void;
-  onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number, mode: GameMode) => void;
+  onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number, mode: GameMode, characters: [number, number]) => void;
   onState: (state: GameState) => void;
   onRoundEnd: (round: number, winner: number, roundWins: [number, number]) => void;
   onRoundStart: (round: number, seed: number, mapIndex: number) => void;
@@ -130,6 +134,7 @@ export class NetworkManager {
             msg.mapIndex ?? 0,
             msg.totalRounds ?? 3,
             msg.mode ?? "casual",
+            msg.characters ?? [0, 1],
           );
           break;
         case "state":
@@ -198,7 +203,7 @@ export class NetworkManager {
     this.lastSentAimY = -999;
   }
 
-  sendInput(input: PlayerInput) {
+  sendInput(input: PlayerInput, tick?: number) {
     const inputChanged =
       input.buttons !== this.lastSentButtons ||
       input.aimX !== this.lastSentAimX ||
@@ -210,6 +215,7 @@ export class NetworkManager {
     this.lastSentAimY = input.aimY;
     this.send({
       type: "input",
+      tick,
       buttons: input.buttons,
       aimX: input.aimX,
       aimY: input.aimY,
@@ -258,6 +264,9 @@ function deserializeState(msg: ServerMessage): GameState {
         respawnTimer: p.respawnTimer,
         weapon: p.weapon ?? null,
         ammo: p.ammo ?? 0,
+        jumpsLeft: p.jumpsLeft ?? 2,
+        wallSliding: p.wallSliding ?? false,
+        wallDir: p.wallDir ?? 0,
       }),
     ),
     projectiles: msg.projectiles!.map(

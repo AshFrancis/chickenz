@@ -86,6 +86,9 @@ export interface PlayerState {
   readonly respawnTimer: number;
   readonly weapon: WeaponType | null;
   readonly ammo: number;
+  readonly jumpsLeft: number;     // 0..MAX_JUMPS, reset on ground
+  readonly wallSliding: boolean;  // true when sliding down a wall
+  readonly wallDir: number;       // -1 wall on left, 1 wall on right, 0 none
 }
 
 // ── Projectile ──────────────────────────────────────────────

@@ -506,7 +506,7 @@ function connectToServer(url: string) {
       }
     },
 
-    onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode) {
+    onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode, characters) {
       onlineRoomId = roomId;
       lastMatchMode = mode;
 
@@ -520,10 +520,10 @@ function connectToServer(url: string) {
       }
 
       networkManager?.resetThrottle();
-      scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds);
+      scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
       scene.setMuted(isMuted);
-      scene.onLocalInput = (input) => {
-        networkManager?.sendInput(input);
+      scene.onLocalInput = (input, tick) => {
+        networkManager?.sendInput(input, tick);
       };
     },
 
