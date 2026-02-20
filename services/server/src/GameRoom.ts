@@ -304,6 +304,10 @@ export class GameRoom {
     const msg: StateMessage = {
       type: "state",
       tick: this.state.tick,
+      lastButtons: [
+        this.prevInputs.get(0)?.buttons ?? 0,
+        this.prevInputs.get(1)?.buttons ?? 0,
+      ],
       players: this.state.players.map((p) => ({
         id: p.id,
         x: p.x,

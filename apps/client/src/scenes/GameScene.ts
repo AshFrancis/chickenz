@@ -762,7 +762,7 @@ export class GameScene extends Phaser.Scene {
     window.dispatchEvent(new CustomEvent("replayEnded"));
   }
 
-  receiveState(state: GameState) {
+  receiveState(state: GameState, lastButtons?: [number, number]) {
     // Drop out-of-order packets — prevents old states from overwriting newer ones
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
@@ -790,7 +790,7 @@ export class GameScene extends Phaser.Scene {
 
     // Feed server state to prediction manager for reconciliation
     if (this.prediction) {
-      this.prediction.applyServerState(state, state.tick);
+      this.prediction.applyServerState(state, state.tick, lastButtons);
     }
   }
 
@@ -1039,15 +1039,15 @@ export class GameScene extends Phaser.Scene {
           smooth.y = cp.y;
           smooth.initialized = true;
         }
-        const teleported = Math.abs(smooth.x - cp.x) > 60;
+        const teleported = Math.abs(smooth.x - cp.x) > 60
+          || Math.abs(smooth.y - cp.y) > 60;
         if (teleported) {
           smooth.x = cp.x;
+          smooth.y = cp.y;
         } else {
           smooth.x = smoothLerp(smooth.x, cp.x, 0.85, delta ?? 16.667);
+          smooth.y = smoothLerp(smooth.y, cp.y, 0.95, delta ?? 16.667);
         }
-        // Snap Y — prediction is authoritative; lerping Y causes visible
-        // rebounce when reconciliation shifts the target by a few pixels.
-        smooth.y = cp.y;
         drawX = smooth.x;
         drawY = smooth.y;
       } else {

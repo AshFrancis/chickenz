@@ -56,7 +56,7 @@ export class PredictionManager {
    * correction). If it diverged (e.g., different collision), the correction
    * happens automatically and the smoothLerp in rendering absorbs it visually.
    */
-  applyServerState(serverState: GameState, serverTick: number): void {
+  applyServerState(serverState: GameState, serverTick: number, serverLastButtons?: [number, number]): void {
     if (serverTick >= this.predictedTick) {
       // Server is ahead or caught up — no replay needed
       this.predictedState = serverState;
@@ -72,10 +72,14 @@ export class PredictionManager {
     }
 
     // Rollback to server state and replay unconfirmed inputs.
-    // Seed prevInputs from the input at serverTick so the first replayed tick
-    // has correct edge detection (prevents phantom jump on reconciliation).
+    // Seed prevInputs from the server's ACTUAL last-used buttons (not the
+    // client's input buffer) so edge detection matches reality. With latency,
+    // the client may have predicted a jump at this tick while the server hadn't
+    // received it yet — using the client's buffer would mask the edge.
     let state = serverState;
-    const seedInput = this.inputBuffer.get(serverTick);
+    const seedInput = serverLastButtons
+      ? { buttons: serverLastButtons[this.localPlayerId], aimX: 0, aimY: 0 }
+      : this.inputBuffer.get(serverTick);
     let prevInputs: InputMap = new Map([
       [this.localPlayerId, seedInput],
       [1 - this.localPlayerId, NULL_INPUT],

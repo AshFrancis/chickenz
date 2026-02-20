@@ -81,12 +81,13 @@ interface ServerMessage {
   arenaRight?: number;
   matchOver?: boolean;
   deathLingerTimer?: number;
+  lastButtons?: [number, number];
 }
 
 export interface NetworkCallbacks {
   onWaiting: (roomId: string, roomName: string, joinCode: string) => void;
   onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number, mode: GameMode, characters: [number, number]) => void;
-  onState: (state: GameState) => void;
+  onState: (state: GameState, lastButtons?: [number, number]) => void;
   onRoundEnd: (round: number, winner: number, roundWins: [number, number]) => void;
   onRoundStart: (round: number, seed: number, mapIndex: number) => void;
   onEnded: (winner: number, scores: [number, number], roundWins: [number, number], roomId: string, mode: GameMode) => void;
@@ -138,7 +139,7 @@ export class NetworkManager {
           );
           break;
         case "state":
-          this.callbacks.onState(deserializeState(msg));
+          this.callbacks.onState(deserializeState(msg), msg.lastButtons);
           break;
         case "round_end":
           this.callbacks.onRoundEnd(msg.round!, msg.winner!, msg.roundWins ?? [0, 0]);

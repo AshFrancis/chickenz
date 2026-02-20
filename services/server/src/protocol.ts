@@ -106,6 +106,8 @@ export interface StateMessage {
   deathLingerTimer: number;
   rngState: number;
   nextProjectileId: number;
+  /** Last input buttons the server used for each player this tick (for reconciliation edge detection) */
+  lastButtons: [number, number];
 }
 
 export interface EndedMessage {

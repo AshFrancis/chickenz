@@ -541,9 +541,9 @@ function connectToServer(url: string) {
       };
     },
 
-    onState(state) {
+    onState(state, lastButtons) {
       const scene = getGameScene();
-      if (scene) scene.receiveState(state);
+      if (scene) scene.receiveState(state, lastButtons);
     },
 
     onRoundEnd(round, winner, roundWins) {
