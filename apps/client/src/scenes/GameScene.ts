@@ -22,7 +22,7 @@ import {
 import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, Projectile, WeaponPickup, InputMap } from "@chickenz/sim";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
-import { DPR, VIEW_W, VIEW_H, recalcDimensions } from "../game";
+import { DPR, VIEW_W, VIEW_H } from "../game";
 
 interface TranscriptInput {
   buttons: number;
@@ -811,31 +811,9 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Handle browser window resize — reposition HUD, cameras, background. */
+  /** Handle browser window resize — let Phaser FIT mode rescale the canvas. */
   handleResize() {
-    const { canvasW, canvasH } = recalcDimensions();
-    this.scale.resize(canvasW, canvasH);
-
-    // Reposition HUD texts
-    this.timerText.setPosition(VIEW_W - 20, 10);
-    this.suddenDeathText.setPosition(VIEW_W / 2, 40);
-    this.controlsText.setPosition(10, VIEW_H - 25);
-    this.weaponText.setPosition(VIEW_W / 2, VIEW_H - 20);
-    this.replayInfoText.setPosition(VIEW_W / 2, VIEW_H - 10);
-
-    // Resize HUD camera viewport
-    this.hudCamera.setSize(Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
-
-    // Update main camera bounds and zoom
-    const padX = VIEW_W / 2;
-    const padY = VIEW_H / 2;
-    this.cameras.main.setBounds(-padX, -padY, 960 + padX * 2, 540 + padY * 2);
-    this.cameras.main.setZoom(this.currentZoom * DPR);
-
-    // Resize background tile sprite
-    if (this.bgTile) {
-      this.bgTile.setSize(960 + VIEW_W, 540 + VIEW_H);
-    }
+    this.scale.refresh();
   }
 
   update(_time: number, delta: number) {

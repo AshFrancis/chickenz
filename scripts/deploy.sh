@@ -12,7 +12,6 @@ SERVER="root@178.156.244.26"
 REMOTE_DIR="/root/chickenz"
 SSH_OPTS="-o ConnectTimeout=10 -o ServerAliveInterval=10"
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -22,11 +21,9 @@ log() { echo -e "${GREEN}[deploy]${NC} $1"; }
 warn() { echo -e "${YELLOW}[deploy]${NC} $1"; }
 err() { echo -e "${RED}[deploy]${NC} $1" >&2; }
 
-# Determine what to deploy
 MODE="${1:-auto}"
 
 if [ "$MODE" = "auto" ]; then
-  # Check what files changed in the last commit
   CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
   HAS_CLIENT=false
   HAS_SERVER=false
@@ -42,51 +39,24 @@ if [ "$MODE" = "auto" ]; then
   elif $HAS_SERVER; then
     MODE="server"
   else
-    # Default: deploy both if we can't tell
     MODE="both"
   fi
   log "Auto-detected: deploying ${MODE}"
 fi
 
-# Verify SSH connection
-log "Connecting to server..."
-ssh $SSH_OPTS $SERVER "echo ok" > /dev/null 2>&1 || {
-  err "Cannot connect to $SERVER"
-  exit 1
-}
+# Single SSH session: pull, build, restart — all in one command to avoid round-trips
+log "Deploying (${MODE})..."
 
-# Pull latest code
-log "Pulling latest code..."
-ssh $SSH_OPTS $SERVER "cd $REMOTE_DIR && git pull origin main" 2>&1
+REMOTE_CMD="set -e; source ~/.bashrc; cd $REMOTE_DIR"
+REMOTE_CMD="$REMOTE_CMD; echo '>>> git pull'; git pull origin main"
 
-# Ensure bun is available
-ssh $SSH_OPTS $SERVER "source ~/.bashrc && which bun > /dev/null 2>&1" || {
-  warn "Bun not found, installing..."
-  ssh $SSH_OPTS $SERVER "curl -fsSL https://bun.sh/install | bash" 2>&1
-}
-
-# Build client if needed
 if [ "$MODE" = "client" ] || [ "$MODE" = "both" ]; then
-  log "Building client..."
-  ssh $SSH_OPTS $SERVER "source ~/.bashrc && cd $REMOTE_DIR && bun run --filter @chickenz/client build 2>&1 && cp -r apps/client/dist/* services/server/public/"
-  log "Client built and copied to server/public/"
+  REMOTE_CMD="$REMOTE_CMD; echo '>>> building client'; bun run --filter @chickenz/client build 2>&1; cp -r apps/client/dist/* services/server/public/"
 fi
 
-# Restart server if needed
-if [ "$MODE" = "server" ] || [ "$MODE" = "both" ] || [ "$MODE" = "client" ]; then
-  # Always restart server — it serves the client too
-  log "Restarting server..."
-  ssh $SSH_OPTS $SERVER "source ~/.bashrc && cd $REMOTE_DIR && ln -sfn $REMOTE_DIR/packages/sim node_modules/@chickenz/sim && lsof -ti:3000 | xargs kill -9 2>/dev/null || true; sleep 2 && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & disown"
-  sleep 2
-  # Verify it started
-  RUNNING=$(ssh $SSH_OPTS $SERVER "cat /tmp/chickenz-server.log 2>/dev/null | tail -1")
-  if echo "$RUNNING" | grep -q "running"; then
-    log "Server is up!"
-  else
-    err "Server may have failed to start. Log:"
-    ssh $SSH_OPTS $SERVER "cat /tmp/chickenz-server.log 2>/dev/null"
-    exit 1
-  fi
-fi
+# Always restart server (it serves the client too)
+REMOTE_CMD="$REMOTE_CMD; echo '>>> restarting server'; ln -sfn $REMOTE_DIR/packages/sim node_modules/@chickenz/sim; systemctl restart chickenz; sleep 1; systemctl is-active chickenz && echo '>>> server is up' || (journalctl -u chickenz -n 10 --no-pager; exit 1)"
 
-log "Deploy complete (${MODE})! http://178.156.244.26:3000"
+ssh $SSH_OPTS $SERVER "$REMOTE_CMD"
+
+log "Deploy complete! http://178.156.244.26:3000"
