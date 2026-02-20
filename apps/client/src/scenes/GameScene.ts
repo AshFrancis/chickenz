@@ -1045,8 +1045,15 @@ export class GameScene extends Phaser.Scene {
           smooth.x = cp.x;
           smooth.y = cp.y;
         } else {
+          const prevSmoothY = smooth.y;
           smooth.x = smoothLerp(smooth.x, cp.x, 0.85, delta ?? 16.667);
           smooth.y = smoothLerp(smooth.y, cp.y, 0.95, delta ?? 16.667);
+          // During upward jump phase, don't allow visual position to dip back
+          // down — reconciliation detects the jump edge one tick late due to
+          // input latency, causing a brief ~8px downward correction artifact.
+          if (cp.vy < 0 && smooth.y > prevSmoothY) {
+            smooth.y = prevSmoothY;
+          }
         }
         drawX = smooth.x;
         drawY = smooth.y;
