@@ -10,9 +10,19 @@ const dpr = window.devicePixelRatio || 1;
 const canvasW = Math.round(window.innerWidth * dpr);
 const canvasH = Math.round(window.innerHeight * dpr);
 
-export const DPR = canvasH / 540;
-export const VIEW_W = canvasW / DPR; // 960 at 16:9, wider on ultrawide
+export let DPR = canvasH / 540;
+export let VIEW_W = canvasW / DPR; // 960 at 16:9, wider on ultrawide
 export const VIEW_H = 540;           // always 540
+
+/** Recalculate DPR and VIEW_W from current window size. Returns new canvas pixel dimensions. */
+export function recalcDimensions(): { canvasW: number; canvasH: number } {
+  const d = window.devicePixelRatio || 1;
+  const w = Math.round(window.innerWidth * d);
+  const h = Math.round(window.innerHeight * d);
+  DPR = h / 540;
+  VIEW_W = w / DPR;
+  return { canvasW: w, canvasH: h };
+}
 
 export const gameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,

@@ -57,6 +57,13 @@ function getGameScene(): GameScene | null {
   return game.scene.getScene("GameScene") as GameScene | null;
 }
 
+// ── Resize handling ───────────────────────────────────────────────────────────
+
+window.addEventListener("resize", () => {
+  const scene = getGameScene();
+  if (scene) scene.handleResize();
+});
+
 // ── Session state ──────────────────────────────────────────────────────────────
 
 let networkManager: NetworkManager | null = null;

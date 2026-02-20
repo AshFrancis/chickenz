@@ -22,7 +22,7 @@ import {
 import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, Projectile, WeaponPickup, InputMap } from "@chickenz/sim";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
-import { DPR, VIEW_W, VIEW_H } from "../game";
+import { DPR, VIEW_W, VIEW_H, recalcDimensions } from "../game";
 
 interface TranscriptInput {
   buttons: number;
@@ -65,7 +65,7 @@ interface GunConfig {
 
 const GUN_CONFIG: Record<number, GunConfig> = {
   [WeaponType.Pistol]:  { offsetX: 14, offsetY: 6.5, scale: 0.5, muzzleX: 13.5, muzzleY: -5, bobAmplitude: 0.6 },
-  [WeaponType.Shotgun]: { offsetX: 4.5, offsetY: 8, scale: 0.5, muzzleX: 29, muzzleY: -3, bobAmplitude: 0.9 },
+  [WeaponType.Shotgun]: { offsetX: 4.5, offsetY: 11.5, scale: 0.5, muzzleX: 29, muzzleY: -3, bobAmplitude: 0.9 },
   [WeaponType.Sniper]:  { offsetX: 7, offsetY: 8.5, scale: 0.5, muzzleX: 27, muzzleY: -2, bobAmplitude: 0.6 },
   [WeaponType.Rocket]:  { offsetX: 5, offsetY: 8, scale: 0.5, muzzleX: 23.5, muzzleY: 0, bobAmplitude: 1 },
   [WeaponType.SMG]:     { offsetX: 11.5, offsetY: 6.5, scale: 0.5, muzzleX: 14, muzzleY: -4.5, bobAmplitude: 1 },
@@ -808,6 +808,33 @@ export class GameScene extends Phaser.Scene {
       this.bgm.pause();
     } else if (!muted && this.bgm && !this.bgm.isPlaying && this.playing) {
       this.bgm.resume();
+    }
+  }
+
+  /** Handle browser window resize — reposition HUD, cameras, background. */
+  handleResize() {
+    const { canvasW, canvasH } = recalcDimensions();
+    this.scale.resize(canvasW, canvasH);
+
+    // Reposition HUD texts
+    this.timerText.setPosition(VIEW_W - 20, 10);
+    this.suddenDeathText.setPosition(VIEW_W / 2, 40);
+    this.controlsText.setPosition(10, VIEW_H - 25);
+    this.weaponText.setPosition(VIEW_W / 2, VIEW_H - 20);
+    this.replayInfoText.setPosition(VIEW_W / 2, VIEW_H - 10);
+
+    // Resize HUD camera viewport
+    this.hudCamera.setSize(Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
+
+    // Update main camera bounds and zoom
+    const padX = VIEW_W / 2;
+    const padY = VIEW_H / 2;
+    this.cameras.main.setBounds(-padX, -padY, 960 + padX * 2, 540 + padY * 2);
+    this.cameras.main.setZoom(this.currentZoom * DPR);
+
+    // Resize background tile sprite
+    if (this.bgTile) {
+      this.bgTile.setSize(960 + VIEW_W, 540 + VIEW_H);
     }
   }
 
