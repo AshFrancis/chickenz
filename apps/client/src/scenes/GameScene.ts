@@ -930,6 +930,27 @@ export class GameScene extends Phaser.Scene {
       if (this.predictionAccum > TICK_DT_MS * 2) {
         this.predictionAccum = 0;
       }
+
+      // Maintain prediction lead over server: ensures serverTick < predictedTick
+      // so reconciliation always has a replay window for jump edge detection.
+      // Without this, server states overwrite prediction (jump snap-back).
+      const PRED_LEAD = 6; // ~100ms lead at 60Hz
+      if (this.lastServerTick > 0) {
+        const targetTick = this.lastServerTick + PRED_LEAD;
+        let extraTicks = 0;
+        while (this.prediction.currentTick < targetTick && extraTicks < 8) {
+          const player = this.prediction.predictedState.players[this.localPlayerId];
+          if (!player) break;
+          const input = this.inputManager.getPlayer1Input(
+            player.x + PLAYER_WIDTH / 2,
+            player.y + PLAYER_HEIGHT / 2,
+          );
+          const nextTick = this.prediction.currentTick + 1;
+          this.onLocalInput?.(input, nextTick);
+          this.prediction.predictTick(input);
+          extraTicks++;
+        }
+      }
     }
 
     this.render(delta);
