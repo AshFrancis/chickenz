@@ -1964,7 +1964,7 @@ export class GameScene extends Phaser.Scene {
   // ── Audio ──────────────────────────────────────────────────────────────────
 
   private playSound(key: string) {
-    if (this.sfxVolume === 0) return;
+    if (this._muted || this.sfxVolume === 0) return;
     // Try Phaser audio first (check asset cache, not sound manager), fall back to Web Audio synth
     if (this.audioLoaded && this.cache.audio.exists(key)) {
       try {
@@ -1977,7 +1977,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Play a sound, stopping any previous instance first (for spammable SFX like taunt). */
   private playSoundInterrupt(key: string) {
-    if (this.sfxVolume === 0) return;
+    if (this._muted || this.sfxVolume === 0) return;
     if (this.audioLoaded && this.cache.audio.exists(key)) {
       try {
         // Stop all existing instances of this sound
