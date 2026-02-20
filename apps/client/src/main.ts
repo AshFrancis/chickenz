@@ -58,10 +58,23 @@ function getGameScene(): GameScene | null {
 }
 
 // ── Resize handling ───────────────────────────────────────────────────────────
+// Phaser's internal resolution is fixed at creation. On resize, debounce and
+// reload so the canvas is recreated at the correct size. Only during warmup/lobby
+// — never during an active match (would disconnect WebSocket).
 
+let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 window.addEventListener("resize", () => {
-  const scene = getGameScene();
-  if (scene) scene.handleResize();
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const scene = getGameScene();
+    // Only reload if not in an active match (would lose connection)
+    if (!scene || !scene.isPlaying) {
+      location.reload();
+    } else {
+      // During match: just let FIT mode rescale (slight letterboxing is OK)
+      scene.handleResize();
+    }
+  }, 500);
 });
 
 // ── Session state ──────────────────────────────────────────────────────────────

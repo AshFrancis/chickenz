@@ -524,6 +524,10 @@ export class GameScene extends Phaser.Scene {
     return this.warmupMode;
   }
 
+  get isPlaying(): boolean {
+    return this.playing && !this.warmupMode;
+  }
+
   /** Move player 2 far off-screen so they can't absorb bullets or affect camera. */
   private banishWarmupPlayer2(state: GameState) {
     const p1 = state.players[1] as { x: number; y: number; vx: number; vy: number } | undefined;
