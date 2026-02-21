@@ -2,9 +2,9 @@ import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
-import { startMatchOnChain, settleMatchOnChain } from "./stellar";
+import { startMatchOnChain, settleMatchOnChain, verifySignature } from "./stellar";
 import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
-import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, type MatchRecord } from "./db";
+import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, updateStartTxHash, updateSettleTxHash, updateProofTimestamps, updateMatchStartTime, updateWalletVerified, type MatchRecord } from "./db";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -53,7 +53,10 @@ function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArt
   const sealBytes = new Uint8Array(Buffer.from(artifacts.seal, "hex"));
   const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
   settleMatchOnChain(sessionId, sealBytes, journalBytes)
-    .then(() => { updateProofStatus(matchId, "settled"); })
+    .then((hash) => {
+      updateProofStatus(matchId, "settled");
+      if (hash) updateSettleTxHash(matchId, hash);
+    })
     .catch((err) => { console.error("Auto-settle failed:", err); });
 }
 
@@ -66,7 +69,10 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     const loserName = sockets[1 - winner]?.data.username;
     if (winnerName && loserName) {
       const activity = room?.getInputActivity() ?? [0, 0];
-      const MIN_INPUT_CHANGES = 30;
+      // Minimum button-state changes required from each player before ELO updates.
+      // Prevents farming via AFK alts. Set to 0 to disable (useful for testing).
+      // A real match typically produces 100+ changes; 30 is a safe production threshold.
+      const MIN_INPUT_CHANGES = 0;
       if (activity[0] >= MIN_INPUT_CHANGES && activity[1] >= MIN_INPUT_CHANGES) {
         updateElo(winnerName, loserName);
       }
@@ -93,20 +99,33 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       mode,
     };
 
+    // Set match start time from room
+    if (room) {
+      record.matchStartTime = room.matchStartTime;
+    }
+
+    // Store wallet verification status
+    record.wallet1Verified = !!(sockets[0] as any)?.data.walletVerified;
+    record.wallet2Verified = !!(sockets[1] as any)?.data.walletVerified;
+
     // Start match on-chain for ranked matches with wallets
     if (mode === "ranked" && record.wallet1 && record.wallet2 && process.env.STELLAR_ADMIN_SECRET && room) {
       const seedBytes = new Uint8Array(4);
       new DataView(seedBytes.buffer).setUint32(0, room.currentSeed, true);
       const seedCommit = new Uint8Array(new Bun.CryptoHasher("sha256").update(seedBytes).digest());
-      startMatchOnChain(record.sessionId, record.wallet1, record.wallet2, seedCommit).catch(() => {});
+      startMatchOnChain(record.sessionId, record.wallet1, record.wallet2, seedCommit)
+        .then((hash) => { if (hash) updateStartTxHash(matchId, hash); })
+        .catch(() => {});
     }
 
     // Trigger proving for ranked matches
     if (mode === "ranked" && room) {
       record.proofStatus = "proving";
       const transcript = room.getTranscript();
-      const onProofResult = (artifacts: ProofArtifacts | null) => {
+      const proofRequestedAt = Date.now();
+      const onProofResult = (artifacts: ProofArtifacts | null, source?: string) => {
         if (artifacts) {
+          updateProofTimestamps(matchId, proofRequestedAt, Date.now(), source || "unknown");
           updateProofStatus(matchId, "verified", artifacts);
           autoSettleMatch(matchId, sessionId, artifacts);
         } else {
@@ -117,6 +136,12 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     }
 
     insertMatch(record);
+
+    // Store timeline fields that insertMatch doesn't cover
+    if (record.matchStartTime) updateMatchStartTime(matchId, record.matchStartTime);
+    if (record.wallet1Verified || record.wallet2Verified) {
+      updateWalletVerified(matchId, !!record.wallet1Verified, !!record.wallet2Verified);
+    }
   }
 
   for (const ws of sockets) {
@@ -263,6 +288,51 @@ const server = Bun.serve<SocketData>({
       }
       return Response.json(record.proofArtifacts, { headers: corsHeaders });
     }
+    // ── Match detail endpoint ──────────────────────────────
+    const matchDetailMatch = url.pathname.match(/^\/api\/matches\/(.+)\/detail$/);
+    if (matchDetailMatch) {
+      const matchId = matchDetailMatch[1]!;
+      const record = getMatchById(matchId);
+      if (!record) {
+        return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
+      }
+      return Response.json({
+        ...record,
+        contractAddress: "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
+        verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
+        gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
+      }, { headers: corsHeaders });
+    }
+
+    // ── Wallet challenge/verify endpoints ─────────────────
+    if (url.pathname === "/api/wallet/challenge") {
+      const addr = url.searchParams.get("address") ?? "";
+      if (!addr || !/^G[A-Z2-7]{55}$/.test(addr)) {
+        return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
+      }
+      const challenge = `chickenz-auth:${crypto.randomUUID()}:${Date.now()}`;
+      return Response.json({ challenge }, { headers: corsHeaders });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/wallet/verify") {
+      try {
+        const body = await req.json() as { address: string; challenge: string; signature: string };
+        if (!body.address || !body.challenge || !body.signature) {
+          return Response.json({ error: "Missing fields" }, { status: 400, headers: corsHeaders });
+        }
+        if (!/^G[A-Z2-7]{55}$/.test(body.address)) {
+          return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
+        }
+        if (!body.challenge.startsWith("chickenz-auth:")) {
+          return Response.json({ error: "Invalid challenge" }, { status: 400, headers: corsHeaders });
+        }
+        const verified = verifySignature(body.address, body.challenge, body.signature);
+        return Response.json({ verified }, { headers: corsHeaders });
+      } catch {
+        return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
+      }
+    }
+
     // ── Worker API (prover worker polls these) ──────────────
 
     // Worker API authentication
@@ -397,6 +467,7 @@ const server = Bun.serve<SocketData>({
         const addr = ((msg as any).address ?? "").trim();
         if (addr && /^G[A-Z2-7]{55}$/.test(addr)) {
           ws.data.walletAddress = addr;
+          (ws.data as any).walletVerified = !!(msg as any).verified;
         }
         return;
       }

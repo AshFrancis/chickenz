@@ -17,7 +17,7 @@ export interface ProofJob {
   status: "queued" | "claimed" | "proving" | "done" | "failed";
   claimedAt?: number;
   artifacts?: ProofArtifacts;
-  onResult?: (artifacts: ProofArtifacts | null) => void;
+  onResult?: (artifacts: ProofArtifacts | null, source?: string) => void;
 }
 
 // ── Proof Queue ──────────────────────────────────────────
@@ -35,7 +35,7 @@ export function workerHeartbeat() {
 }
 
 /** Queue a proof job. Called when a ranked match ends. */
-export function queueProof(matchId: string, transcript: object, onResult?: (artifacts: ProofArtifacts | null) => void): ProofJob {
+export function queueProof(matchId: string, transcript: object, onResult?: (artifacts: ProofArtifacts | null, source?: string) => void): ProofJob {
   const job: ProofJob = { matchId, transcript, status: "queued", onResult };
   proofQueue.push(job);
   console.log(`[prover] Queued proof for ${matchId} (queue size: ${proofQueue.length})`);
@@ -70,7 +70,7 @@ export function submitJobResult(matchId: string, artifacts: ProofArtifacts): Pro
   console.log(`[prover] Proof received for ${matchId}`);
   // Invoke onResult callback if registered
   if (job.onResult) {
-    try { job.onResult(artifacts); } catch (e) { console.error(`[prover] onResult callback error for ${matchId}:`, e); }
+    try { job.onResult(artifacts, "worker"); } catch (e) { console.error(`[prover] onResult callback error for ${matchId}:`, e); }
   }
   return job;
 }
@@ -163,10 +163,10 @@ export async function proveBoundless(
 export function proveMatch(
   matchId: string,
   transcript: object,
-  onResult: (artifacts: ProofArtifacts | null) => void,
+  onResult: (artifacts: ProofArtifacts | null, source?: string) => void,
 ) {
   let settled = false;
-  const settleOnce = (source: string) => (artifacts: ProofArtifacts | null) => {
+  const settleOnce = (source: string) => (artifacts: ProofArtifacts | null, _source?: string) => {
     if (settled) return;
     if (!artifacts) {
       // Only settle with null if both have failed — track individually
@@ -174,7 +174,7 @@ export function proveMatch(
     }
     settled = true;
     console.log(`[prover] ${matchId} proved by ${source}`);
-    onResult(artifacts);
+    onResult(artifacts, source);
   };
 
   // Always queue for worker (gaming PC polls these)

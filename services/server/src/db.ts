@@ -19,6 +19,14 @@ export interface MatchRecord {
   roomId: string;
   mode: string;
   proofArtifacts?: { seal: string; journal: string; imageId: string };
+  matchStartTime?: number;
+  proofRequestedAt?: number;
+  proofCompletedAt?: number;
+  proofSource?: string;
+  startTxHash?: string;
+  settleTxHash?: string;
+  wallet1Verified?: boolean;
+  wallet2Verified?: boolean;
 }
 
 export interface LeaderboardEntry {
@@ -70,6 +78,21 @@ db.exec(`
     losses INTEGER DEFAULT 0
   );
 `);
+
+// ── Schema migrations (idempotent) ───────────────────────
+const migrations = [
+  "ALTER TABLE matches ADD COLUMN match_start_time INTEGER",
+  "ALTER TABLE matches ADD COLUMN proof_requested_at INTEGER",
+  "ALTER TABLE matches ADD COLUMN proof_completed_at INTEGER",
+  "ALTER TABLE matches ADD COLUMN proof_source TEXT",
+  "ALTER TABLE matches ADD COLUMN start_tx_hash TEXT",
+  "ALTER TABLE matches ADD COLUMN settle_tx_hash TEXT",
+  "ALTER TABLE matches ADD COLUMN wallet1_verified INTEGER DEFAULT 0",
+  "ALTER TABLE matches ADD COLUMN wallet2_verified INTEGER DEFAULT 0",
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch { /* column already exists */ }
+}
 
 // ── Prepared statements ───────────────────────────────────
 
@@ -133,6 +156,14 @@ function rowToMatch(row: any): MatchRecord {
       imageId: row.proof_image_id,
     };
   }
+  if (row.match_start_time) record.matchStartTime = row.match_start_time;
+  if (row.proof_requested_at) record.proofRequestedAt = row.proof_requested_at;
+  if (row.proof_completed_at) record.proofCompletedAt = row.proof_completed_at;
+  if (row.proof_source) record.proofSource = row.proof_source;
+  if (row.start_tx_hash) record.startTxHash = row.start_tx_hash;
+  if (row.settle_tx_hash) record.settleTxHash = row.settle_tx_hash;
+  record.wallet1Verified = !!row.wallet1_verified;
+  record.wallet2Verified = !!row.wallet2_verified;
   return record;
 }
 
@@ -228,4 +259,37 @@ export function getPlayerStats(name: string): LeaderboardEntry | null {
   const row = stmtGetPlayer.get({ $username: name }) as any;
   if (!row) return null;
   return { name: row.username, elo: row.elo, wins: row.wins, losses: row.losses };
+}
+
+// ── Timeline update functions ────────────────────────────
+
+const stmtUpdateStartTx = db.prepare(`UPDATE matches SET start_tx_hash = $hash WHERE id = $id`);
+const stmtUpdateSettleTx = db.prepare(`UPDATE matches SET settle_tx_hash = $hash WHERE id = $id`);
+const stmtUpdateProofTimestamps = db.prepare(`
+  UPDATE matches SET proof_requested_at = $requestedAt, proof_completed_at = $completedAt, proof_source = $source
+  WHERE id = $id
+`);
+const stmtUpdateMatchStartTime = db.prepare(`UPDATE matches SET match_start_time = $time WHERE id = $id`);
+const stmtUpdateWalletVerified = db.prepare(`
+  UPDATE matches SET wallet1_verified = $w1, wallet2_verified = $w2 WHERE id = $id
+`);
+
+export function updateStartTxHash(matchId: string, hash: string) {
+  stmtUpdateStartTx.run({ $id: matchId, $hash: hash });
+}
+
+export function updateSettleTxHash(matchId: string, hash: string) {
+  stmtUpdateSettleTx.run({ $id: matchId, $hash: hash });
+}
+
+export function updateProofTimestamps(matchId: string, requestedAt: number, completedAt: number, source: string) {
+  stmtUpdateProofTimestamps.run({ $id: matchId, $requestedAt: requestedAt, $completedAt: completedAt, $source: source });
+}
+
+export function updateMatchStartTime(matchId: string, time: number) {
+  stmtUpdateMatchStartTime.run({ $id: matchId, $time: time });
+}
+
+export function updateWalletVerified(matchId: string, w1: boolean, w2: boolean) {
+  stmtUpdateWalletVerified.run({ $id: matchId, $w1: w1 ? 1 : 0, $w2: w2 ? 1 : 0 });
 }

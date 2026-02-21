@@ -24,11 +24,11 @@ function getAdmin(): any | null {
 async function submitTx(
   method: string,
   args: any[],
-): Promise<void> {
+): Promise<string | null> {
   const admin = getAdmin();
   if (!admin) {
     console.warn(`[stellar] No admin key or SDK configured, skipping ${method}`);
-    return;
+    return null;
   }
 
   const server = new StellarSdk.rpc.Server(RPC_URL);
@@ -74,6 +74,7 @@ async function submitTx(
   }
 
   console.log(`[stellar] ${method} succeeded: ${sendResult.hash}`);
+  return sendResult.hash;
 }
 
 /** Call start_match on the Chickenz Soroban contract. Fire-and-forget safe. */
@@ -82,10 +83,10 @@ export async function startMatchOnChain(
   player1: string,
   player2: string,
   seedCommit: Uint8Array,
-): Promise<void> {
-  if (!StellarSdk) return;
+): Promise<string | null> {
+  if (!StellarSdk) return null;
   try {
-    await submitTx("start_match", [
+    return await submitTx("start_match", [
       StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
       StellarSdk.nativeToScVal(player1, { type: "address" }),
       StellarSdk.nativeToScVal(player2, { type: "address" }),
@@ -93,6 +94,7 @@ export async function startMatchOnChain(
     ]);
   } catch (err) {
     console.error("[stellar] startMatchOnChain failed:", err);
+    return null;
   }
 }
 
@@ -101,11 +103,24 @@ export async function settleMatchOnChain(
   sessionId: number,
   seal: Uint8Array,
   journal: Uint8Array,
-): Promise<void> {
-  if (!StellarSdk) return;
-  await submitTx("settle_match", [
+): Promise<string | null> {
+  if (!StellarSdk) return null;
+  return await submitTx("settle_match", [
     StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
     StellarSdk.nativeToScVal(Buffer.from(seal), { type: "bytes" }),
     StellarSdk.nativeToScVal(Buffer.from(journal), { type: "bytes" }),
   ]);
+}
+
+/** Verify a Stellar signature using Keypair.verify(). */
+export function verifySignature(publicKey: string, message: string, signature: string): boolean {
+  if (!StellarSdk) return false;
+  try {
+    const keypair = StellarSdk.Keypair.fromPublicKey(publicKey);
+    const msgBytes = Buffer.from(message, "utf-8");
+    const sigBytes = Buffer.from(signature, "base64");
+    return keypair.verify(msgBytes, sigBytes);
+  } catch {
+    return false;
+  }
 }

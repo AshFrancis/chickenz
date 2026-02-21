@@ -208,6 +208,25 @@ export async function settleMatch(
   ]);
 }
 
+/** Sign a challenge string with the connected wallet (Freighter signMessage). */
+export async function signChallenge(challenge: string): Promise<string | null> {
+  if (!kit || !connectedAddress) return null;
+  try {
+    const result = await (kit as any).signMessage(Buffer.from(challenge, "utf-8"), {
+      address: connectedAddress,
+      networkPassphrase: TESTNET_PASSPHRASE,
+    });
+    // signMessage returns { signedMessage: string } (base64)
+    if (result?.signedMessage) return result.signedMessage;
+    // Some wallet kit versions return differently
+    if (typeof result === "string") return result;
+    return null;
+  } catch (err) {
+    console.error("[stellar] signChallenge failed:", err);
+    return null;
+  }
+}
+
 /** SHA-256 hash of a u32 seed (LE bytes) — matches the Rust prover's hash_seed(). */
 export async function hashSeed(seed: number): Promise<Uint8Array> {
   const buf = new ArrayBuffer(4);

@@ -12,7 +12,7 @@ function pickCharacter(): number {
   return Math.floor(Math.random() * NUM_CHARACTERS);
 }
 let pendingCharacter = 0; // character chosen for next match
-import { initWalletKit, tryReconnectWallet, connectWallet, disconnectWallet, getConnectedAddress, settleMatch } from "./stellar";
+import { initWalletKit, tryReconnectWallet, connectWallet, disconnectWallet, getConnectedAddress, settleMatch, signChallenge } from "./stellar";
 
 interface MatchRecord {
   id: string;
@@ -21,13 +21,28 @@ interface MatchRecord {
   player2: string;
   wallet1?: string;
   wallet2?: string;
+  wallet1Verified?: boolean;
+  wallet2Verified?: boolean;
   winner: number;
   scores: [number, number];
   timestamp: number;
   proofStatus: "none" | "pending" | "proving" | "verified" | "settled";
   roomId: string;
   mode?: GameMode;
+  matchStartTime?: number;
+  proofRequestedAt?: number;
+  proofCompletedAt?: number;
+  proofSource?: string;
+  startTxHash?: string;
+  settleTxHash?: string;
+  proofArtifacts?: { seal: string; journal: string; imageId: string };
+  contractAddress?: string;
+  verifierAddress?: string;
+  gameHubAddress?: string;
 }
+
+// Wallet verification state
+let walletVerified = false;
 
 // ── DOM elements ───────────────────────────────────────────────────────────────
 
@@ -89,6 +104,15 @@ const spectateOverlay = document.getElementById("spectate-overlay") as HTMLDivEl
 const spectateLabel = document.getElementById("spectate-label") as HTMLSpanElement;
 const tournamentResults = document.getElementById("tournament-results") as HTMLDivElement;
 const standingsList = document.getElementById("standings-list") as HTMLDivElement;
+
+// Match detail overlay
+const matchDetailOverlay = document.getElementById("match-detail-overlay") as HTMLDivElement;
+const matchDetailBody = document.getElementById("match-detail-body") as HTMLDivElement;
+const matchDetailClose = document.getElementById("match-detail-close") as HTMLButtonElement;
+
+matchDetailClose.addEventListener("click", () => {
+  matchDetailOverlay.classList.remove("visible");
+});
 
 // ── WASM init ─────────────────────────────────────────────────────────────────
 await initChickenzWasm();
@@ -324,6 +348,7 @@ function handleWalletDisconnect() {
   // Hide ALL overlays
   lobbyOverlay.classList.remove("visible");
   settingsOverlay.classList.remove("visible");
+  matchDetailOverlay.classList.remove("visible");
   tournamentOverlay.classList.remove("visible");
   bracketOverlay.classList.remove("visible");
   spectateOverlay.classList.remove("visible");
@@ -361,6 +386,33 @@ function truncateAddress(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+async function verifyWallet(addr: string): Promise<boolean> {
+  if (!networkManager) return false;
+  const origin = networkManager.httpOrigin;
+  try {
+    // 1. Get challenge
+    const challengeRes = await fetch(`${origin}/api/wallet/challenge?address=${addr}`);
+    const { challenge } = await challengeRes.json();
+    if (!challenge) return false;
+
+    // 2. Sign with Freighter
+    const signature = await signChallenge(challenge);
+    if (!signature) return false;
+
+    // 3. Verify on server
+    const verifyRes = await fetch(`${origin}/api/wallet/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: addr, challenge, signature }),
+    });
+    const { verified } = await verifyRes.json();
+    return !!verified;
+  } catch (err) {
+    console.error("[wallet] Verification failed:", err);
+    return false;
+  }
+}
+
 function updateWalletUI() {
   const addr = getConnectedAddress();
   if (addr) {
@@ -369,12 +421,22 @@ function updateWalletUI() {
     walletBtn.classList.add("btn-warn");
     walletBtn.classList.remove("btn-primary");
     modeRankedBtn.classList.remove("locked");
-    networkManager?.sendSetWallet(addr);
+    // Attempt wallet verification
+    verifyWallet(addr).then((verified) => {
+      walletVerified = verified;
+      networkManager?.sendSetWallet(addr, verified);
+      if (verified) {
+        topBarAddress.innerHTML = `${truncateAddress(addr)} <span style="color:#66bb6a;font-size:10px">&#10003;</span>`;
+      }
+    }).catch(() => {
+      networkManager?.sendSetWallet(addr);
+    });
   } else {
     topBarAddress.textContent = "";
     walletBtn.textContent = "Connect Wallet";
     walletBtn.classList.remove("btn-warn");
     walletBtn.classList.add("btn-primary");
+    walletVerified = false;
     if (currentMode === "ranked") {
       setMode("casual");
     }
@@ -409,8 +471,19 @@ window.addEventListener("walletChanged", () => {
 
 function setMode(mode: GameMode) {
   currentMode = mode;
+  localStorage.setItem("chickenz-mode", mode);
   modeCasualBtn.classList.toggle("active", mode === "casual");
   modeRankedBtn.classList.toggle("active", mode === "ranked");
+}
+
+// Restore saved mode preference
+{
+  const saved = localStorage.getItem("chickenz-mode") as GameMode | null;
+  if (saved === "ranked" || saved === "casual") {
+    currentMode = saved;
+    modeCasualBtn.classList.toggle("active", saved === "casual");
+    modeRankedBtn.classList.toggle("active", saved === "ranked");
+  }
 }
 
 modeCasualBtn.addEventListener("click", () => {
@@ -542,11 +615,18 @@ settingsBtn.addEventListener("click", () => {
 });
 settingsClose.addEventListener("click", closeSettings);
 
-// Close settings on Escape
+// Close settings/detail on Escape
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && settingsOpen) {
-    closeSettings();
-    e.preventDefault();
+  if (e.key === "Escape") {
+    if (matchDetailOverlay.classList.contains("visible")) {
+      matchDetailOverlay.classList.remove("visible");
+      e.preventDefault();
+      return;
+    }
+    if (settingsOpen) {
+      closeSettings();
+      e.preventDefault();
+    }
   }
 });
 
@@ -1014,22 +1094,31 @@ function renderMatchHistory(matches: MatchRecord[]) {
     `;
     const replayBtn = el.querySelector(".btn-replay");
     if (replayBtn) {
-      replayBtn.addEventListener("click", () => {
+      replayBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
         startReplay(m.roomId);
       });
     }
     const downloadBtn = el.querySelector(".btn-download");
     if (downloadBtn) {
-      downloadBtn.addEventListener("click", () => {
+      downloadBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
         downloadTranscript(m.roomId);
       });
     }
     const settleBtn = el.querySelector(".btn-settle");
     if (settleBtn) {
-      settleBtn.addEventListener("click", () => {
+      settleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
         handleSettleMatch(m.id);
       });
     }
+    // Click row to open detail
+    el.addEventListener("click", (e) => {
+      // Don't open detail if clicking a button
+      if ((e.target as HTMLElement).closest("button")) return;
+      openMatchDetail(m.id);
+    });
     matchHistoryList.appendChild(el);
   }
 }
@@ -1098,6 +1187,185 @@ function downloadTranscript(roomId: string) {
     .catch(() => {
       lobbyStatus.textContent = "Failed to download transcript.";
     });
+}
+
+// ── Match Detail Modal ────────────────────────────────────────────────────────
+
+function openMatchDetail(matchId: string) {
+  if (!networkManager) return;
+  const origin = networkManager.httpOrigin;
+  fetch(`${origin}/api/matches/${matchId}/detail`)
+    .then((r) => r.json())
+    .then((m: MatchRecord) => {
+      renderMatchDetail(m);
+      matchDetailOverlay.classList.add("visible");
+    })
+    .catch(() => {
+      lobbyStatus.textContent = "Failed to load match details.";
+    });
+}
+
+function formatTimestamp(ts?: number): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatDuration(startMs: number, endMs: number): string {
+  const s = Math.round((endMs - startMs) / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function explorerTxUrl(hash: string): string {
+  return `https://stellar.expert/explorer/testnet/tx/${hash}`;
+}
+
+function explorerAccountUrl(addr: string): string {
+  return `https://stellar.expert/explorer/testnet/account/${addr}`;
+}
+
+function renderMatchDetail(m: MatchRecord) {
+  const winnerName = m.winner === 0 ? m.player1 : m.winner === 1 ? m.player2 : "Draw";
+  const modeBadge = m.mode === "ranked"
+    ? `<span class="mode-badge ranked">Ranked</span>`
+    : `<span class="mode-badge casual">Casual</span>`;
+
+  // Players section
+  const renderPlayer = (name: string, wallet: string | undefined, verified: boolean | undefined, isWinner: boolean) => {
+    const walletHtml = wallet
+      ? `<div class="dp-wallet"><a href="${explorerAccountUrl(wallet)}" target="_blank" rel="noopener">${truncateAddress(wallet)}</a>${verified ? '<span class="dp-verified">&#10003; verified</span>' : ""}</div>`
+      : `<div class="dp-wallet" style="color:#555">No wallet</div>`;
+    return `
+      <div class="detail-player${isWinner ? " winner" : ""}">
+        <div class="dp-name">${escapeHtml(name)}${isWinner ? '<span class="dp-winner-tag">Winner</span>' : ""}</div>
+        ${walletHtml}
+      </div>
+    `;
+  };
+
+  // Timeline steps
+  const steps: string[] = [];
+  const addStep = (label: string, ts: number | undefined, extra: string = "", status?: string) => {
+    const st = status || (ts ? "done" : "pending");
+    const timeStr = ts ? `<span class="tl-time">${formatTimestamp(ts)}</span>` : "";
+    steps.push(`<div class="tl-step ${st}"><span class="tl-label">${label}</span>${timeStr}${extra}</div>`);
+  };
+
+  addStep("Match Started", m.matchStartTime);
+
+  if (m.timestamp) {
+    const duration = m.matchStartTime ? `<span class="tl-duration">${formatDuration(m.matchStartTime, m.timestamp)}</span>` : "";
+    addStep("Match Ended", m.timestamp, duration);
+  }
+
+  if (m.mode === "ranked") {
+    addStep("Proof Requested", m.proofRequestedAt,
+      "", m.proofRequestedAt ? "done" : (m.proofStatus !== "none" ? "active" : "pending"));
+
+    if (m.proofCompletedAt) {
+      const proveDur = m.proofRequestedAt ? `<span class="tl-duration">${formatDuration(m.proofRequestedAt, m.proofCompletedAt)}</span>` : "";
+      const sourceLabel = m.proofSource === "worker" ? "Self-Hosted" : m.proofSource === "boundless" ? "Boundless" : m.proofSource;
+      const sourceBadge = sourceLabel ? `<span class="tl-badge">${escapeHtml(sourceLabel)}</span>` : "";
+      addStep("Proof Generated", m.proofCompletedAt, `${sourceBadge}${proveDur}`);
+    } else if (m.proofStatus === "proving") {
+      addStep("Proof Generating...", undefined, "", "active");
+    }
+
+    if (m.startTxHash) {
+      addStep("start_match TX", m.matchStartTime,
+        `<a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+    }
+
+    if (m.settleTxHash) {
+      addStep("settle_match TX", m.proofCompletedAt,
+        `<a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+    } else if (m.proofStatus === "settled") {
+      addStep("settle_match TX", undefined, "", "done");
+    } else if (m.proofStatus === "verified") {
+      addStep("Settlement Pending...", undefined, "", "active");
+    }
+  }
+
+  // Proof details section
+  let proofHtml = "";
+  if (m.proofArtifacts && m.mode === "ranked") {
+    const { seal, journal, imageId } = m.proofArtifacts;
+    proofHtml = `
+      <div class="detail-section">
+        <h3>Proof Details</h3>
+        <div class="detail-proof-grid">
+          <div class="dpg-row"><span class="dpg-label">Image ID</span><span class="dpg-value">${escapeHtml(imageId.slice(0, 16))}...</span></div>
+          <div class="dpg-row"><span class="dpg-label">Seal</span><span class="dpg-value">${seal.length / 2} bytes</span></div>
+          <div class="dpg-row"><span class="dpg-label">Journal</span><span class="dpg-value">${journal.length / 2} bytes</span></div>
+          <div class="dpg-row"><span class="dpg-label">Status</span><span class="dpg-value"><span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span></span></div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Contract links section
+  let contractsHtml = "";
+  if (m.mode === "ranked" && m.contractAddress) {
+    contractsHtml = `
+      <div class="detail-section">
+        <h3>Contracts</h3>
+        <div class="detail-proof-grid">
+          <div class="dpg-row"><span class="dpg-label">Game</span><span class="dpg-value"><a href="${explorerAccountUrl(m.contractAddress)}" target="_blank" rel="noopener">${truncateAddress(m.contractAddress)}</a></span></div>
+          <div class="dpg-row"><span class="dpg-label">Verifier</span><span class="dpg-value"><a href="${explorerAccountUrl(m.verifierAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.verifierAddress!)}</a></span></div>
+          <div class="dpg-row"><span class="dpg-label">Game Hub</span><span class="dpg-value"><a href="${explorerAccountUrl(m.gameHubAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.gameHubAddress!)}</a></span></div>
+        </div>
+      </div>
+    `;
+  }
+
+  matchDetailBody.innerHTML = `
+    <div class="detail-section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="color:#888;font-size:10px">${escapeHtml(m.id)}</span>
+        ${modeBadge}
+      </div>
+      <div style="font-size:13px;color:#fff;margin-bottom:4px">${escapeHtml(winnerName)} wins  <span style="color:#888">${m.scores[0]}-${m.scores[1]}</span></div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Players</h3>
+      <div class="detail-players">
+        ${renderPlayer(m.player1, m.wallet1, m.wallet1Verified, m.winner === 0)}
+        ${renderPlayer(m.player2, m.wallet2, m.wallet2Verified, m.winner === 1)}
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Settlement Timeline</h3>
+      <div class="detail-timeline">
+        ${steps.join("")}
+      </div>
+    </div>
+
+    ${proofHtml}
+    ${contractsHtml}
+
+    <div class="detail-actions">
+      <button class="btn btn-sm btn-replay-detail" data-room-id="${m.roomId}">Replay</button>
+      <button class="btn btn-sm btn-download-detail" data-room-id="${m.roomId}">Download</button>
+    </div>
+  `;
+
+  // Bind action buttons
+  const replayBtn = matchDetailBody.querySelector(".btn-replay-detail");
+  if (replayBtn) {
+    replayBtn.addEventListener("click", () => {
+      matchDetailOverlay.classList.remove("visible");
+      startReplay(m.roomId);
+    });
+  }
+  const downloadBtn = matchDetailBody.querySelector(".btn-download-detail");
+  if (downloadBtn) {
+    downloadBtn.addEventListener("click", () => {
+      downloadTranscript(m.roomId);
+    });
+  }
 }
 
 // ── Tournament UI helpers ──────────────────────────────────────────────────────

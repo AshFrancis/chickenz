@@ -60,6 +60,7 @@ export class GameRoom {
   private characterSlots: [number, number] = [0, 1]; // character indices for each player
   private roundTranscripts: { seed: number; mapIndex: number; transcript: object[] }[] = [];
   private matchOverTick = -1; // tick when match_over first detected (-1 = not yet)
+  private _matchStartTime = 0; // wall-clock ms when match started
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -91,6 +92,11 @@ export class GameRoom {
   /** Current seed used by the game sim (set after startMatch/startRound). */
   get currentSeed() {
     return this.seed;
+  }
+
+  /** Wall-clock time when the match started. */
+  get matchStartTime() {
+    return this._matchStartTime;
   }
 
   /** Map index used for the current round. */
@@ -224,6 +230,7 @@ export class GameRoom {
 
   private startMatch() {
     this._status = "playing";
+    this._matchStartTime = Date.now();
     this.currentRound = 0;
     this.roundWins = [0, 0];
 

@@ -234,8 +234,8 @@ export class NetworkManager {
     this.send({ type: "create", isPrivate, mode, character });
   }
 
-  sendSetWallet(address: string) {
-    this.send({ type: "set_wallet", address });
+  sendSetWallet(address: string, verified?: boolean) {
+    this.send({ type: "set_wallet", address, verified: !!verified });
   }
 
   sendJoinRoom(roomId: string, character?: number) {

@@ -935,6 +935,191 @@
       .standing-row .name { color: #fff; }
       .standing-row:first-child { border-color: #ffee58; }
       .standing-row:first-child .place { color: #ffee58; }
+
+      /* Match detail overlay */
+      #match-detail-overlay {
+        display: none;
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(10, 10, 20, 0.95);
+        z-index: 180;
+        align-items: center;
+        justify-content: center;
+        overflow-y: auto;
+        padding: 24px;
+      }
+      #match-detail-overlay.visible { display: flex; }
+      #match-detail-card {
+        max-width: 560px;
+        width: 100%;
+        background: #0d0d1a;
+        border: 2px solid #333;
+        padding: 24px;
+        max-height: 90vh;
+        overflow-y: auto;
+      }
+      #match-detail-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      #match-detail-header h2 {
+        font-size: 16px;
+        color: #ffee58;
+        text-shadow: 2px 2px 0 #c9a800;
+        margin: 0;
+      }
+      #match-detail-close {
+        background: none;
+        border: none;
+        color: #888;
+        font-size: 18px;
+        cursor: pointer;
+        font-family: "Silkscreen", monospace;
+      }
+      #match-detail-close:hover { color: #fff; }
+
+      /* Detail sections */
+      .detail-section {
+        margin-bottom: 16px;
+      }
+      .detail-section h3 {
+        font-size: 11px;
+        color: #ffa726;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        margin-bottom: 8px;
+        border-bottom: 1px solid #333;
+        padding-bottom: 4px;
+      }
+      .detail-players {
+        display: flex;
+        gap: 12px;
+      }
+      .detail-player {
+        flex: 1;
+        padding: 10px;
+        background: #111;
+        border: 2px solid #333;
+        font-size: 11px;
+      }
+      .detail-player.winner { border-color: #66bb6a; }
+      .detail-player .dp-name {
+        font-size: 13px;
+        color: #fff;
+        margin-bottom: 4px;
+      }
+      .detail-player .dp-wallet {
+        color: #888;
+        font-size: 9px;
+        word-break: break-all;
+      }
+      .detail-player .dp-wallet a {
+        color: #4fc3f7;
+        text-decoration: none;
+      }
+      .detail-player .dp-wallet a:hover { text-decoration: underline; }
+      .dp-verified {
+        color: #66bb6a;
+        font-size: 9px;
+        margin-left: 4px;
+      }
+      .dp-winner-tag {
+        color: #66bb6a;
+        font-size: 9px;
+        text-transform: uppercase;
+        margin-left: 6px;
+      }
+
+      /* Timeline */
+      .detail-timeline {
+        position: relative;
+        padding-left: 20px;
+      }
+      .detail-timeline::before {
+        content: '';
+        position: absolute;
+        left: 6px;
+        top: 4px;
+        bottom: 4px;
+        width: 2px;
+        background: #333;
+      }
+      .tl-step {
+        position: relative;
+        padding: 6px 0 6px 12px;
+        font-size: 11px;
+      }
+      .tl-step::before {
+        content: '';
+        position: absolute;
+        left: -17px;
+        top: 10px;
+        width: 8px;
+        height: 8px;
+        border: 2px solid #555;
+        background: #0d0d1a;
+      }
+      .tl-step.done::before { border-color: #66bb6a; background: #66bb6a; }
+      .tl-step.active::before { border-color: #ffa726; background: #ffa726; }
+      .tl-step.pending::before { border-color: #555; }
+      .tl-label { color: #ccc; }
+      .tl-time { color: #888; font-size: 10px; margin-left: 8px; }
+      .tl-link {
+        color: #4fc3f7;
+        text-decoration: none;
+        font-size: 10px;
+        margin-left: 6px;
+      }
+      .tl-link:hover { text-decoration: underline; }
+      .tl-badge {
+        font-size: 9px;
+        padding: 1px 5px;
+        border: 1px solid #ffa726;
+        color: #ffa726;
+        margin-left: 6px;
+      }
+      .tl-duration {
+        color: #888;
+        font-size: 10px;
+        margin-left: 6px;
+      }
+
+      /* Proof details */
+      .detail-proof-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 10px;
+      }
+      .dpg-row {
+        display: flex;
+        gap: 8px;
+      }
+      .dpg-label { color: #888; min-width: 80px; }
+      .dpg-value {
+        color: #ccc;
+        word-break: break-all;
+        flex: 1;
+      }
+      .dpg-value a {
+        color: #4fc3f7;
+        text-decoration: none;
+      }
+      .dpg-value a:hover { text-decoration: underline; }
+
+      /* Detail actions */
+      .detail-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      /* Make match-item clickable */
+      .match-item { cursor: pointer; }
+      .match-item:hover { border-color: #555; }
     </style>
   </head>
   <body>
@@ -1115,6 +1300,17 @@
         <div id="tournament-results">
           <h2>TOURNAMENT RESULTS</h2>
           <div class="standings-list" id="standings-list"></div>
+        </div>
+
+        <!-- Match detail overlay -->
+        <div id="match-detail-overlay">
+          <div id="match-detail-card">
+            <div id="match-detail-header">
+              <h2>MATCH DETAILS</h2>
+              <button id="match-detail-close">X</button>
+            </div>
+            <div id="match-detail-body"></div>
+          </div>
         </div>
 
         <!-- Lobby overlay -->
