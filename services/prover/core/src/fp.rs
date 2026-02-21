@@ -583,46 +583,35 @@ fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
     p.y += p.vy;
     p.grounded = false;
 
-    // Platform collision
-    let prev_y = p.y - p.vy;
+    // Platform collision — all platforms are solid (full AABB)
     for plat in &map.platforms {
+        // Skip empty/padding platforms
+        if plat.width == 0 || plat.height == 0 { continue; }
         // Check overlap
         if p.x + PLAYER_WIDTH > plat.x
             && p.x < plat.x + plat.width
             && p.y + PLAYER_HEIGHT > plat.y
             && p.y < plat.y + plat.height
         {
-            let is_thin = plat.height < fp(32);
-            if is_thin {
-                // One-way platform: only land from above (can jump through from below/sides)
-                let was_above = prev_y + PLAYER_HEIGHT <= plat.y + (2 << FRAC); // 2px tolerance
-                if was_above && p.vy > 0 {
-                    p.y = plat.y - PLAYER_HEIGHT;
-                    p.vy = 0;
-                    p.grounded = true;
-                }
-            } else {
-                // Solid platform: full AABB collision
-                let overlap_left = (p.x + PLAYER_WIDTH) - plat.x;
-                let overlap_right = (plat.x + plat.width) - p.x;
-                let overlap_top = (p.y + PLAYER_HEIGHT) - plat.y;
-                let overlap_bottom = (plat.y + plat.height) - p.y;
-                let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
+            let overlap_left = (p.x + PLAYER_WIDTH) - plat.x;
+            let overlap_right = (plat.x + plat.width) - p.x;
+            let overlap_top = (p.y + PLAYER_HEIGHT) - plat.y;
+            let overlap_bottom = (plat.y + plat.height) - p.y;
+            let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
 
-                if min_overlap == overlap_top {
-                    p.y = plat.y - PLAYER_HEIGHT;
-                    p.vy = 0;
-                    p.grounded = true;
-                } else if min_overlap == overlap_bottom {
-                    p.y = plat.y + plat.height;
-                    p.vy = 0;
-                } else if min_overlap == overlap_left {
-                    p.x = plat.x - PLAYER_WIDTH;
-                    p.vx = 0;
-                } else {
-                    p.x = plat.x + plat.width;
-                    p.vx = 0;
-                }
+            if min_overlap == overlap_top {
+                p.y = plat.y - PLAYER_HEIGHT;
+                p.vy = 0;
+                p.grounded = true;
+            } else if min_overlap == overlap_bottom {
+                p.y = plat.y + plat.height;
+                p.vy = 0;
+            } else if min_overlap == overlap_left {
+                p.x = plat.x - PLAYER_WIDTH;
+                p.vx = 0;
+            } else {
+                p.x = plat.x + plat.width;
+                p.vx = 0;
             }
         }
     }
