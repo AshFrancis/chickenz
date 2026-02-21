@@ -1,5 +1,6 @@
 {
   "private": true,
+  "workspaces": ["packages/*", "apps/*", "services/*"],
   "scripts": {
     "dev:client": "pnpm --filter @chickenz/client dev",
     "dev:server": "pnpm --filter @chickenz/server dev",
