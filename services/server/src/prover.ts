@@ -157,25 +157,60 @@ export async function proveBoundless(
 }
 
 /**
- * Route a proof request: local worker if online, else Boundless.
- * Returns a function that resolves when proof is ready (for Boundless),
- * or null if queued for worker (caller polls via getJob).
+ * Race proof request: always queue for worker AND submit to Boundless.
+ * Whichever finishes first wins. The onResult callback fires exactly once.
  */
 export function proveMatch(
   matchId: string,
   transcript: object,
   onResult: (artifacts: ProofArtifacts | null) => void,
 ) {
-  if (isWorkerOnline()) {
-    // Queue for local worker — it'll poll and pick it up
-    queueProof(matchId, transcript, onResult);
-    console.log(`[prover] Routed ${matchId} to local worker`);
-  } else if (process.env.BOUNDLESS_RPC_URL && process.env.BOUNDLESS_PRIVATE_KEY) {
-    // Fall back to Boundless
-    console.log(`[prover] Worker offline, routing ${matchId} to Boundless`);
-    proveBoundless(matchId, transcript).then(onResult).catch(() => onResult(null));
+  let settled = false;
+  const settleOnce = (source: string) => (artifacts: ProofArtifacts | null) => {
+    if (settled) return;
+    if (!artifacts) {
+      // Only settle with null if both have failed — track individually
+      return;
+    }
+    settled = true;
+    console.log(`[prover] ${matchId} proved by ${source}`);
+    onResult(artifacts);
+  };
+
+  // Always queue for worker (gaming PC polls these)
+  queueProof(matchId, transcript, settleOnce("worker"));
+  console.log(`[prover] Queued ${matchId} for worker`);
+
+  // Also submit to Boundless in parallel
+  if (process.env.BOUNDLESS_RPC_URL && process.env.BOUNDLESS_PRIVATE_KEY) {
+    console.log(`[prover] Submitting ${matchId} to Boundless in parallel`);
+    proveBoundless(matchId, transcript)
+      .then((artifacts) => {
+        if (artifacts) {
+          settleOnce("boundless")(artifacts);
+        } else {
+          console.log(`[prover] Boundless failed for ${matchId}`);
+          // If worker hasn't delivered either, give up
+          if (!settled) {
+            const job = proofQueue.find((j) => j.matchId === matchId);
+            if (!job || job.status === "failed") {
+              settled = true;
+              onResult(null);
+            }
+          }
+        }
+      })
+      .catch(() => {
+        console.log(`[prover] Boundless error for ${matchId}`);
+        if (!settled) {
+          const job = proofQueue.find((j) => j.matchId === matchId);
+          if (!job || job.status === "failed") {
+            settled = true;
+            onResult(null);
+          }
+        }
+      });
   } else {
-    console.log(`[prover] No worker online and no Boundless config — skipping proof for ${matchId}`);
-    onResult(null);
+    console.log(`[prover] No Boundless config — ${matchId} relies on worker only`);
   }
 }
