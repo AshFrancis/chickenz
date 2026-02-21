@@ -320,12 +320,11 @@
       .ranked-tooltip {
         display: none;
         position: absolute;
-        bottom: calc(100% + 10px);
-        left: 50%;
-        transform: translateX(-50%);
-        background: #1a1a2e;
+        top: calc(100% + 10px);
+        left: 0;
+        background: #111122;
         border: 2px solid #ffa726;
-        color: #ddd;
+        color: #fff;
         padding: 8px 14px;
         font-size: 10px;
         white-space: nowrap;
@@ -336,11 +335,10 @@
       .ranked-tooltip::after {
         content: '';
         position: absolute;
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
+        bottom: 100%;
+        left: 16px;
         border: 6px solid transparent;
-        border-top-color: #ffa726;
+        border-bottom-color: #ffa726;
       }
       .btn-mode.locked:hover .ranked-tooltip {
         display: block;

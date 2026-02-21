@@ -89,6 +89,7 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN settle_tx_hash TEXT",
   "ALTER TABLE matches ADD COLUMN wallet1_verified INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN wallet2_verified INTEGER DEFAULT 0",
+  "ALTER TABLE matches ADD COLUMN transcript_data TEXT",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* column already exists */ }
@@ -292,4 +293,19 @@ export function updateMatchStartTime(matchId: string, time: number) {
 
 export function updateWalletVerified(matchId: string, w1: boolean, w2: boolean) {
   stmtUpdateWalletVerified.run({ $id: matchId, $w1: w1 ? 1 : 0, $w2: w2 ? 1 : 0 });
+}
+
+// ── Transcript storage ──────────────────────────────────
+
+const stmtSaveTranscript = db.prepare(`UPDATE matches SET transcript_data = $data WHERE id = $id`);
+const stmtGetTranscript = db.prepare(`SELECT transcript_data FROM matches WHERE room_id = $roomId ORDER BY timestamp DESC LIMIT 1`);
+
+export function saveTranscript(matchId: string, data: object) {
+  stmtSaveTranscript.run({ $id: matchId, $data: JSON.stringify(data) });
+}
+
+export function getTranscriptByRoomId(roomId: string): object | null {
+  const row = stmtGetTranscript.get({ $roomId: roomId }) as any;
+  if (!row?.transcript_data) return null;
+  try { return JSON.parse(row.transcript_data); } catch { return null; }
 }

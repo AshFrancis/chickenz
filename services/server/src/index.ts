@@ -4,7 +4,7 @@ import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
 import { startMatchOnChain, settleMatchOnChain, verifySignature } from "./stellar";
 import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
-import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, updateStartTxHash, updateSettleTxHash, updateProofTimestamps, updateMatchStartTime, updateWalletVerified, type MatchRecord } from "./db";
+import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, updateStartTxHash, updateSettleTxHash, updateProofTimestamps, updateMatchStartTime, updateWalletVerified, saveTranscript, getTranscriptByRoomId, type MatchRecord } from "./db";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -137,6 +137,11 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
 
     insertMatch(record);
 
+    // Save full transcript for replays (persists beyond room cleanup)
+    if (room) {
+      saveTranscript(matchId, room.getFullTranscript());
+    }
+
     // Store timeline fields that insertMatch doesn't cover
     if (record.matchStartTime) updateMatchStartTime(matchId, record.matchStartTime);
     if (record.wallet1Verified || record.wallet2Verified) {
@@ -248,14 +253,20 @@ const server = Bun.serve<SocketData>({
     const transcriptMatch = url.pathname.match(/^\/transcript\/(.+)$/);
     if (transcriptMatch) {
       const roomId = transcriptMatch[1]!;
+      // Try in-memory room first (still active or recently ended)
       const room = rooms.get(roomId);
-      if (!room) {
-        return Response.json({ error: "Room not found" }, { status: 404, headers: corsHeaders });
+      if (room) {
+        if (!room.isEnded()) {
+          return Response.json({ error: "Match still in progress" }, { status: 400, headers: corsHeaders });
+        }
+        return Response.json(room.getFullTranscript(), { headers: corsHeaders });
       }
-      if (!room.isEnded()) {
-        return Response.json({ error: "Match still in progress" }, { status: 400, headers: corsHeaders });
+      // Fall back to DB (room already cleaned up)
+      const saved = getTranscriptByRoomId(roomId);
+      if (saved) {
+        return Response.json(saved, { headers: corsHeaders });
       }
-      return Response.json(room.getFullTranscript(), { headers: corsHeaders });
+      return Response.json({ error: "Transcript not found" }, { status: 404, headers: corsHeaders });
     }
 
     // Leaderboard endpoint
