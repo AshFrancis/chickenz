@@ -295,7 +295,7 @@ pub struct SpawnPoint {
     pub y: Fp,
 }
 
-pub const NUM_PLATFORMS: usize = 6;
+pub const NUM_PLATFORMS: usize = 8;
 pub const NUM_SPAWNS: usize = 4;
 pub const NUM_WEAPON_SPAWNS: usize = 4;
 
@@ -398,6 +398,8 @@ pub fn arena_map() -> Map {
             Platform { x: fp(352), y: fp(304), width: fp(256), height: fp(16) },
             Platform { x: fp(64), y: fp(208), width: fp(144), height: fp(16) },
             Platform { x: fp(752), y: fp(208), width: fp(144), height: fp(16) },
+            Platform { x: 0, y: 0, width: 0, height: 0 }, // unused
+            Platform { x: 0, y: 0, width: 0, height: 0 }, // unused
         ],
         spawns: [
             SpawnPoint { x: fp(144), y: fp(480) },

@@ -1187,7 +1187,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   endOnlineMatch(winner: number) {
-    this.playing = false;
+    // Don't set playing=false yet — let winner keep moving during death linger
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     if (winner === -1) {
       showAnnounce("DRAW!");
@@ -1196,18 +1196,15 @@ export class GameScene extends Phaser.Scene {
       showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
     }
     this.playSound("match-end");
-  }
 
-  /** Clean up game state after match ends so stale frames don't flash on next match. */
-  private cleanupMatchState() {
-    this.currState = null;
-    this.prevState = null;
-    this.pendingServerState = null;
-    this.pendingServerButtons = undefined;
-    this.lastServerTick = 0;
-    this.explosions = [];
-    this.gfx.clear();
-    this.gfxOverlay.clear();
+    // Clean up after a brief delay so winner can taunt/move
+    this.time.delayedCall(2000, () => {
+      this.playing = false;
+      this.pendingServerState = null;
+      this.pendingServerButtons = undefined;
+      this.lastServerTick = 0;
+      this.explosions = [];
+    });
   }
 
   // ── Spectator Mode (Tournament) ───────────────────────────────────────────
