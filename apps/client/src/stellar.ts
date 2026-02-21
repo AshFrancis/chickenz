@@ -19,6 +19,7 @@ export const VERIFIER_CONTRACT =
 
 let connectedAddress: string | null = null;
 let kit: StellarWalletsKit | null = null;
+let addressPollTimer: ReturnType<typeof setInterval> | null = null;
 
 export function getConnectedAddress(): string | null {
   return connectedAddress;
@@ -47,6 +48,7 @@ export async function connectWallet(): Promise<string | null> {
           if (address) {
             connectedAddress = address;
             localStorage.removeItem("chickenz-wallet-disconnected");
+            startAddressPolling();
             window.dispatchEvent(
               new CustomEvent("walletChanged", { detail: { address } }),
             );
@@ -64,11 +66,38 @@ export async function connectWallet(): Promise<string | null> {
 
 /** Disconnect wallet and clear state. */
 export function disconnectWallet() {
+  stopAddressPolling();
   connectedAddress = null;
   localStorage.setItem("chickenz-wallet-disconnected", "1");
   window.dispatchEvent(
     new CustomEvent("walletChanged", { detail: { address: null } }),
   );
+}
+
+/** Poll Freighter for account switches and dispatch walletChanged if address changes. */
+function startAddressPolling() {
+  stopAddressPolling();
+  addressPollTimer = setInterval(async () => {
+    if (!kit || !connectedAddress) return;
+    try {
+      const { address } = await kit.getAddress();
+      if (address && address !== connectedAddress) {
+        connectedAddress = address;
+        window.dispatchEvent(
+          new CustomEvent("walletChanged", { detail: { address } }),
+        );
+      }
+    } catch {
+      // Freighter unavailable or locked — ignore
+    }
+  }, 3000);
+}
+
+function stopAddressPolling() {
+  if (addressPollTimer) {
+    clearInterval(addressPollTimer);
+    addressPollTimer = null;
+  }
 }
 
 /** Try to silently reconnect to Freighter if previously connected. */
@@ -80,6 +109,7 @@ export async function tryReconnectWallet(): Promise<boolean> {
     const { address } = await kit.getAddress();
     if (address) {
       connectedAddress = address;
+      startAddressPolling();
       window.dispatchEvent(
         new CustomEvent("walletChanged", { detail: { address } }),
       );

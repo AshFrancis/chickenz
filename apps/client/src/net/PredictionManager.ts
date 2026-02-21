@@ -94,7 +94,8 @@ export class PredictionManager {
     // If prediction is WAY ahead, snap it back to prevent huge replay
     const gap = this.predictedTick - serverTick;
     if (gap > MAX_REPLAY) {
-      console.warn(`[Prediction] gap too large (${gap} ticks), snapping to server tick ${serverTick}`);
+      // Normal during round transitions; only log for debugging
+      // console.log(`[Prediction] gap ${gap} ticks, snapping to server tick ${serverTick}`);
       this.wasmState.import_state(serverState);
       if (this.wasmState.tick() !== serverTick) {
         this.recreateFromState(serverState, serverTick);

@@ -28,7 +28,7 @@ type GameSocket = ServerWebSocket<SocketData>;
 const STATE_BROADCAST_INTERVAL = 1; // send state every tick (60Hz) for minimal remote player delay
 const TOTAL_ROUNDS = 3;
 const WINS_NEEDED = 2;
-const ROUND_TRANSITION_MS = 1500; // 1.5s pause between rounds
+const ROUND_TRANSITION_MS = 750; // brief pause between taunt end and next round
 
 export class GameRoom {
   readonly id: string;
@@ -209,7 +209,15 @@ export class GameRoom {
 
   /** Return all rounds' transcripts for replay. */
   getFullTranscript() {
-    return { rounds: this.roundTranscripts };
+    const usernames: [string, string] = [
+      this.sockets[0]?.data.username || "P1",
+      this.sockets[1]?.data.username || "P2",
+    ];
+    return {
+      rounds: this.roundTranscripts,
+      usernames,
+      characters: this.characterSlots,
+    };
   }
 
   // ── Private ──────────────────────────────────────────────
@@ -270,7 +278,11 @@ export class GameRoom {
   }
 
   private startRound() {
-    this.seed = Date.now() >>> 0;
+    // Round 0 seed is already set in startMatch() and sent to clients in "matched"
+    // Only generate a new seed for rounds 1+
+    if (this.currentRound > 0) {
+      this.seed = Date.now() >>> 0;
+    }
     const mapIndex = this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0]!;
     this.currentMap = map;
@@ -312,6 +324,14 @@ export class GameRoom {
     if (this._status !== "playing") return;
 
     const nextTick = this.wasmState.tick() + 1;
+
+    // Freeze players during countdown (~1.5s = 90 ticks)
+    const COUNTDOWN_TICKS = 90;
+    if (nextTick <= COUNTDOWN_TICKS) {
+      this.wasmState.step(0, 0, 0, 0, 0, 0);
+      if (nextTick % STATE_BROADCAST_INTERVAL === 0) this.broadcastState();
+      return;
+    }
 
     // Apply tick-tagged inputs — aligns edge detection with client prediction
     for (const id of [0, 1] as const) {
@@ -378,7 +398,7 @@ export class GameRoom {
         this.broadcastSpectators({ type: "spectate_round_end", ...roundEndMsg });
       }
       // Keep broadcasting state for 120 extra ticks (2s) so clients see winner movement + bullet travel
-      if (currentTick - this.matchOverTick >= 120) {
+      if (currentTick - this.matchOverTick >= 60) {
         this.endRound(this.wasmState.winner());
       }
     }
@@ -449,7 +469,7 @@ export class GameRoom {
     // Check if match is won (best of 3 → first to 2)
     if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED) {
       const matchWinner = this.roundWins[0] >= WINS_NEEDED ? 0 : 1;
-      setTimeout(() => this.endMatch(matchWinner), 2000);
+      setTimeout(() => this.endMatch(matchWinner), 100);
     } else {
       // Start next round after delay
       this.currentRound++;

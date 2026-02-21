@@ -32,16 +32,7 @@
         font-family: "Silkscreen", monospace;
         color: #ccc;
       }
-      /* CRT vignette */
-      body::after {
-        content: "";
-        position: fixed;
-        top: 0; left: 0;
-        width: 100%; height: 100%;
-        background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.5) 100%);
-        pointer-events: none;
-        z-index: 9999;
-      }
+      /* CRT vignette — disabled, was darkening UI */
       /* Custom scrollbar */
       ::-webkit-scrollbar { width: 8px; }
       ::-webkit-scrollbar-track { background: #111; }
@@ -189,21 +180,13 @@
         text-align: center;
         max-width: 420px;
         padding: 32px;
-        border: 4px solid #ffee58;
         background: #0d0d1a;
-        box-shadow:
-          0 0 0 2px #111,
-          0 0 0 4px #555,
-          inset 0 0 0 2px #1a1a2e,
-          0 0 30px rgba(255, 238, 88, 0.1);
+        border: 2px solid #333;
       }
-      #gate-card h2 {
-        font-size: 32px;
-        color: #ffee58;
-        font-weight: 700;
-        letter-spacing: 4px;
+      #gate-card .logo {
+        width: 280px;
+        height: auto;
         margin-bottom: 12px;
-        text-shadow: 3px 3px 0 #c9a800, 5px 5px 0 #222;
       }
       #gate-card p {
         font-size: 12px;
@@ -258,7 +241,7 @@
         position: absolute;
         top: 0; left: 0;
         width: 100%; height: 100%;
-        background: rgba(10, 10, 20, 0.95);
+        background: rgb(10, 10, 20);
         z-index: 100;
         flex-direction: column;
         padding: 24px;
@@ -270,10 +253,9 @@
         justify-content: space-between;
         align-items: center;
       }
-      #lobby-header h2 {
-        font-size: 24px;
-        color: #ffee58;
-        text-shadow: 2px 2px 0 #c9a800;
+      #lobby-header .logo {
+        height: 48px;
+        width: auto;
       }
       #lobby-actions {
         display: flex;
@@ -958,7 +940,6 @@
   <body>
     <div id="game-wrapper">
       <div id="game-container">
-        <div id="version-tag" style="position:absolute;bottom:8px;right:8px;color:#fff;font-size:20px;font-family:monospace;z-index:9999;pointer-events:none;opacity:0.5">v6</div>
         <div id="top-bar">
           <div></div>
           <div id="top-bar-right">
@@ -973,8 +954,8 @@
         <!-- Gate overlay: wallet + username before playing -->
         <div id="gate-overlay">
           <div id="gate-card">
-            <h2>CHICKENZ</h2>
-            <p>Enter a username to play</p>
+            <img src="/sprites/logo.png" alt="Chickenz" class="logo" />
+            <p id="gate-subtitle">Connecting...</p>
             <div id="gate-wallet-section"></div>
             <div id="gate-step2">
               <div id="gate-address"></div>
@@ -1098,6 +1079,8 @@
                 </div>
               </div>
             </div>
+
+            <div style="margin-top:12px;font-size:10px;color:#555;text-align:center;line-height:1.8" id="settings-version"></div>
           </div>
           </div>
         </div>
@@ -1137,7 +1120,7 @@
         <!-- Lobby overlay -->
         <div id="lobby-overlay">
           <div id="lobby-header">
-            <h2>CHICKENZ</h2>
+            <img src="/sprites/logo.png" alt="Chickenz" class="logo" />
           </div>
           <div id="lobby-actions">
             <div class="mode-toggle">

@@ -767,6 +767,7 @@ export class GameScene extends Phaser.Scene {
   startNewRound(seed: number, mapIndex: number, round: number) {
     this.currentRound = round;
     this.roundTransition = false;
+    this.playing = false; // freeze input/prediction during transition + countdown
     this.pendingServerState = null;
     this.pendingServerButtons = undefined;
     this.lastServerTick = 0;
@@ -776,8 +777,12 @@ export class GameScene extends Phaser.Scene {
       this.initRound(seed, mapIndex);
       // Spectators don't predict
       if (this.spectateMode) this.prediction = null;
-      this.showRoundPopup(round + 1);
-      this.playSound("match-start");
+      this.showCountdown(() => {
+        this.predictionAccum = 0;
+        this.playing = true;
+        this.showRoundPopup(round + 1);
+        this.playSound("match-start");
+      });
     });
   }
 
@@ -817,7 +822,7 @@ export class GameScene extends Phaser.Scene {
   private static readonly TRANS_SHRINK_MS = 180;
 
   /** Play a diamond wipe transition using a DOM overlay (bypasses Phaser camera issues). */
-  private playTransition(onMidpoint: () => void) {
+  playTransition(onMidpoint: () => void) {
     if (this.transitionActive) { onMidpoint(); return; }
     this.transitionActive = true;
 
@@ -908,7 +913,7 @@ export class GameScene extends Phaser.Scene {
     tempWasm.free();
     this.prevState = initial;
     this.currState = initial;
-    this.playing = true;
+    // Don't set playing here — caller controls when gameplay starts (after countdown)
     hideAnnounce();
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
@@ -1053,12 +1058,16 @@ export class GameScene extends Phaser.Scene {
     addBorder(mw - bo, mh - bo, B_BR);
   }
 
-  startReplay(transcript: TickInputPair[], seed: number, mapIndex?: number) {
+  startReplay(transcript: TickInputPair[], seed: number, mapIndex?: number, usernames?: [string, string], characters?: [number, number]) {
     if (!this.sceneReady) {
-      this.onReady(() => this.startReplay(transcript, seed, mapIndex));
+      this.onReady(() => this.startReplay(transcript, seed, mapIndex, usernames, characters));
       return;
     }
-    this.assignCharacters();
+    if (characters) {
+      this.characterSlots = characters;
+    } else {
+      this.assignCharacters();
+    }
     this.replayMode = true;
     this.replayTranscript = transcript;
     this.replayTick = 0;
@@ -1066,7 +1075,7 @@ export class GameScene extends Phaser.Scene {
     this.replaySpeed = 1;
     this.replayAccum = 0;
     this.localPlayerId = 0;
-    this.playerUsernames = ["P1", "P2"];
+    this.playerUsernames = usernames ?? ["P1", "P2"];
     this.prediction = null;
 
     const map = mapIndex !== undefined ? (MAP_POOL[mapIndex] ?? ARENA) : ARENA;
@@ -1118,14 +1127,14 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  startMultiRoundReplay(rounds: { seed: number; mapIndex: number; transcript: TickInputPair[] }[]) {
+  startMultiRoundReplay(rounds: { seed: number; mapIndex: number; transcript: TickInputPair[] }[], usernames?: [string, string], characters?: [number, number]) {
     if (!rounds.length) return;
     this.replayRounds = rounds;
     this.replayCurrentRound = 0;
     this.replayRoundWins = [0, 0];
     this.replayRoundTransitionTimer = 0;
     const first = rounds[0]!;
-    this.startReplay(first.transcript, first.seed, first.mapIndex);
+    this.startReplay(first.transcript, first.seed, first.mapIndex, usernames, characters);
   }
 
   private startReplayRound(roundIndex: number) {
@@ -1192,7 +1201,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   endOnlineMatch(winner: number) {
-    // Don't set playing=false yet — let winner keep moving during death linger
+    this.playing = false;
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     if (winner === -1) {
       showAnnounce("DRAW!");
@@ -1201,15 +1210,10 @@ export class GameScene extends Phaser.Scene {
       showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
     }
     this.playSound("match-end");
-
-    // Clean up after a brief delay so winner can taunt/move
-    this.time.delayedCall(2000, () => {
-      this.playing = false;
-      this.pendingServerState = null;
-      this.pendingServerButtons = undefined;
-      this.lastServerTick = 0;
-      this.explosions = [];
-    });
+    this.pendingServerState = null;
+    this.pendingServerButtons = undefined;
+    this.lastServerTick = 0;
+    this.explosions = [];
   }
 
   // ── Spectator Mode (Tournament) ───────────────────────────────────────────
@@ -1272,13 +1276,13 @@ export class GameScene extends Phaser.Scene {
   setMuted(muted: boolean) {
     this._muted = muted;
     if (muted) {
-      if (this.bgm?.isPlaying) this.bgm.pause();
-    } else {
-      if (this.bgm && !this.bgm.isPlaying) {
-        this.bgm.resume();
-      } else if (!this.bgm || !this.bgm.isPlaying) {
-        this.startBGM();
+      if (this.bgm) {
+        this.bgm.stop();
+        this.bgm.destroy();
+        this.bgm = undefined as any;
       }
+    } else {
+      this.startBGM();
     }
   }
 
@@ -1402,18 +1406,25 @@ export class GameScene extends Phaser.Scene {
           const w = this.currState!.winner;
           if (w === 0) this.replayRoundWins[0]++;
           else if (w === 1) this.replayRoundWins[1]++;
+          const wName = (this.playerUsernames[w] || `Player ${w + 1}`).toUpperCase();
           const hasMoreRounds = this.replayCurrentRound + 1 < this.replayRounds.length;
           if (hasMoreRounds) {
-            // Show round result, then transition
-            showAnnounce(`Round ${this.replayCurrentRound + 1}: P${w + 1} wins! (${this.replayRoundWins[0]}-${this.replayRoundWins[1]})`);
-            this.replayRoundTransitionTimer = 2000; // 2s pause between rounds
-            this.playing = false;
+            showAnnounce(`Round ${this.replayCurrentRound + 1} - ${wName} wins!\n${this.replayRoundWins[0]} - ${this.replayRoundWins[1]}`);
+            this.replayRoundTransitionTimer = 2000;
           } else {
-            // Final round — show match result
             const mw = this.replayRoundWins[0] > this.replayRoundWins[1] ? 0 : 1;
-            showAnnounce(`Player ${mw + 1} wins! (${this.replayRoundWins[0]}-${this.replayRoundWins[1]})`);
-            this.playing = false;
+            const mwName = (this.playerUsernames[mw] || `Player ${mw + 1}`).toUpperCase();
+            showAnnounce(`${mwName} wins!\n${this.replayRoundWins[0]} - ${this.replayRoundWins[1]}`);
+            // Auto-exit replay after delay + transition
+            setTimeout(() => {
+              if (!this.replayMode) return;
+              this.playTransition(() => {
+                this.exitReplay();
+              });
+            }, 2500);
           }
+          this.playing = false;
+          break;
         }
       }
     }
@@ -1532,20 +1543,19 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.prevRockets.clear();
-    // Store rocket positions from appropriate source
-    if (predicted && !this.replayMode) {
-      for (const proj of predicted.projectiles) {
-        if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) {
-          const rcfg = GUN_CONFIG[WeaponType.Rocket];
-          const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
-          this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
-        }
+    // Store rocket positions for next-frame disappearance detection
+    const rcfg = GUN_CONFIG[WeaponType.Rocket];
+    const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
+    // Local player rockets from predicted state (or curr if no prediction, e.g. warmup)
+    const localRocketSource = (predicted && !this.replayMode) ? predicted : curr;
+    for (const proj of localRocketSource.projectiles) {
+      if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) {
+        this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
       }
     }
+    // Remote player rockets from server state
     for (const proj of serverRockets) {
-      if (proj.weapon === WeaponType.Rocket && (this.replayMode || proj.ownerId !== localId)) {
-        const rcfg = GUN_CONFIG[WeaponType.Rocket];
-        const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
+      if (proj.weapon === WeaponType.Rocket && proj.ownerId !== localId) {
         this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
       }
     }
@@ -1798,7 +1808,12 @@ export class GameScene extends Phaser.Scene {
         if (!tauntEdge && !tauntPlaying && sprite.anims.currentAnim?.key !== animKey) {
           sprite.play(animKey);
         }
-        sprite.setPosition(drawX + PLAYER_WIDTH / 2, drawY + PLAYER_HEIGHT / 2);
+        // Nudge sprite toward wall when sliding against platform edge (sprite 32px, hitbox 24px)
+        // Don't nudge at map boundary walls — sprite already flush with wall tiles
+        const mapW = this.config?.map.width ?? 960;
+        const atMapWall = cp.x <= 0 || cp.x + PLAYER_WIDTH >= mapW;
+        const wallNudge = (cp.wallSliding && !atMapWall) ? cp.wallDir * 4 : 0;
+        sprite.setPosition(drawX + PLAYER_WIDTH / 2 + wallNudge, drawY + PLAYER_HEIGHT / 2);
         sprite.setFlipX(cp.facing === Facing.Left);
         sprite.setVisible(true);
         sprite.setAlpha(invincible ? 0.6 : 1);
@@ -2077,24 +2092,8 @@ export class GameScene extends Phaser.Scene {
       this.roundText.setVisible(false);
     }
 
-    // Weapon + ammo
-    if (!this.replayMode) {
-      const localPlayer = (predicted ?? curr).players[this.localPlayerId];
-      if (localPlayer && (localPlayer.stateFlags & PlayerStateFlag.Alive)) {
-        if (localPlayer.weapon != null && localPlayer.weapon >= 0) {
-          const name = WEAPON_NAMES[localPlayer.weapon] ?? "???";
-          this.weaponText.setText(`${name} [${localPlayer.ammo}]`);
-          this.weaponText.setColor(`#${(WEAPON_PICKUP_COLORS[localPlayer.weapon] ?? 0xffffff).toString(16).padStart(6, "0")}`);
-        } else {
-          this.weaponText.setText("UNARMED");
-          this.weaponText.setColor("#888888");
-        }
-      } else {
-        this.weaponText.setText("");
-      }
-    } else {
-      this.weaponText.setText("");
-    }
+    // Weapon + ammo (hidden)
+    this.weaponText.setText("");
 
     // Stomp alert alpha reset (drawPlayerOverlays sets alpha when active)
 
@@ -2256,7 +2255,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private playNextTrack() {
-    if (this.bgmVolume === 0 || !this.audioLoaded) return;
+    if (this.bgmVolume === 0 || !this.audioLoaded || this._muted) return;
     try {
       const key = this.pickBgmTrack();
       const newTrack = this.sound.add(key, { loop: false, volume: this.bgmVolume }) as Phaser.Sound.WebAudioSound;

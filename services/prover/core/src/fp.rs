@@ -674,6 +674,7 @@ fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
     // Wall sliding: character and gun face away from the wall_dir side
     if p.wall_sliding {
         p.facing = p.wall_dir;
+        p.vx = 0;
     }
 
     // Jump refund: grounded resets to MAX_JUMPS, wall slide grants 1 if exhausted
@@ -1029,8 +1030,6 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                 move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
             }
         }
-        // Keep projectiles moving (don't freeze mid-air)
-        advance_projectiles_cosmetic(state, map);
         state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;
     }
@@ -1042,6 +1041,13 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         if state.death_linger_timer <= 0 {
             state.match_over = true;
             state.death_linger_timer = 0;
+            // Clear all projectiles, pickups, and player weapons on match end
+            state.proj_count = 0;
+            state.pickup_count = 0;
+            for p in &mut state.players {
+                p.weapon = WEAPON_NONE;
+                p.ammo = 0;
+            }
         }
         // Let the winner keep moving during linger (input + gravity + collision)
         let prev_buttons = state.prev_buttons;
@@ -1052,8 +1058,6 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                 move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
             }
         }
-        // Keep projectiles moving (don't freeze mid-air)
-        advance_projectiles_cosmetic(state, map);
         state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;
     }

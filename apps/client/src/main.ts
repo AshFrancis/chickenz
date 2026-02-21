@@ -61,6 +61,7 @@ const gateAddress = document.getElementById("gate-address") as HTMLDivElement;
 const gateUsernameInput = document.getElementById("gate-username-input") as HTMLInputElement;
 const gatePlayBtn = document.getElementById("gate-play-btn") as HTMLButtonElement;
 const gateError = document.getElementById("gate-error") as HTMLDivElement;
+const gateSubtitle = document.getElementById("gate-subtitle") as HTMLParagraphElement;
 
 // Lobby elements
 const lobbyOverlay = document.getElementById("lobby-overlay") as HTMLDivElement;
@@ -177,7 +178,12 @@ function autoSkipGate(name: string) {
   deferBGMStart();
 }
 
+function showGateUI() {
+  gateSubtitle.textContent = "Enter a username to play";
+}
+
 function showWalletConnectGate() {
+  showGateUI();
   const walletGateBtn = document.createElement("button");
   walletGateBtn.className = "btn btn-primary";
   walletGateBtn.textContent = "Connect Wallet";
@@ -214,6 +220,7 @@ function showWalletConnectGate() {
       autoSkipGate(savedName);
     } else {
       // Show gate with username input only (no wallet section)
+      showGateUI();
       gateWalletSection.style.display = "none";
       gateStep2.classList.add("visible");
       gateUsernameInput.focus();
@@ -222,6 +229,7 @@ function showWalletConnectGate() {
     walletBtn.style.display = "none";
   } else {
     // Wallet path: init wallet kit, try reconnect
+    // Gate shows "Connecting..." while we attempt silent reconnect
     initWalletKit();
     tryReconnectWallet().then(() => {
       const addr = getConnectedAddress();
@@ -233,6 +241,7 @@ function showWalletConnectGate() {
           autoSkipGate(walletName);
         } else {
           // Wallet connected but no saved name: show gate at step 2
+          showGateUI();
           gateAddress.textContent = addr;
           gateWalletSection.style.display = "none";
           gateStep2.classList.add("visible");
@@ -491,6 +500,14 @@ function buildSettingsFrame() {
 }
 
 buildSettingsFrame();
+
+// Version display
+declare const __COMMIT_HASH__: string;
+declare const __COMMIT_DATE__: string;
+const versionEl = document.getElementById("settings-version");
+if (versionEl) {
+  versionEl.textContent = `Version: ${__COMMIT_HASH__} | ${__COMMIT_DATE__}`;
+}
 
 function openSettings() {
   settingsOpen = true;
@@ -1043,6 +1060,8 @@ interface RoundTranscript {
 
 interface TranscriptResponse {
   rounds: RoundTranscript[];
+  usernames?: [string, string];
+  characters?: [number, number];
 }
 
 function startReplay(roomId: string) {
@@ -1054,7 +1073,7 @@ function startReplay(roomId: string) {
       closeLobby();
       const scene = getGameScene();
       if (scene) {
-        scene.startMultiRoundReplay(data.rounds);
+        scene.startMultiRoundReplay(data.rounds, data.usernames, data.characters);
       }
     })
     .catch(() => {
@@ -1210,10 +1229,14 @@ function connectToServer(url: string) {
       const scene = getGameScene();
       if (scene) scene.endOnlineMatch(winner);
 
-      // Re-open lobby after 2s (cleanup is handled inside endOnlineMatch's delayedCall)
+      // Show result screen, then transition to lobby
       setTimeout(() => {
-        openLobby();
-      }, 2000);
+        if (scene) {
+          scene.playTransition(() => openLobby());
+        } else {
+          openLobby();
+        }
+      }, 2500);
     },
 
     onError(message) {

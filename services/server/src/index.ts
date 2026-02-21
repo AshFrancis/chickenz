@@ -4,7 +4,7 @@ import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
 import { startMatchOnChain, settleMatchOnChain } from "./stellar";
 import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
-import { updateElo, getLeaderboard } from "./elo";
+import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, type MatchRecord } from "./db";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -13,29 +13,6 @@ const PORT = Number(process.env.PORT) || 3000;
 const rooms = new Map<string, GameRoom>();
 const tournaments = new Map<string, TournamentRoom>();
 const lobbySockets = new Set<ServerWebSocket<SocketData>>();
-
-// ── Match History ──────────────────────────────────────────
-
-interface MatchRecord {
-  id: string;
-  sessionId: number;
-  roomName: string;
-  player1: string;
-  player2: string;
-  wallet1: string;
-  wallet2: string;
-  winner: number;
-  scores: [number, number];
-  timestamp: number;
-  proofStatus: "none" | "pending" | "proving" | "verified" | "settled";
-  roomId: string;
-  mode: GameMode;
-  proofArtifacts?: { seal: string; journal: string; imageId: string };
-}
-
-const matchHistory: MatchRecord[] = [];
-const MAX_MATCH_HISTORY = 50;
-let nextMatchId = 1;
 
 function generateRoomId(): string {
   return crypto.randomUUID().slice(0, 8);
@@ -71,12 +48,12 @@ function sendLobby(ws: ServerWebSocket<SocketData>) {
 }
 
 /** Auto-settle a match on-chain after proof is verified. */
-function autoSettleMatch(record: MatchRecord, artifacts: ProofArtifacts) {
+function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArtifacts) {
   if (!process.env.STELLAR_ADMIN_SECRET) return;
   const sealBytes = new Uint8Array(Buffer.from(artifacts.seal, "hex"));
   const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
-  settleMatchOnChain(record.sessionId, sealBytes, journalBytes)
-    .then(() => { record.proofStatus = "settled"; })
+  settleMatchOnChain(sessionId, sealBytes, journalBytes)
+    .then(() => { updateProofStatus(matchId, "settled"); })
     .catch((err) => { console.error("Auto-settle failed:", err); });
 }
 
@@ -98,9 +75,11 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
 
   // Record match history
   if (sockets.length === 2) {
+    const matchId = generateMatchId();
+    const sessionId = Date.now() >>> 0;
     const record: MatchRecord = {
-      id: `match-${nextMatchId++}`,
-      sessionId: Date.now() >>> 0,
+      id: matchId,
+      sessionId,
       roomName,
       player1: sockets[0]?.data.username || "Player 1",
       player2: sockets[1]?.data.username || "Player 2",
@@ -113,10 +92,6 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       roomId,
       mode,
     };
-    matchHistory.unshift(record);
-    if (matchHistory.length > MAX_MATCH_HISTORY) {
-      matchHistory.pop();
-    }
 
     // Start match on-chain for ranked matches with wallets
     if (mode === "ranked" && record.wallet1 && record.wallet2 && process.env.STELLAR_ADMIN_SECRET && room) {
@@ -132,15 +107,16 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       const transcript = room.getTranscript();
       const onProofResult = (artifacts: ProofArtifacts | null) => {
         if (artifacts) {
-          record.proofArtifacts = artifacts;
-          record.proofStatus = "verified";
-          autoSettleMatch(record, artifacts);
+          updateProofStatus(matchId, "verified", artifacts);
+          autoSettleMatch(matchId, sessionId, artifacts);
         } else {
-          record.proofStatus = "pending";
+          updateProofStatus(matchId, "pending");
         }
       };
-      proveMatch(record.id, transcript, onProofResult);
+      proveMatch(matchId, transcript, onProofResult);
     }
+
+    insertMatch(record);
   }
 
   for (const ws of sockets) {
@@ -264,12 +240,12 @@ const server = Bun.serve<SocketData>({
 
     // Match history endpoints
     if (url.pathname === "/api/matches") {
-      return Response.json(matchHistory, { headers: corsHeaders });
+      return Response.json(getRecentMatches(), { headers: corsHeaders });
     }
     const matchStatusMatch = url.pathname.match(/^\/api\/matches\/(.+)\/status$/);
     if (matchStatusMatch) {
       const matchId = matchStatusMatch[1]!;
-      const record = matchHistory.find((m) => m.id === matchId);
+      const record = getMatchById(matchId);
       if (!record) {
         return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
       }
@@ -278,7 +254,7 @@ const server = Bun.serve<SocketData>({
     const matchProofMatch = url.pathname.match(/^\/api\/matches\/(.+)\/proof$/);
     if (matchProofMatch) {
       const matchId = matchProofMatch[1]!;
-      const record = matchHistory.find((m) => m.id === matchId);
+      const record = getMatchById(matchId);
       if (!record) {
         return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
       }
