@@ -318,12 +318,11 @@
         position: relative;
       }
       .ranked-tooltip {
-        display: none;
         position: absolute;
         top: calc(100% + 10px);
         left: 0;
         background: #111122;
-        border: 2px solid #ffa726;
+        border: 2px solid #666;
         color: #fff;
         padding: 8px 14px;
         font-size: 10px;
@@ -331,6 +330,9 @@
         z-index: 10;
         pointer-events: none;
         line-height: 1.6;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 100ms ease, visibility 100ms ease;
       }
       .ranked-tooltip::after {
         content: '';
@@ -338,10 +340,11 @@
         bottom: 100%;
         left: 16px;
         border: 6px solid transparent;
-        border-bottom-color: #ffa726;
+        border-bottom-color: #666;
       }
       .btn-mode.locked:hover .ranked-tooltip {
-        display: block;
+        opacity: 1;
+        visibility: visible;
       }
       .mode-badge {
         font-size: 10px;
@@ -1160,7 +1163,7 @@
             <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
             <button id="btn-mute" title="Toggle sound" style="background:none;border:none;cursor:pointer;padding:2px 6px;line-height:1;display:flex;align-items:center"><svg id="mute-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/></svg></button>
             <button id="btn-settings" title="Settings">&#9881;</button>
-            <button id="btn-wallet" class="btn btn-sm" title="Connect Stellar wallet">Connect Wallet</button>
+            <button id="btn-wallet" class="btn btn-sm" title="Connect Stellar wallet">Connect Stellar Wallet</button>
             <span id="top-bar-address"></span>
             <span id="top-bar-username"></span>
           </div>

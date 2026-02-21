@@ -271,7 +271,7 @@ function updateWalletUI() {
     });
   } else {
     topBarAddress.textContent = "";
-    walletBtn.textContent = "Connect Wallet";
+    walletBtn.textContent = "Connect Stellar Wallet";
     walletBtn.classList.remove("btn-warn");
     walletBtn.classList.add("btn-primary");
     walletVerified = false;
