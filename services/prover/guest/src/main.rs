@@ -5,8 +5,8 @@ risc0_zkvm::guest::entry!(main);
 use chickenz_core::fp;
 use chickenz_core::ProverOutput;
 
-/// Max raw input: 8 (header) + 6 * 1800 (ticks) = 10808 bytes = 2702 u32 words
-const MAX_INPUT_WORDS: usize = 2702;
+/// Max raw input: 8 (header) + 6 * 3600 (ticks) = 21608 bytes = 5402 u32 words
+const MAX_INPUT_WORDS: usize = 5402;
 
 fn main() {
     // Read raw bytes into fixed-size buffer — no heap allocation
