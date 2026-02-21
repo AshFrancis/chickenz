@@ -230,6 +230,12 @@ const server = Bun.serve<SocketData>({
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
+    // Redirect raw IP access to domain
+    const host = req.headers.get("host") || "";
+    if (host.startsWith("178.156.244.26")) {
+      return Response.redirect(`https://chickenz.io${url.pathname}${url.search}`, 301);
+    }
+
     // WebSocket upgrade
     if (url.pathname === "/ws") {
       const upgraded = server.upgrade(req, {
