@@ -259,7 +259,6 @@ function updateWalletUI() {
     walletBtn.classList.add("btn-warn");
     walletBtn.classList.remove("btn-primary");
     modeRankedBtn.classList.remove("locked");
-    modeRankedBtn.title = "";
     // Attempt wallet verification
     verifyWallet(addr).then((verified) => {
       walletVerified = verified;
@@ -280,7 +279,6 @@ function updateWalletUI() {
       setMode("casual");
     }
     modeRankedBtn.classList.add("locked");
-    modeRankedBtn.title = "Connect a Stellar wallet to play ranked - we recommend Freighter!";
   }
 }
 

@@ -3,11 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chickenz</title>
+    <title>Chickenz.io</title>
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" as="style">
+    <link rel="preload" href="/sprites/logo.png" as="image">
     <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
     <style>
       * {
@@ -314,6 +315,35 @@
       .btn-mode.locked {
         opacity: 0.5;
         cursor: not-allowed;
+        position: relative;
+      }
+      .ranked-tooltip {
+        display: none;
+        position: absolute;
+        bottom: calc(100% + 10px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1a1a2e;
+        border: 2px solid #ffa726;
+        color: #ddd;
+        padding: 8px 14px;
+        font-size: 10px;
+        white-space: nowrap;
+        z-index: 10;
+        pointer-events: none;
+        line-height: 1.6;
+      }
+      .ranked-tooltip::after {
+        content: '';
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border: 6px solid transparent;
+        border-top-color: #ffa726;
+      }
+      .btn-mode.locked:hover .ranked-tooltip {
+        display: block;
       }
       .mode-badge {
         font-size: 10px;
@@ -1314,15 +1344,15 @@
           </div>
         </div>
 
-        <!-- Lobby overlay -->
-        <div id="lobby-overlay">
+        <!-- Lobby overlay (starts visible so users see it immediately, no dark flash) -->
+        <div id="lobby-overlay" class="visible">
           <div id="lobby-header">
             <img src="/sprites/logo.png" alt="Chickenz" class="logo" />
           </div>
           <div id="lobby-actions">
             <div class="mode-toggle">
               <button id="btn-mode-casual" class="btn-mode active">Casual</button>
-              <button id="btn-mode-ranked" class="btn-mode locked" title="Connect a Stellar wallet to play ranked - we recommend Freighter!">Ranked</button>
+              <button id="btn-mode-ranked" class="btn-mode locked">Ranked<span class="ranked-tooltip">Connect a Stellar wallet to play ranked<br/>We recommend Freighter!</span></button>
             </div>
             <button id="btn-quickplay" class="btn btn-primary">Quick Play</button>
             <span class="lobby-divider">|</span>
@@ -1348,7 +1378,7 @@
           <div id="tab-leaderboard" class="tab-content" role="tabpanel">
             <div id="leaderboard-content"></div>
           </div>
-          <div id="lobby-status"></div>
+          <div id="lobby-status">Connecting...</div>
         </div>
       </div>
     </div>
