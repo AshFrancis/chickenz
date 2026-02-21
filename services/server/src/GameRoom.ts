@@ -49,6 +49,7 @@ export class GameRoom {
   private inputChanges: [number, number] = [0, 0];
   private timer: ReturnType<typeof setInterval> | null = null;
   private seed = 0;
+  private loopStartTime = 0; // wall-clock time when game loop started
   private _status: "waiting" | "playing" | "ended" = "waiting";
   onEnded?: (sockets: GameSocket[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) => void;
 
@@ -284,14 +285,27 @@ export class GameRoom {
     this.inputQueues = [new Map(), new Map()];
     this.transcript = [];
 
-    // Start game loop at 60Hz
-    this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
+    // Start game loop — self-correcting to prevent drift
+    this.loopStartTime = performance.now();
+    this.timer = setInterval(() => this.gameLoop(), 1000 / TICK_RATE);
   }
 
-  // Netcode: "favor the victim" — the server runs the authoritative sim on
-  // current state without rewinding for latency. A player can never be hit by
-  // a bullet they already dodged on their screen. The attacker may miss shots
-  // that look like hits on their screen due to latency.
+  /** Self-correcting game loop: runs multiple ticks if behind, skips if ahead. */
+  private gameLoop() {
+    if (this._status !== "playing") return;
+
+    const elapsed = performance.now() - this.loopStartTime;
+    const targetTick = Math.floor(elapsed / (1000 / TICK_RATE));
+    const currentTick = this.wasmState.tick();
+
+    // Run ticks to catch up (max 4 per interval to avoid lag spikes)
+    let ticked = 0;
+    while (currentTick + ticked < targetTick && ticked < 4) {
+      this.tick();
+      ticked++;
+    }
+  }
+
   private tick() {
     if (this._status !== "playing") return;
 
@@ -336,6 +350,15 @@ export class GameRoom {
     // Broadcast state
     if (this.wasmState.tick() % STATE_BROADCAST_INTERVAL === 0) {
       this.broadcastState();
+    }
+
+    // Diagnostic: log drift every 2 seconds (120 ticks)
+    const currentTick = this.wasmState.tick();
+    if (currentTick > 0 && currentTick % 120 === 0) {
+      const elapsed = performance.now() - this.loopStartTime;
+      const expectedTick = Math.floor(elapsed / (1000 / TICK_RATE));
+      const drift = expectedTick - currentTick;
+      console.log(`[GameRoom ${this.id}] tick=${currentTick} elapsed=${elapsed.toFixed(0)}ms expected=${expectedTick} drift=${drift}`);
     }
 
     if (this.wasmState.match_over()) {

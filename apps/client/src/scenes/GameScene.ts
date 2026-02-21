@@ -217,7 +217,7 @@ export class GameScene extends Phaser.Scene {
 
   // Smooth render positions (per-frame lerp absorbs prediction/reconciliation snaps)
   private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
-  private remoteSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
+  private remoteSmooth: { x: number; y: number; vx: number; vy: number; initialized: boolean } = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
 
   // Camera
   private currentZoom = 1.0;
@@ -681,7 +681,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteSmooth = { x: 0, y: 0, initialized: false };
+    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.explosions = [];
 
     const warmupEl = document.getElementById("warmup-overlay");
@@ -939,7 +939,7 @@ export class GameScene extends Phaser.Scene {
       this.currentZoom = 1.0;
     }
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteSmooth = { x: 0, y: 0, initialized: false };
+    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.lastServerTick = 0;
   }
 
@@ -1097,7 +1097,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = 480;
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, initialized: false };
-    this.remoteSmooth = { x: 0, y: 0, initialized: false };
+    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.replayInfoText.setVisible(true);
 
     // Remove previous replay listeners to prevent stacking
@@ -1512,10 +1512,18 @@ export class GameScene extends Phaser.Scene {
     const predicted = this.replayMode ? null : this.prediction?.predictedState;
     const displayState = predicted ?? curr;
 
-    // Detect rocket explosions from predicted/display state (instant, no server delay)
+    // Detect rocket explosions — local player rockets from predicted, remote from server
+    const localId = this.localPlayerId;
     const currentRocketIds = new Set<number>();
-    for (const proj of displayState.projectiles) {
-      if (proj.weapon === WeaponType.Rocket) currentRocketIds.add(proj.id);
+    const rocketSource = (predicted && !this.replayMode) ? predicted : curr;
+    const serverRockets = curr.projectiles;
+    // Track local player rockets from predicted state
+    for (const proj of rocketSource.projectiles) {
+      if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) currentRocketIds.add(proj.id);
+    }
+    // Track remote player rockets from server state
+    for (const proj of serverRockets) {
+      if (proj.weapon === WeaponType.Rocket && proj.ownerId !== localId) currentRocketIds.add(proj.id);
     }
     for (const [id, pos] of this.prevRockets) {
       if (!currentRocketIds.has(id)) {
@@ -1524,8 +1532,18 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.prevRockets.clear();
-    for (const proj of displayState.projectiles) {
-      if (proj.weapon === WeaponType.Rocket) {
+    // Store rocket positions from appropriate source
+    if (predicted && !this.replayMode) {
+      for (const proj of predicted.projectiles) {
+        if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) {
+          const rcfg = GUN_CONFIG[WeaponType.Rocket];
+          const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
+          this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
+        }
+      }
+    }
+    for (const proj of serverRockets) {
+      if (proj.weapon === WeaponType.Rocket && (this.replayMode || proj.ownerId !== localId)) {
         const rcfg = GUN_CONFIG[WeaponType.Rocket];
         const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
         this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
@@ -1663,16 +1681,31 @@ export class GameScene extends Phaser.Scene {
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
-        // Remote player: use server state + velocity extrapolation for smoother motion
+        // Remote player: dead reckoning with server correction
         cp = raw;
         const smooth = this.remoteSmooth;
-        if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
-        const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
-        if (teleported) { smooth.x = cp.x; smooth.y = cp.y; }
-        else {
-          smooth.x = smoothLerp(smooth.x, cp.x, 0.8, delta ?? 16.667);
-          smooth.y = smoothLerp(smooth.y, cp.y, 0.8, delta ?? 16.667);
+        const dt = delta ?? 16.667;
+        if (!smooth.initialized) {
+          smooth.x = cp.x; smooth.y = cp.y;
+          smooth.vx = cp.vx ?? 0; smooth.vy = cp.vy ?? 0;
+          smooth.initialized = true;
         }
+        const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
+        if (teleported) {
+          smooth.x = cp.x; smooth.y = cp.y;
+        } else {
+          // Advance by velocity (dead reckoning), then correct toward server
+          smooth.x += smooth.vx * (dt / TICK_DT_MS);
+          smooth.y += smooth.vy * (dt / TICK_DT_MS);
+          // Gently pull toward server position
+          smooth.x = smooth.x + (cp.x - smooth.x) * 0.3;
+          smooth.y = smooth.y + (cp.y - smooth.y) * 0.3;
+        }
+        // Update velocity from latest server state
+        smooth.vx = cp.vx ?? 0;
+        smooth.vy = cp.vy ?? 0;
+        // Snap to ground when server says grounded (prevents floating)
+        if (cp.grounded) smooth.y = cp.y;
         drawX = smooth.x;
         drawY = smooth.y;
       }
@@ -1940,9 +1973,23 @@ export class GameScene extends Phaser.Scene {
     predicted: any,
     _delta: number,
   ) {
-    const displayState = predicted ?? curr;
-    const projectiles = displayState.projectiles;
-    for (const p of projectiles) {
+    // Local player's bullets from predicted state (instant feedback).
+    // Remote player's bullets from server state (matches their rendered position).
+    const localId = this.localPlayerId;
+    const projectiles: { proj: any; ownerState: any }[] = [];
+
+    if (predicted && !this.replayMode) {
+      for (const p of predicted.projectiles) {
+        if (p.ownerId === localId) projectiles.push({ proj: p, ownerState: predicted });
+      }
+      for (const p of curr.projectiles) {
+        if (p.ownerId !== localId) projectiles.push({ proj: p, ownerState: curr });
+      }
+    } else {
+      for (const p of curr.projectiles) projectiles.push({ proj: p, ownerState: curr });
+    }
+
+    for (const { proj: p, ownerState } of projectiles) {
       let px = p.x;
       const gcfg = GUN_CONFIG[p.weapon];
       // Consistent Y offset: shift to gun height on every frame (avoids vertical jump)
@@ -1951,7 +1998,7 @@ export class GameScene extends Phaser.Scene {
       // First frame only: snap X to muzzle position (forward motion masks the transition)
       const maxLife = WEAPON_STATS[p.weapon as WeaponType]?.lifetime ?? 90;
       if (p.lifetime >= maxLife - 1 && gcfg) {
-        const owner = displayState.players.find((pl: any) => pl.id === p.ownerId);
+        const owner = ownerState.players.find((pl: any) => pl.id === p.ownerId);
         if (owner) {
           // When wall sliding, gun points away from wall (same logic as gun sprite)
           const fdir = owner.wallSliding ? -(owner.facing as number) : (owner.facing as number);
