@@ -1330,10 +1330,9 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         // but less spammy. At full close: 5 damage every 5 ticks (= 1 per tick avg).
         // Before full: damage per burst scales with progress.
         let dmg_progress = elapsed.min(sd_dur);
-        const ZONE_DMG_INTERVAL: i32 = 5;
+        const ZONE_DMG_INTERVAL: i32 = 10;
         if dmg_progress > 0 && elapsed % ZONE_DMG_INTERVAL == 0 {
-            // Burst damage = (ZONE_DMG_INTERVAL * sd_dur * 60 / ZONE_MAX_DPS) ... simplified:
-            // At full progress: 5 damage per burst. Before full: scales linearly.
+            // Burst damage scales with progress. At full close: ~10 damage per burst.
             let burst_dmg = ((dmg_progress * ZONE_DMG_INTERVAL) / (sd_dur * 3)).max(1);
 
             for i in 0..2 {

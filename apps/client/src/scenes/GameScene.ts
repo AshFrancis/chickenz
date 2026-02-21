@@ -1671,15 +1671,34 @@ export class GameScene extends Phaser.Scene {
 
       if (this.replayMode) {
         cp = raw;
-        drawX = cp.x;
-        drawY = cp.y;
+        drawX = Math.round(cp.x);
+        drawY = Math.round(cp.y);
       } else if (isLocal) {
         // Use predicted position for responsiveness, but server-authoritative combat fields
         // (health, lives, deaths) to avoid desync artifacts like "healing" when server disagrees
         const pred = predicted?.players[i];
         cp = pred ? { ...pred, health: raw.health, lives: raw.lives, alive: raw.alive, stateFlags: raw.stateFlags, stompedBy: raw.stompedBy, stompingOn: raw.stompingOn, stompShakeProgress: raw.stompShakeProgress } : raw;
-        drawX = Math.round(cp.x);
-        drawY = Math.round(cp.y);
+        // Smooth local player visuals using velocity advancement (same as remote)
+        // to avoid stutter on high-refresh displays between 60Hz prediction ticks
+        const ls = this.localSmooth;
+        const dt = delta ?? 16.667;
+        if (!ls.initialized) {
+          ls.x = cp.x; ls.y = cp.y;
+          ls.initialized = true;
+        }
+        const teleported = Math.abs(ls.x - cp.x) > 80 || Math.abs(ls.y - cp.y) > 80;
+        if (teleported) {
+          ls.x = cp.x; ls.y = cp.y;
+        } else {
+          // Advance by velocity, then strongly pull toward predicted position
+          ls.x += (cp.vx ?? 0) * (dt / TICK_DT_MS);
+          ls.y += (cp.vy ?? 0) * (dt / TICK_DT_MS);
+          ls.x = ls.x + (cp.x - ls.x) * 0.5;
+          ls.y = ls.y + (cp.y - ls.y) * 0.5;
+        }
+        if (cp.grounded) ls.y = cp.y;
+        drawX = Math.round(ls.x);
+        drawY = Math.round(ls.y);
       } else {
         // Remote player: dead reckoning with server correction
         cp = raw;
@@ -1706,8 +1725,8 @@ export class GameScene extends Phaser.Scene {
         smooth.vy = cp.vy ?? 0;
         // Snap to ground when server says grounded (prevents floating)
         if (cp.grounded) smooth.y = cp.y;
-        drawX = smooth.x;
-        drawY = smooth.y;
+        drawX = Math.round(smooth.x);
+        drawY = Math.round(smooth.y);
       }
       drawPositions.push({ x: drawX, y: drawY });
       playerStates.push(cp);
@@ -2102,6 +2121,13 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private applyCam(cam: Phaser.Cameras.Scene2D.Camera) {
+    cam.setZoom(this.currentZoom * DPR);
+    cam.centerOn(this.cameraX, this.cameraY);
+    cam.scrollX = Math.round(cam.scrollX);
+    cam.scrollY = Math.round(cam.scrollY);
+  }
+
   private updateCamera(curr: any, predicted: any, delta: number) {
     const cam = this.cameras.main;
 
@@ -2114,8 +2140,7 @@ export class GameScene extends Phaser.Scene {
       this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.1, delta);
       this.cameraX = smoothLerp(this.cameraX, mapW / 2, 0.15, delta);
       this.cameraY = smoothLerp(this.cameraY, mapH / 2, 0.15, delta);
-      cam.setZoom(this.currentZoom * DPR);
-      cam.centerOn(this.cameraX, this.cameraY);
+      this.applyCam(cam);
       return;
     }
 
@@ -2143,8 +2168,7 @@ export class GameScene extends Phaser.Scene {
         this.cameraX = smoothLerp(this.cameraX, mapW / 2, 0.15, delta);
         this.cameraY = smoothLerp(this.cameraY, mapH / 2, 0.15, delta);
       }
-      cam.setZoom(this.currentZoom * DPR);
-      cam.centerOn(this.cameraX, this.cameraY);
+      this.applyCam(cam);
       return;
     }
 
@@ -2187,8 +2211,7 @@ export class GameScene extends Phaser.Scene {
     this.currentZoom = smoothLerp(this.currentZoom, targetZoom, 0.05, delta);
     this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
     this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
-    cam.setZoom(this.currentZoom * DPR);
-    cam.centerOn(Math.round(this.cameraX), Math.round(this.cameraY));
+    this.applyCam(cam);
   }
 
   // ── Audio ──────────────────────────────────────────────────────────────────
