@@ -29,7 +29,7 @@ MODE="${1:-both}"
 
 if [ "$MODE" = "client" ] || [ "$MODE" = "both" ]; then
   log "Building client locally..."
-  npx vite build "$PROJECT_ROOT/apps/client" 2>&1 | tail -3
+  "$PROJECT_ROOT/apps/client/node_modules/.bin/vite" build "$PROJECT_ROOT/apps/client" 2>&1 | tail -3
 fi
 
 # --- Git pull + install deps on server ---
