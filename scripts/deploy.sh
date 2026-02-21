@@ -32,11 +32,11 @@ if [ "$MODE" = "client" ] || [ "$MODE" = "both" ]; then
   npx vite build "$PROJECT_ROOT/apps/client" 2>&1 | tail -3
 fi
 
-# --- Git pull on server to update server source + wasm ---
+# --- Git pull + install deps on server ---
 
 if [ "$MODE" = "server" ] || [ "$MODE" = "both" ]; then
   log "Git pull on server..."
-  ssh $SSH_OPTS "$SERVER" "cd $REMOTE_DIR && git pull origin main 2>&1 | tail -3"
+  ssh $SSH_OPTS "$SERVER" "cd $REMOTE_DIR && git pull origin main 2>&1 | tail -3 && bun install 2>&1 | tail -3"
 fi
 
 # --- Upload pre-built client dist ---

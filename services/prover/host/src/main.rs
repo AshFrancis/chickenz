@@ -351,7 +351,7 @@ async fn run_boundless(fp_input: &FpProverInput) {
         .with_groth16_proof();
 
     let (request_id, expires_at) = client
-        .submit(request)
+        .submit_onchain(request)
         .await
         .expect("Failed to submit proof request");
     eprintln!("Submitted! Request ID: {:x}", request_id);

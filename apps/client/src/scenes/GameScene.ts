@@ -1562,7 +1562,7 @@ export class GameScene extends Phaser.Scene {
 
     this.updateCamera(curr, predicted, delta);
     this.drawArena(g, displayState);
-    this.drawPickups(g, displayState);
+    this.drawPickups(g, curr);
     this.drawPlayers(g, curr, predicted, delta);
     this.drawProjectiles(g, curr, predicted, delta);
     this.drawExplosions(g);
