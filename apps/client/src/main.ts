@@ -1211,8 +1211,12 @@ function connectToServer(url: string) {
       const scene = getGameScene();
       if (scene) scene.endOnlineMatch(winner);
 
-      // Re-open lobby so they can play again
-      setTimeout(() => openLobby(), 2000);
+      // Re-open lobby after 2s; clean up match state so it doesn't flash on next match
+      setTimeout(() => {
+        const s = getGameScene();
+        if (s) (s as any).cleanupMatchState();
+        openLobby();
+      }, 2000);
     },
 
     onError(message) {

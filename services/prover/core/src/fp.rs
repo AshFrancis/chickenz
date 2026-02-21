@@ -581,7 +581,8 @@ fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
     p.y += p.vy;
     p.grounded = false;
 
-    // Full AABB platform collision (2G)
+    // Platform collision
+    let prev_y = p.y - p.vy;
     for plat in &map.platforms {
         // Check overlap
         if p.x + PLAYER_WIDTH > plat.x
@@ -589,29 +590,37 @@ fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
             && p.y + PLAYER_HEIGHT > plat.y
             && p.y < plat.y + plat.height
         {
-            let overlap_left = (p.x + PLAYER_WIDTH) - plat.x;
-            let overlap_right = (plat.x + plat.width) - p.x;
-            let overlap_top = (p.y + PLAYER_HEIGHT) - plat.y;
-            let overlap_bottom = (plat.y + plat.height) - p.y;
-            let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
-
-            if min_overlap == overlap_top {
-                // Landing on top
-                p.y = plat.y - PLAYER_HEIGHT;
-                p.vy = 0;
-                p.grounded = true;
-            } else if min_overlap == overlap_bottom {
-                // Ceiling bump
-                p.y = plat.y + plat.height;
-                p.vy = 0;
-            } else if min_overlap == overlap_left {
-                // Left side
-                p.x = plat.x - PLAYER_WIDTH;
-                p.vx = 0;
+            let is_thin = plat.height < fp(32);
+            if is_thin {
+                // One-way platform: only land from above (can jump through from below/sides)
+                let was_above = prev_y + PLAYER_HEIGHT <= plat.y + (2 << FRAC); // 2px tolerance
+                if was_above && p.vy > 0 {
+                    p.y = plat.y - PLAYER_HEIGHT;
+                    p.vy = 0;
+                    p.grounded = true;
+                }
             } else {
-                // Right side
-                p.x = plat.x + plat.width;
-                p.vx = 0;
+                // Solid platform: full AABB collision
+                let overlap_left = (p.x + PLAYER_WIDTH) - plat.x;
+                let overlap_right = (plat.x + plat.width) - p.x;
+                let overlap_top = (p.y + PLAYER_HEIGHT) - plat.y;
+                let overlap_bottom = (plat.y + plat.height) - p.y;
+                let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
+
+                if min_overlap == overlap_top {
+                    p.y = plat.y - PLAYER_HEIGHT;
+                    p.vy = 0;
+                    p.grounded = true;
+                } else if min_overlap == overlap_bottom {
+                    p.y = plat.y + plat.height;
+                    p.vy = 0;
+                } else if min_overlap == overlap_left {
+                    p.x = plat.x - PLAYER_WIDTH;
+                    p.vx = 0;
+                } else {
+                    p.x = plat.x + plat.width;
+                    p.vx = 0;
+                }
             }
         }
     }
@@ -997,16 +1006,36 @@ fn clear_stomp_fields(p: &mut Player) {
 /// Advance game state by one tick, mutating in place (zero copies of State).
 pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     if state.match_over {
+        // Winner can still move after match ends (taunt/flex/dance)
+        state.tick += 1;
+        let prev_buttons = state.prev_buttons;
+        for i in 0..2 {
+            if state.players[i].state_flags & flag::ALIVE != 0 {
+                apply_input_mut(&mut state.players[i], inputs[i].buttons, prev_buttons[i], inputs[i].aim_x);
+                apply_gravity_mut(&mut state.players[i]);
+                move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
+            }
+        }
+        state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;
     }
 
-    // Death linger countdown — skip gameplay, just tick the timer
+    // Death linger countdown — winner can still move, but no combat
     if state.death_linger_timer > 0 {
         state.tick += 1;
         state.death_linger_timer -= 1;
         if state.death_linger_timer <= 0 {
             state.match_over = true;
             state.death_linger_timer = 0;
+        }
+        // Let the winner keep moving during linger (input + gravity + collision)
+        let prev_buttons = state.prev_buttons;
+        for i in 0..2 {
+            if state.players[i].state_flags & flag::ALIVE != 0 {
+                apply_input_mut(&mut state.players[i], inputs[i].buttons, prev_buttons[i], inputs[i].aim_x);
+                apply_gravity_mut(&mut state.players[i]);
+                move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
+            }
         }
         state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;

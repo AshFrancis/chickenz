@@ -738,16 +738,7 @@ export class GameScene extends Phaser.Scene {
     this.roundWins = [0, 0];
     this.roundTransition = false;
 
-    // Clear stale state from previous match so it doesn't flash on screen
     this.playing = false;
-    this.currState = null;
-    this.prevState = null;
-    this.pendingServerState = null;
-    this.pendingServerButtons = undefined;
-    this.lastServerTick = 0;
-    this.explosions = [];
-    this.gfx.clear();
-    this.gfxOverlay.clear();
 
     // Diamond transition covers screen, THEN swap map at midpoint (fully black)
     // Keep warmupMode alive during grow-in so camera stays stable (P2 is at -9999)
@@ -1205,7 +1196,18 @@ export class GameScene extends Phaser.Scene {
       showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
     }
     this.playSound("match-end");
-    // Music keeps playing between matches — no stopBGM()
+  }
+
+  /** Clean up game state after match ends so stale frames don't flash on next match. */
+  private cleanupMatchState() {
+    this.currState = null;
+    this.prevState = null;
+    this.pendingServerState = null;
+    this.pendingServerButtons = undefined;
+    this.lastServerTick = 0;
+    this.explosions = [];
+    this.gfx.clear();
+    this.gfxOverlay.clear();
   }
 
   // ── Spectator Mode (Tournament) ───────────────────────────────────────────
