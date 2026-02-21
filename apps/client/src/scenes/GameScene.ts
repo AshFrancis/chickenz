@@ -340,6 +340,8 @@ export class GameScene extends Phaser.Scene {
     if (storedSFX !== null) this.sfxVolume = parseInt(storedSFX, 10) / 100;
     const storedZoom = localStorage.getItem("chickenz-dynamic-zoom");
     if (storedZoom !== null) this.dynamicZoom = storedZoom !== "false";
+    const storedMute = localStorage.getItem("chickenz-muted");
+    this._muted = storedMute === null ? true : storedMute === "true";
   }
 
   create() {
