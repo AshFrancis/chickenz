@@ -1,5 +1,12 @@
 # Chickenz
 
+## Workflow Rules
+
+- **Deploy script** (`scripts/deploy.sh`): Always commit and push before deploying. Run directly with Bash (timeout 60000). Do NOT use `run_in_background`. Do NOT use TaskOutput to poll. Just call Bash directly and wait for the result inline. The script takes ~30-50 seconds.
+- **Short-lived commands** (~under 2 min): Always run inline with Bash, never as background tasks. Background tasks add minutes of polling overhead.
+
+---
+
 Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes settled on Stellar Soroban. Two players compete in 60-second matches with 3 lives each. Five weapons spawn on the map. A sudden death mechanic closes the arena walls at 50s. The full input transcript feeds a RISC Zero ZK proof that verifies the result on-chain.
 
 ## Hackathon

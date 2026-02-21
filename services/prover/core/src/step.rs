@@ -337,7 +337,7 @@ pub fn step(
     }
 
     // 15. Tick pickup respawn timers
-    tick_pickup_timers(&mut weapon_pickups);
+    tick_pickup_timers(&mut weapon_pickups, &mut rng_state);
 
     // 16. Advance tick
     GameState {

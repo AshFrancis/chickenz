@@ -19,16 +19,18 @@ pub fn create_initial_pickups(map: &GameMap) -> Vec<WeaponPickup> {
         .collect()
 }
 
-/// Tick pickup respawn timers and rotate weapon type when respawning.
-pub fn tick_pickup_timers(pickups: &mut [WeaponPickup]) {
+/// Tick pickup respawn timers and pick a random weapon type when respawning.
+pub fn tick_pickup_timers(pickups: &mut [WeaponPickup], rng_state: &mut u32) {
     for p in pickups.iter_mut() {
         if p.respawn_timer <= 0 {
             continue;
         }
         p.respawn_timer -= 1;
         if p.respawn_timer <= 0 {
-            let next_idx = (p.weapon as usize + 1) % WEAPON_ROTATION.len();
-            p.weapon = WEAPON_ROTATION[next_idx];
+            let (idx, new_rng) = prng_next(*rng_state);
+            *rng_state = new_rng;
+            let weapon_idx = (idx * WEAPON_ROTATION.len() as f64) as usize % WEAPON_ROTATION.len();
+            p.weapon = WEAPON_ROTATION[weapon_idx];
         }
     }
 }
@@ -228,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn pickup_timer_respawns_with_rotation() {
+    fn pickup_timer_respawns_with_random_weapon() {
         let mut pickups = vec![WeaponPickup {
             id: 0,
             x: 100.0,
@@ -236,10 +238,13 @@ mod tests {
             weapon: WeaponType::Pistol,
             respawn_timer: 1,
         }];
-        tick_pickup_timers(&mut pickups);
+        let mut rng = 42u32;
+        tick_pickup_timers(&mut pickups, &mut rng);
         assert_eq!(pickups[0].respawn_timer, 0);
-        // Pistol (0) → Shotgun (1) via rotation
-        assert_eq!(pickups[0].weapon, WeaponType::Shotgun);
+        // Weapon should be one of the valid rotation weapons
+        assert!(WEAPON_ROTATION.contains(&pickups[0].weapon));
+        // RNG state should have advanced
+        assert_ne!(rng, 42);
     }
 
     #[test]

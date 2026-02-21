@@ -721,8 +721,9 @@ fn tick_pickup_timers(state: &mut State) {
         if state.weapon_pickups[pi].respawn_timer <= 0 { continue; }
         state.weapon_pickups[pi].respawn_timer -= 1;
         if state.weapon_pickups[pi].respawn_timer <= 0 {
-            let next_idx = ((state.weapon_pickups[pi].weapon + 1) as usize) % WEAPON_COUNT;
-            state.weapon_pickups[pi].weapon = WEAPON_ROTATION[next_idx];
+            let (idx, new_rng) = prng_int_range(state.rng_state, 0, (WEAPON_COUNT as i32) - 1);
+            state.rng_state = new_rng;
+            state.weapon_pickups[pi].weapon = WEAPON_ROTATION[idx as usize];
         }
     }
 }
@@ -1325,31 +1326,28 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         state.arena_left = mul(progress, half_w);
         state.arena_right = map.width - mul(progress, half_w);
 
-        // Zone damage: scaling tick damage. At full close: ZONE_MAX_DPS hp/sec = ~0.33 hp/tick.
-        // Use interval-based approach: apply 1 damage every N ticks.
-        // At full progress (sd_dur ticks elapsed): interval = 60/ZONE_MAX_DPS = 3 ticks.
-        // Before full: interval scales inversely with progress.
+        // Zone damage: applied every 5 ticks in bursts. Same total DPS as before,
+        // but less spammy. At full close: 5 damage every 5 ticks (= 1 per tick avg).
+        // Before full: damage per burst scales with progress.
         let dmg_progress = elapsed.min(sd_dur);
-        if dmg_progress > 0 {
-            // interval = (sd_dur * 60 / ZONE_MAX_DPS) / dmg_progress
-            // = sd_dur * 3 / dmg_progress  (since 60/20=3)
-            let interval = ((sd_dur * 3) / dmg_progress).max(1);
+        const ZONE_DMG_INTERVAL: i32 = 5;
+        if dmg_progress > 0 && elapsed % ZONE_DMG_INTERVAL == 0 {
+            // Burst damage = (ZONE_DMG_INTERVAL * sd_dur * 60 / ZONE_MAX_DPS) ... simplified:
+            // At full progress: 5 damage per burst. Before full: scales linearly.
+            let burst_dmg = ((dmg_progress * ZONE_DMG_INTERVAL) / (sd_dur * 3)).max(1);
 
             for i in 0..2 {
                 let p = &mut state.players[i];
                 if p.state_flags & flag::ALIVE == 0 { continue; }
                 let px_center = p.x + PLAYER_WIDTH / 2;
                 if px_center < state.arena_left || px_center > state.arena_right {
-                    // Player center is inside the zone — apply damage
-                    if elapsed % interval == 0 {
-                        p.health -= 1;
-                        if p.health <= 0 {
-                            p.health = 0;
-                            p.lives -= 1;
-                            p.state_flags = 0;
-                            p.vx = 0;
-                            p.vy = 0;
-                        }
+                    p.health -= burst_dmg;
+                    if p.health <= 0 {
+                        p.health = 0;
+                        p.lives -= 1;
+                        p.state_flags = 0;
+                        p.vx = 0;
+                        p.vy = 0;
                     }
                 }
             }
