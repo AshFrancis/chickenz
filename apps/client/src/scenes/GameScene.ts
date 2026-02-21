@@ -261,6 +261,9 @@ export class GameScene extends Phaser.Scene {
   private pendingServerState: any = null;
   private pendingServerButtons: [number, number] | undefined = undefined;
 
+  // Netcode diagnostics
+  private diagTimer = 0;
+
   // Scene lifecycle — create() may not have run yet when network callbacks fire
   private sceneReady = false;
   private readyQueue: (() => void)[] = [];
@@ -718,10 +721,10 @@ export class GameScene extends Phaser.Scene {
     document.getElementById("warmup-overlay")?.classList.remove("visible");
   }
 
-  startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3, characters?: [number, number]) {
+  startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3, characters?: [number, number], onCovered?: () => void) {
     if (!this.sceneReady) {
       console.log(`[startOnlineMatch] deferred — scene not ready yet`);
-      this.onReady(() => this.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters));
+      this.onReady(() => this.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters, onCovered));
       return;
     }
     this.localPlayerId = playerId;
@@ -743,6 +746,8 @@ export class GameScene extends Phaser.Scene {
     // Diamond transition covers screen, THEN swap map at midpoint (fully black)
     // Keep warmupMode alive during grow-in so camera stays stable (P2 is at -9999)
     this.playTransition(() => {
+      // Screen is now fully covered — safe to close lobby behind the transition
+      onCovered?.();
       this.warmupMode = false;
       this.warmupState = null;
       document.getElementById("warmup-overlay")?.classList.remove("visible");
@@ -1422,12 +1427,23 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.playing && this.prediction && !this.replayMode) {
+      // Cap prediction: don't run further than MAX_LEAD ticks ahead of server
+      const MAX_LEAD = 10;
+      const canPredict = this.lastServerTick === 0 ||
+        this.prediction.currentTick < this.lastServerTick + MAX_LEAD;
+
       // Run prediction at fixed 60Hz rate
       this.predictionAccum += delta;
       const maxTicks = 3;
       let ticksRun = 0;
 
       while (this.predictionAccum >= TICK_DT_MS && ticksRun < maxTicks) {
+        if (!canPredict) {
+          // Don't advance prediction, just drain accumulator
+          this.predictionAccum -= TICK_DT_MS;
+          ticksRun++;
+          continue;
+        }
         this.predictionAccum -= TICK_DT_MS;
         ticksRun++;
 
@@ -1449,13 +1465,11 @@ export class GameScene extends Phaser.Scene {
       }
 
       // Maintain prediction lead over server: ensures serverTick < predictedTick
-      // so reconciliation always has a replay window for jump edge detection.
-      // prev_buttons is now exported/imported, so jump edges survive reconciliation.
-      const PRED_LEAD = 2; // ~33ms lead at 60Hz
+      const PRED_LEAD = 2;
       if (this.lastServerTick > 0) {
         const targetTick = this.lastServerTick + PRED_LEAD;
         let extraTicks = 0;
-        while (this.prediction.currentTick < targetTick && extraTicks < 8) {
+        while (this.prediction.currentTick < targetTick && extraTicks < 4) {
           const player = this.prediction.predictedState.players[this.localPlayerId];
           if (!player) break;
           const input = this.inputManager.getPlayer1Input(
@@ -1467,6 +1481,14 @@ export class GameScene extends Phaser.Scene {
           this.prediction.predictTick(input);
           extraTicks++;
         }
+      }
+
+      // Periodic diagnostics (every 2s)
+      this.diagTimer += delta;
+      if (this.diagTimer > 2000) {
+        this.diagTimer = 0;
+        const gap = this.prediction.currentTick - this.lastServerTick;
+        console.log(`[Netcode] predTick=${this.prediction.currentTick} serverTick=${this.lastServerTick} gap=${gap} replay=${this.prediction.lastReplayCount} delta=${delta.toFixed(1)}ms`);
       }
     }
 
@@ -1641,15 +1663,15 @@ export class GameScene extends Phaser.Scene {
         drawX = smooth.x;
         drawY = smooth.y;
       } else {
-        // Remote player: always use server state (no predicted combat overlay)
+        // Remote player: use server state + velocity extrapolation for smoother motion
         cp = raw;
         const smooth = this.remoteSmooth;
         if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
         const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
         if (teleported) { smooth.x = cp.x; smooth.y = cp.y; }
         else {
-          smooth.x = smoothLerp(smooth.x, cp.x, 0.5, delta ?? 16.667);
-          smooth.y = cp.grounded ? cp.y : smoothLerp(smooth.y, cp.y, 0.5, delta ?? 16.667);
+          smooth.x = smoothLerp(smooth.x, cp.x, 0.8, delta ?? 16.667);
+          smooth.y = smoothLerp(smooth.y, cp.y, 0.8, delta ?? 16.667);
         }
         drawX = smooth.x;
         drawY = smooth.y;

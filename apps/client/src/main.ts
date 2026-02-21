@@ -1175,12 +1175,11 @@ function connectToServer(url: string) {
       const scene = getGameScene();
       if (!scene) return;
 
-      if (!scene.isWarmup) {
-        closeLobby();
-      }
-
       networkManager?.resetThrottle();
-      scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
+      // Don't close lobby yet — let the transition overlay cover the screen first
+      // to prevent a flash of the uninitialized game scene
+      const needCloseLobby = !scene.isWarmup;
+      scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters, needCloseLobby ? closeLobby : undefined);
       applyAudioSettings(scene);
       scene.onLocalInput = (input, tick) => {
         networkManager?.sendInput(input, tick);
@@ -1211,10 +1210,8 @@ function connectToServer(url: string) {
       const scene = getGameScene();
       if (scene) scene.endOnlineMatch(winner);
 
-      // Re-open lobby after 2s; clean up match state so it doesn't flash on next match
+      // Re-open lobby after 2s (cleanup is handled inside endOnlineMatch's delayedCall)
       setTimeout(() => {
-        const s = getGameScene();
-        if (s) (s as any).cleanupMatchState();
         openLobby();
       }, 2000);
     },
