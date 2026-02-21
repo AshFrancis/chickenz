@@ -156,29 +156,33 @@ const DEFAULT_SERVER = location.port === "5173" || location.port === "5174"
   ? "ws://localhost:3000/ws"
   : `${wsProto}//${location.host}/ws`;
 
-// ── Gate: wallet required unless ?mode=casual ────────────────────────────────
+// ── Animal name generator ────────────────────────────────────────────────────
 
-const isCasual = new URLSearchParams(location.search).get("mode") === "casual";
+const ANIMALS = [
+  "Moose", "Fox", "Cat", "Dog", "Lion", "Monkey", "Zebra", "Bear",
+  "Wolf", "Eagle", "Hawk", "Otter", "Panda", "Koala", "Raven", "Shark",
+  "Whale", "Tiger", "Cobra", "Viper", "Gecko", "Lemur", "Bison", "Crane",
+  "Heron", "Finch", "Robin", "Llama", "Goose", "Duck", "Deer", "Frog",
+  "Toad", "Crab", "Crow", "Dove", "Lynx", "Mole", "Moth", "Wasp",
+  "Wren", "Swan", "Yak", "Newt", "Puma", "Seal", "Slug", "Mink",
+];
 
-// Per-wallet username storage
-function getWalletName(addr: string): string | null {
-  try {
-    const map = JSON.parse(localStorage.getItem("chickenz-wallet-names") || "{}");
-    return map[addr] || null;
-  } catch {
-    return null;
-  }
+function generateAnimalName(): string {
+  const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]!;
+  const maxDigits = 7 - animal.length;
+  const num = Math.floor(Math.random() * Math.pow(10, maxDigits));
+  return `${animal}${num}`;
 }
 
-function setWalletName(addr: string, name: string) {
-  try {
-    const map = JSON.parse(localStorage.getItem("chickenz-wallet-names") || "{}");
-    map[addr] = name;
-    localStorage.setItem("chickenz-wallet-names", JSON.stringify(map));
-  } catch { /* ignore */ }
+function getOrCreateUsername(): string {
+  const saved = localStorage.getItem("chickenz-username");
+  if (saved) return saved;
+  const name = generateAnimalName();
+  localStorage.setItem("chickenz-username", name);
+  return name;
 }
 
-// ── Gate flow: wallet required unless ?mode=casual ────────────────────────────
+// ── Gate flow: instant play, wallet optional ────────────────────────────────
 
 function deferBGMStart() {
   const startBGMOnce = () => {
@@ -194,190 +198,24 @@ function deferBGMStart() {
   window.addEventListener("keydown", startBGMOnce, { once: false });
 }
 
-function autoSkipGate(name: string) {
+// Always skip gate — generate name if needed, go straight to lobby
+{
+  const name = getOrCreateUsername();
   currentUsername = name;
   topBarUsername.textContent = name;
-  gateOverlay.classList.add("hidden");
   connectToServer(DEFAULT_SERVER);
   deferBGMStart();
+
+  // Init wallet kit and try silent reconnect in background (optional)
+  initWalletKit();
+  tryReconnectWallet().then(() => {
+    updateWalletUI();
+  }).catch(() => {});
 }
 
-function showGateUI() {
-  gateSubtitle.textContent = "Enter a username to play";
-}
+// Gate is no longer used for initial entry — users go straight to lobby
 
-function showWalletConnectGate() {
-  showGateUI();
-  const walletGateBtn = document.createElement("button");
-  walletGateBtn.className = "btn btn-primary";
-  walletGateBtn.textContent = "Connect Wallet";
-  walletGateBtn.style.marginBottom = "12px";
-  gateWalletSection.appendChild(walletGateBtn);
-
-  walletGateBtn.addEventListener("click", async () => {
-    try {
-      await connectWallet();
-      const addr = getConnectedAddress();
-      if (addr) {
-        updateWalletUI();
-        const walletName = getWalletName(addr);
-        if (walletName) {
-          autoSkipGate(walletName);
-        } else {
-          gateAddress.textContent = addr;
-          gateWalletSection.style.display = "none";
-          gateStep2.classList.add("visible");
-          gateUsernameInput.focus();
-        }
-      }
-    } catch {
-      gateError.textContent = "Wallet connection failed. Try again.";
-    }
-  });
-}
-
-{
-  if (isCasual) {
-    // Casual path: check for saved casual name
-    const savedName = localStorage.getItem("chickenz-username");
-    if (savedName) {
-      autoSkipGate(savedName);
-    } else {
-      // Show gate with username input only (no wallet section)
-      showGateUI();
-      gateWalletSection.style.display = "none";
-      gateStep2.classList.add("visible");
-      gateUsernameInput.focus();
-    }
-    // Hide wallet button for casual mode
-    walletBtn.style.display = "none";
-  } else {
-    // Wallet path: init wallet kit, try reconnect
-    // Gate shows "Connecting..." while we attempt silent reconnect
-    initWalletKit();
-    tryReconnectWallet().then(() => {
-      const addr = getConnectedAddress();
-      if (addr) {
-        updateWalletUI();
-        const walletName = getWalletName(addr);
-        if (walletName) {
-          // Auto-skip gate entirely
-          autoSkipGate(walletName);
-        } else {
-          // Wallet connected but no saved name: show gate at step 2
-          showGateUI();
-          gateAddress.textContent = addr;
-          gateWalletSection.style.display = "none";
-          gateStep2.classList.add("visible");
-          gateUsernameInput.focus();
-        }
-      } else {
-        // No wallet: show full gate with wallet connect button
-        showWalletConnectGate();
-      }
-    }).catch(() => {
-      showWalletConnectGate();
-    });
-  }
-}
-
-function submitGateUsername() {
-  const name = gateUsernameInput.value.trim();
-  if (!name || name.length > 7) {
-    gateError.textContent = "Username must be 1-7 characters.";
-    return;
-  }
-  if (!/^[a-zA-Z0-9_]+$/.test(name)) {
-    gateError.textContent = "Letters, numbers, underscore only.";
-    return;
-  }
-
-  gateError.textContent = "";
-  currentUsername = name;
-  topBarUsername.textContent = name;
-
-  // Save per-wallet or casual
-  const walletAddr = getConnectedAddress();
-  if (walletAddr && !isCasual) {
-    setWalletName(walletAddr, name);
-  } else {
-    localStorage.setItem("chickenz-username", name);
-  }
-
-  // Hide gate, connect to server, open lobby
-  gateOverlay.classList.add("hidden");
-  connectToServer(DEFAULT_SERVER);
-
-  // Start BGM — user just clicked (satisfies Chrome autoplay policy)
-  const scene = getGameScene();
-  if (scene) {
-    applyAudioSettings(scene);
-    scene.startBGM();
-  }
-}
-
-// Pre-fill saved username (casual mode only; wallet pre-fill handled in gate flow)
-if (isCasual) {
-  const savedUsername = localStorage.getItem("chickenz-username");
-  if (savedUsername) {
-    gateUsernameInput.value = savedUsername;
-  }
-}
-
-gatePlayBtn.addEventListener("click", submitGateUsername);
-gateUsernameInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") submitGateUsername();
-});
-
-// ── Wallet Disconnect Handler ────────────────────────────────────────────────
-
-function handleWalletDisconnect() {
-  // Clear identity
-  currentUsername = "";
-  topBarUsername.textContent = "";
-  topBarAddress.textContent = "";
-
-  // End any active game state
-  const scene = getGameScene();
-  if (scene) {
-    if (scene.isSpectating) scene.stopSpectating();
-    else if (scene.isPlaying) scene.endOnlineMatch(-1);
-    if (scene.isWarmup) scene.stopWarmup();
-  }
-
-  // Hide ALL overlays
-  lobbyOverlay.classList.remove("visible");
-  settingsOverlay.classList.remove("visible");
-  matchDetailOverlay.classList.remove("visible");
-  tournamentOverlay.classList.remove("visible");
-  bracketOverlay.classList.remove("visible");
-  spectateOverlay.classList.remove("visible");
-  tournamentResults.classList.remove("visible");
-  document.getElementById("warmup-overlay")?.classList.remove("visible");
-  document.getElementById("announce-overlay")?.classList.remove("visible");
-  document.getElementById("sudden-death-overlay")?.classList.remove("visible");
-  settingsOpen = false;
-
-  // Disconnect from server
-  if (networkManager) {
-    networkManager.disconnect();
-    networkManager = null;
-  }
-
-  // Reset state
-  onlineRoomId = null;
-  currentTournamentId = null;
-  tournamentSpectating = false;
-
-  // Show gate, reset to wallet-connect step
-  gateOverlay.classList.remove("hidden");
-  gateWalletSection.style.display = "";
-  gateWalletSection.innerHTML = "";
-  gateStep2.classList.remove("visible");
-  gateError.textContent = "";
-  gateUsernameInput.value = "";
-  showWalletConnectGate();
-}
+// Wallet disconnect just updates UI — user keeps playing as casual
 
 // ── Wallet Connect ──────────────────────────────────────────────────────────
 
@@ -453,18 +291,7 @@ walletBtn.addEventListener("click", async () => {
 });
 
 window.addEventListener("walletChanged", () => {
-  const addr = getConnectedAddress();
-  if (addr) {
-    updateWalletUI();
-    const walletName = getWalletName(addr);
-    if (walletName && !isCasual) {
-      currentUsername = walletName;
-      topBarUsername.textContent = walletName;
-      networkManager?.sendSetUsername(walletName);
-    }
-  } else if (!isCasual) {
-    handleWalletDisconnect();
-  }
+  updateWalletUI();
 });
 
 // ── Mode Toggle ───────────────────────────────────────────────────────────────
@@ -491,10 +318,7 @@ modeCasualBtn.addEventListener("click", () => {
 });
 
 modeRankedBtn.addEventListener("click", () => {
-  if (!getConnectedAddress()) {
-    lobbyStatus.textContent = "Connect wallet to play ranked.";
-    return;
-  }
+  if (!getConnectedAddress()) return;
   setMode("ranked");
 });
 
@@ -645,12 +469,7 @@ function saveSettingsUsername() {
   settingsUsernameError.textContent = "";
   currentUsername = name;
   topBarUsername.textContent = name;
-  const walletAddr = getConnectedAddress();
-  if (walletAddr && !isCasual) {
-    setWalletName(walletAddr, name);
-  } else {
-    localStorage.setItem("chickenz-username", name);
-  }
+  localStorage.setItem("chickenz-username", name);
   if (networkManager?.connected) {
     networkManager.sendSetUsername(name);
   }
@@ -843,7 +662,8 @@ muteBtn.addEventListener("click", () => {
 
 // Restore saved mute state
 {
-  const savedMute = localStorage.getItem("chickenz-muted") === "true";
+  const muteStored = localStorage.getItem("chickenz-muted");
+  const savedMute = muteStored === null ? true : muteStored === "true"; // default muted
   checkMuteAll.checked = savedMute;
   updateMuteIcon(savedMute);
 }
@@ -876,7 +696,8 @@ document.addEventListener("fullscreenchange", () => {
 function applyAudioSettings(scene: GameScene) {
   const bgm = parseInt(localStorage.getItem("chickenz-bgm-volume") ?? "10", 10);
   const sfx = parseInt(localStorage.getItem("chickenz-sfx-volume") ?? "80", 10);
-  const muted = localStorage.getItem("chickenz-muted") === "true";
+  const muteVal = localStorage.getItem("chickenz-muted");
+  const muted = muteVal === null ? true : muteVal === "true";
   scene.setBGMVolume(bgm / 100);
   scene.setSFXVolume(sfx / 100);
   scene.setMuted(muted);
@@ -1195,12 +1016,16 @@ function openMatchDetail(matchId: string) {
   if (!networkManager) return;
   const origin = networkManager.httpOrigin;
   fetch(`${origin}/api/matches/${matchId}/detail`)
-    .then((r) => r.json())
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
     .then((m: MatchRecord) => {
       renderMatchDetail(m);
       matchDetailOverlay.classList.add("visible");
     })
-    .catch(() => {
+    .catch((err) => {
+      console.error("[detail] Failed to load match details:", err);
       lobbyStatus.textContent = "Failed to load match details.";
     });
 }
@@ -1254,6 +1079,14 @@ function renderMatchDetail(m: MatchRecord) {
 
   addStep("Match Started", m.matchStartTime);
 
+  // On-chain start_match / start_game happen right after match starts
+  if (m.mode === "ranked" && m.startTxHash) {
+    addStep("start_match TX", m.matchStartTime,
+      `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+    addStep("start_game TX", m.matchStartTime,
+      `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+  }
+
   if (m.timestamp) {
     const duration = m.matchStartTime ? `<span class="tl-duration">${formatDuration(m.matchStartTime, m.timestamp)}</span>` : "";
     addStep("Match Ended", m.timestamp, duration);
@@ -1272,16 +1105,15 @@ function renderMatchDetail(m: MatchRecord) {
       addStep("Proof Generating...", undefined, "", "active");
     }
 
-    if (m.startTxHash) {
-      addStep("start_match TX", m.matchStartTime,
-        `<a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`);
-    }
-
+    // On-chain settle_match / end_game happen after proof
     if (m.settleTxHash) {
       addStep("settle_match TX", m.proofCompletedAt,
-        `<a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+        `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+      addStep("end_game TX", m.proofCompletedAt,
+        `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`);
     } else if (m.proofStatus === "settled") {
       addStep("settle_match TX", undefined, "", "done");
+      addStep("end_game TX", undefined, "", "done");
     } else if (m.proofStatus === "verified") {
       addStep("Settlement Pending...", undefined, "", "active");
     }
@@ -1295,7 +1127,7 @@ function renderMatchDetail(m: MatchRecord) {
       <div class="detail-section">
         <h3>Proof Details</h3>
         <div class="detail-proof-grid">
-          <div class="dpg-row"><span class="dpg-label">Image ID</span><span class="dpg-value">${escapeHtml(imageId.slice(0, 16))}...</span></div>
+          <div class="dpg-row"><span class="dpg-label">Image ID</span><span class="dpg-value">${imageId ? escapeHtml(imageId.slice(0, 16)) + "..." : "N/A"}</span></div>
           <div class="dpg-row"><span class="dpg-label">Seal</span><span class="dpg-value">${seal.length / 2} bytes</span></div>
           <div class="dpg-row"><span class="dpg-label">Journal</span><span class="dpg-value">${journal.length / 2} bytes</span></div>
           <div class="dpg-row"><span class="dpg-label">Status</span><span class="dpg-value"><span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span></span></div>

@@ -584,18 +584,25 @@ export class GameScene extends Phaser.Scene {
     // We handle it manually with a fade below.
     this.sound.pauseOnBlur = false;
 
-    // Fade BGM out/in on window/tab focus change instead of abrupt pause
+    // Fade BGM out/in on window/tab focus change instead of abrupt pause.
+    // Use a single flag to prevent visibilitychange and blur/focus from racing.
+    let bgmFadedOut = false;
     const fadeOut = () => {
+      if (bgmFadedOut) return;
+      bgmFadedOut = true;
       if (!this.bgm || !this.bgm.isPlaying) return;
       this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, (this.bgm as Phaser.Sound.WebAudioSound).volume, 0, 400);
     };
     const fadeIn = () => {
+      if (!bgmFadedOut) return;
+      // Only fade in if the page is actually visible and the window is focused
+      if (document.hidden || !document.hasFocus()) return;
+      bgmFadedOut = false;
       if (!this.bgm) return;
       const ctx = (this.sound as Phaser.Sound.WebAudioSoundManager).context;
       if (ctx.state === "suspended") ctx.resume();
       this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, 0, this.bgmVolume, 400);
     };
-    // visibilitychange fires on tab switch; blur/focus fires on window switch
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) fadeOut(); else fadeIn();
     });

@@ -166,7 +166,7 @@
 
       /* Gate overlay — wallet + username before playing */
       #gate-overlay {
-        display: flex;
+        display: none;
         position: absolute;
         top: 0; left: 0;
         width: 100%; height: 100%;
@@ -175,7 +175,7 @@
         align-items: center;
         justify-content: center;
       }
-      #gate-overlay.hidden { display: none; }
+      #gate-overlay.visible { display: flex; }
       #gate-card {
         text-align: center;
         max-width: 420px;
@@ -313,6 +313,25 @@
       .btn-mode.locked {
         opacity: 0.5;
         cursor: not-allowed;
+        position: relative;
+      }
+      .btn-mode.locked .mode-tooltip {
+        display: none;
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1a1a2e;
+        border: 2px solid #ffa726;
+        color: #ccc;
+        padding: 8px 12px;
+        font-size: 10px;
+        white-space: nowrap;
+        z-index: 10;
+        pointer-events: none;
+      }
+      .btn-mode.locked:hover .mode-tooltip {
+        display: block;
       }
       .mode-badge {
         font-size: 10px;
@@ -1321,7 +1340,7 @@
           <div id="lobby-actions">
             <div class="mode-toggle">
               <button id="btn-mode-casual" class="btn-mode active">Casual</button>
-              <button id="btn-mode-ranked" class="btn-mode locked">Ranked</button>
+              <button id="btn-mode-ranked" class="btn-mode locked">Ranked<span class="mode-tooltip">Connect a Stellar wallet to play ranked - we recommend Freighter!</span></button>
             </div>
             <button id="btn-quickplay" class="btn btn-primary">Quick Play</button>
             <span class="lobby-divider">|</span>
