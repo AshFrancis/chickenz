@@ -302,8 +302,9 @@ const server = Bun.serve<SocketData>({
       try {
         const body = await req.json() as { seal: string; journal: string; imageId: string };
         // 1E: Validate proof artifacts are valid hex with correct lengths
+        // Seal: 260 bytes (520 hex) with selector, or 256 bytes (512 hex) without
         if (typeof body.seal !== "string" || typeof body.journal !== "string" ||
-            !/^[0-9a-fA-F]{520}$/.test(body.seal) || !/^[0-9a-fA-F]{152}$/.test(body.journal)) {
+            !/^[0-9a-fA-F]{512}([0-9a-fA-F]{8})?$/.test(body.seal) || !/^[0-9a-fA-F]{152}$/.test(body.journal)) {
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
         const job = submitJobResult(matchId, body);
