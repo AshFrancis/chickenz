@@ -290,14 +290,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   preload() {
-    // Load BGM tracks (SFX use Web Audio synth fallback, no MP3s needed)
-    try {
-      for (let i = 1; i <= 5; i++) {
-        this.load.audio(`bgm-${i}`, `/audio/bgm-${i}.mp3`);
-      }
-    } catch {
-      // Audio files may not exist yet
-    }
+    // BGM tracks loaded lazily on-demand (18+ MB total — don't block initial load)
     // Crouch/taunt sounds per character
     try {
       for (const key of Object.values(CROUCH_SOUNDS)) {
@@ -2286,6 +2279,21 @@ export class GameScene extends Phaser.Scene {
     if (this.bgmVolume === 0 || !this.audioLoaded || this._muted) return;
     try {
       const key = this.pickBgmTrack();
+      // Lazy load BGM: if track isn't cached yet, load it first
+      if (!this.cache.audio.exists(key)) {
+        this.load.audio(key, `/audio/${key}.mp3`);
+        this.load.once("complete", () => this.startTrack(key));
+        this.load.start();
+        return;
+      }
+      this.startTrack(key);
+    } catch {
+      // BGM not available
+    }
+  }
+
+  private startTrack(key: string) {
+    try {
       const newTrack = this.sound.add(key, { loop: false, volume: this.bgmVolume }) as Phaser.Sound.WebAudioSound;
       // Crossfade: fade out old track over 1s, then destroy it
       if (this.bgm?.isPlaying && "volume" in this.bgm) {
