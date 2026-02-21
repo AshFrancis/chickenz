@@ -1677,11 +1677,9 @@ export class GameScene extends Phaser.Scene {
         // Use predicted position for responsiveness, but server-authoritative combat fields
         // (health, lives, deaths) to avoid desync artifacts like "healing" when server disagrees
         const pred = predicted?.players[i];
-        // Use predicted position directly for instant responsiveness (no smoothing)
-        // Server-authoritative combat fields prevent desync artifacts (e.g. "healing")
         cp = pred ? { ...pred, health: raw.health, lives: raw.lives, alive: raw.alive, stateFlags: raw.stateFlags, stompedBy: raw.stompedBy, stompingOn: raw.stompingOn, stompShakeProgress: raw.stompShakeProgress } : raw;
-        drawX = cp.x;
-        drawY = cp.y;
+        drawX = Math.round(cp.x);
+        drawY = Math.round(cp.y);
       } else {
         // Remote player: dead reckoning with server correction
         cp = raw;
@@ -1813,7 +1811,7 @@ export class GameScene extends Phaser.Scene {
         const mapW = this.config?.map.width ?? 960;
         const atMapWall = cp.x <= 0 || cp.x + PLAYER_WIDTH >= mapW;
         const wallNudge = (cp.wallSliding && !atMapWall) ? cp.wallDir * 4 : 0;
-        sprite.setPosition(drawX + PLAYER_WIDTH / 2 + wallNudge, drawY + PLAYER_HEIGHT / 2);
+        sprite.setPosition(Math.round(drawX + PLAYER_WIDTH / 2 + wallNudge), Math.round(drawY + PLAYER_HEIGHT / 2));
         sprite.setFlipX(cp.facing === Facing.Left);
         sprite.setVisible(true);
         sprite.setAlpha(invincible ? 0.6 : 1);
@@ -2190,7 +2188,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
     this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
     cam.setZoom(this.currentZoom * DPR);
-    cam.centerOn(this.cameraX, this.cameraY);
+    cam.centerOn(Math.round(this.cameraX), Math.round(this.cameraY));
   }
 
   // ── Audio ──────────────────────────────────────────────────────────────────

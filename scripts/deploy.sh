@@ -43,7 +43,7 @@ fi
 
 if [ "$MODE" = "client" ] || [ "$MODE" = "both" ]; then
   log "Uploading client dist..."
-  scp $SSH_OPTS -r "$PROJECT_ROOT/apps/client/dist/"* "$SERVER:$REMOTE_DIR/apps/client/dist/"
+  scp $SSH_OPTS -r "$PROJECT_ROOT/apps/client/dist/"* "$SERVER:$REMOTE_DIR/services/server/public/"
 fi
 
 # --- Upload WASM binary (built locally by wasm-pack) ---
