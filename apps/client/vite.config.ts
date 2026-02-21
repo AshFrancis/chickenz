@@ -7,4 +7,7 @@ export default defineConfig({
       allow: ["../.."], // allow monorepo root for WASM pkg access
     },
   },
+  build: {
+    target: "esnext", // support top-level await for WASM init
+  },
 });

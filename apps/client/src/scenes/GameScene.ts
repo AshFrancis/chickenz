@@ -738,9 +738,19 @@ export class GameScene extends Phaser.Scene {
     this.roundWins = [0, 0];
     this.roundTransition = false;
 
+    // Clear stale state from previous match so it doesn't flash on screen
+    this.playing = false;
+    this.currState = null;
+    this.prevState = null;
+    this.pendingServerState = null;
+    this.pendingServerButtons = undefined;
+    this.lastServerTick = 0;
+    this.explosions = [];
+    this.gfx.clear();
+    this.gfxOverlay.clear();
+
     // Diamond transition covers screen, THEN swap map at midpoint (fully black)
     // Keep warmupMode alive during grow-in so camera stays stable (P2 is at -9999)
-    this.playing = false;
     this.playTransition(() => {
       this.warmupMode = false;
       this.warmupState = null;
@@ -761,6 +771,9 @@ export class GameScene extends Phaser.Scene {
   startNewRound(seed: number, mapIndex: number, round: number) {
     this.currentRound = round;
     this.roundTransition = false;
+    this.pendingServerState = null;
+    this.pendingServerButtons = undefined;
+    this.lastServerTick = 0;
 
     // Transition covers screen, swap map at midpoint (fully black), then reveal
     this.playTransition(() => {
