@@ -56,6 +56,6 @@ fi
 # --- Restart server ---
 
 log "Restarting server..."
-ssh $SSH_OPTS "$SERVER" "kill \$(lsof -ti:3000) 2>/dev/null || true; sleep 0.5; cd $REMOTE_DIR && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & sleep 2; if lsof -ti:3000 > /dev/null 2>&1; then echo 'SERVER UP'; else echo 'FAILED'; cat /tmp/chickenz-server.log; exit 1; fi"
+ssh $SSH_OPTS "$SERVER" "kill \$(lsof -ti:3000) 2>/dev/null || true; sleep 0.5; cd $REMOTE_DIR && set -a && source .env && set +a && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & sleep 2; if lsof -ti:3000 > /dev/null 2>&1; then echo 'SERVER UP'; else echo 'FAILED'; cat /tmp/chickenz-server.log; exit 1; fi"
 
 log "Deploy complete! http://178.156.244.26:3000"
