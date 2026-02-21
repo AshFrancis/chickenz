@@ -59,6 +59,7 @@ export class GameRoom {
   private mapOrder: number[] = []; // indices into MAP_POOL
   private characterSlots: [number, number] = [0, 1]; // character indices for each player
   private roundTranscripts: { seed: number; mapIndex: number; transcript: object[] }[] = [];
+  private matchOverTick = -1; // tick when match_over first detected (-1 = not yet)
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -284,6 +285,7 @@ export class GameRoom {
     this.accInput = [NULL_INPUT, NULL_INPUT];
     this.inputQueues = [new Map(), new Map()];
     this.transcript = [];
+    this.matchOverTick = -1;
 
     // Start game loop — self-correcting to prevent drift
     this.loopStartTime = performance.now();
@@ -362,7 +364,23 @@ export class GameRoom {
     }
 
     if (this.wasmState.match_over()) {
-      this.endRound(this.wasmState.winner());
+      if (this.matchOverTick < 0) {
+        this.matchOverTick = currentTick;
+        // Send round_end immediately so clients show the banner
+        const winner = this.wasmState.winner();
+        if (winner === 0 || winner === 1) this.roundWins[winner]++;
+        const roundEndMsg = {
+          round: this.currentRound,
+          winner,
+          roundWins: [...this.roundWins] as [number, number],
+        };
+        this.broadcast({ type: "round_end", ...roundEndMsg });
+        this.broadcastSpectators({ type: "spectate_round_end", ...roundEndMsg });
+      }
+      // Keep broadcasting state for 120 extra ticks (2s) so clients see winner movement + bullet travel
+      if (currentTick - this.matchOverTick >= 120) {
+        this.endRound(this.wasmState.winner());
+      }
     }
   }
 
@@ -426,16 +444,7 @@ export class GameRoom {
       ]),
     });
 
-    if (winner === 0 || winner === 1) this.roundWins[winner]++;
-
-    // Send round_end to clients
-    const roundEndMsg = {
-      round: this.currentRound,
-      winner,
-      roundWins: [...this.roundWins] as [number, number],
-    };
-    this.broadcast({ type: "round_end", ...roundEndMsg });
-    this.broadcastSpectators({ type: "spectate_round_end", ...roundEndMsg });
+    // round_end message + roundWins already sent/incremented at matchOverTick detection
 
     // Check if match is won (best of 3 → first to 2)
     if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED) {

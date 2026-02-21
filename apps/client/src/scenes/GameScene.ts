@@ -1667,19 +1667,11 @@ export class GameScene extends Phaser.Scene {
         // Use predicted position for responsiveness, but server-authoritative combat fields
         // (health, lives, deaths) to avoid desync artifacts like "healing" when server disagrees
         const pred = predicted?.players[i];
+        // Use predicted position directly for instant responsiveness (no smoothing)
+        // Server-authoritative combat fields prevent desync artifacts (e.g. "healing")
         cp = pred ? { ...pred, health: raw.health, lives: raw.lives, alive: raw.alive, stateFlags: raw.stateFlags, stompedBy: raw.stompedBy, stompingOn: raw.stompingOn, stompShakeProgress: raw.stompShakeProgress } : raw;
-        const smooth = this.localSmooth;
-        if (!smooth.initialized) { smooth.x = cp.x; smooth.y = cp.y; smooth.initialized = true; }
-        const teleported = Math.abs(smooth.x - cp.x) > 60 || Math.abs(smooth.y - cp.y) > 60;
-        if (teleported) { smooth.x = cp.x; smooth.y = cp.y; }
-        else {
-          const prevSmoothY = smooth.y;
-          smooth.x = smoothLerp(smooth.x, cp.x, 0.85, delta ?? 16.667);
-          smooth.y = smoothLerp(smooth.y, cp.y, 0.95, delta ?? 16.667);
-          if (cp.vy < 0 && smooth.y > prevSmoothY) smooth.y = prevSmoothY;
-        }
-        drawX = smooth.x;
-        drawY = smooth.y;
+        drawX = cp.x;
+        drawY = cp.y;
       } else {
         // Remote player: dead reckoning with server correction
         cp = raw;

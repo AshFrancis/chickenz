@@ -567,8 +567,8 @@ fn apply_input_mut(p: &mut Player, buttons: u8, prev_buttons: u8, aim_x: i8) {
 #[inline(always)]
 fn apply_gravity_mut(p: &mut Player) {
     if p.state_flags & flag::ALIVE == 0 { return; }
-    // Skip gravity for stomp rider/victim
-    if p.stomping_on >= 0 || p.stomped_by >= 0 { return; }
+    // Skip gravity for stomp rider (rider is locked to victim in stomp processing)
+    if p.stomping_on >= 0 { return; }
     let max_fall = if p.wall_sliding { WALL_SLIDE_SPEED } else { MAX_FALL_SPEED };
     p.vy = (p.vy + GRAVITY).min(max_fall);
 }
@@ -576,8 +576,8 @@ fn apply_gravity_mut(p: &mut Player) {
 #[inline(always)]
 fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
     if p.state_flags & flag::ALIVE == 0 { return; }
-    // Skip movement for stomp rider/victim
-    if p.stomping_on >= 0 || p.stomped_by >= 0 { return; }
+    // Skip movement for stomp rider (rider is locked to victim in stomp processing)
+    if p.stomping_on >= 0 { return; }
 
     p.x += p.vx;
     p.y += p.vy;
@@ -994,6 +994,28 @@ fn clear_stomp_fields(p: &mut Player) {
     p.stomp_auto_run_timer = 0;
 }
 
+/// Move projectiles without damage or hit checks (cosmetic only, for match_over / death linger).
+fn advance_projectiles_cosmetic(state: &mut State, map: &Map) {
+    let mut write = 0usize;
+    for read in 0..state.proj_count as usize {
+        state.projectiles[read].x += state.projectiles[read].vx;
+        state.projectiles[read].y += state.projectiles[read].vy;
+        state.projectiles[read].lifetime -= 1;
+
+        let expired = state.projectiles[read].lifetime <= 0;
+        let oob = is_out_of_bounds(&state.projectiles[read], map);
+        let solid = hits_solid(&state.projectiles[read], map);
+
+        if !(expired || oob || solid) {
+            if write != read {
+                state.projectiles[write] = state.projectiles[read];
+            }
+            write += 1;
+        }
+    }
+    state.proj_count = write as u8;
+}
+
 /// Advance game state by one tick, mutating in place (zero copies of State).
 pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     if state.match_over {
@@ -1007,6 +1029,8 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                 move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
             }
         }
+        // Keep projectiles moving (don't freeze mid-air)
+        advance_projectiles_cosmetic(state, map);
         state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;
     }
@@ -1028,6 +1052,8 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                 move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
             }
         }
+        // Keep projectiles moving (don't freeze mid-air)
+        advance_projectiles_cosmetic(state, map);
         state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;
     }
