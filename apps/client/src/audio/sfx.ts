@@ -31,7 +31,7 @@ function hit(c: AudioContext, vol: number) {
   const src = c.createBufferSource();
   src.buffer = buf;
   const gain = c.createGain();
-  gain.gain.setValueAtTime(vol * 0.7, c.currentTime);
+  gain.gain.setValueAtTime(vol * 0.35, c.currentTime);
   gain.gain.linearRampToValueAtTime(0, c.currentTime + 0.08);
   src.connect(gain).connect(c.destination);
   src.start();
@@ -40,7 +40,7 @@ function hit(c: AudioContext, vol: number) {
   const g2 = c.createGain();
   osc.type = "sine";
   osc.frequency.setValueAtTime(200, c.currentTime);
-  g2.gain.setValueAtTime(vol * 0.6, c.currentTime);
+  g2.gain.setValueAtTime(vol * 0.3, c.currentTime);
   g2.gain.linearRampToValueAtTime(0, c.currentTime + 0.08);
   osc.connect(g2).connect(c.destination);
   osc.start();

@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
+import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
 import { startMatchOnChain, settleMatchOnChain } from "./stellar";
 import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
@@ -10,15 +11,19 @@ const PORT = Number(process.env.PORT) || 3000;
 // ── State ──────────────────────────────────────────────────
 
 const rooms = new Map<string, GameRoom>();
+const tournaments = new Map<string, TournamentRoom>();
 const lobbySockets = new Set<ServerWebSocket<SocketData>>();
 
 // ── Match History ──────────────────────────────────────────
 
 interface MatchRecord {
   id: string;
+  sessionId: number;
   roomName: string;
   player1: string;
   player2: string;
+  wallet1: string;
+  wallet2: string;
   winner: number;
   scores: [number, number];
   timestamp: number;
@@ -65,6 +70,16 @@ function sendLobby(ws: ServerWebSocket<SocketData>) {
   }
 }
 
+/** Auto-settle a match on-chain after proof is verified. */
+function autoSettleMatch(record: MatchRecord, artifacts: ProofArtifacts) {
+  if (!process.env.STELLAR_ADMIN_SECRET) return;
+  const sealBytes = new Uint8Array(Buffer.from(artifacts.seal, "hex"));
+  const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
+  settleMatchOnChain(record.sessionId, sealBytes, journalBytes)
+    .then(() => { record.proofStatus = "settled"; })
+    .catch((err) => { console.error("Auto-settle failed:", err); });
+}
+
 function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) {
   const room = rooms.get(roomId);
 
@@ -85,9 +100,12 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
   if (sockets.length === 2) {
     const record: MatchRecord = {
       id: `match-${nextMatchId++}`,
+      sessionId: Date.now() >>> 0,
       roomName,
       player1: sockets[0]?.data.username || "Player 1",
       player2: sockets[1]?.data.username || "Player 2",
+      wallet1: sockets[0]?.data.walletAddress || "",
+      wallet2: sockets[1]?.data.walletAddress || "",
       winner,
       scores,
       timestamp: Date.now(),
@@ -100,6 +118,14 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       matchHistory.pop();
     }
 
+    // Start match on-chain for ranked matches with wallets
+    if (mode === "ranked" && record.wallet1 && record.wallet2 && process.env.STELLAR_ADMIN_SECRET && room) {
+      const seedBytes = new Uint8Array(4);
+      new DataView(seedBytes.buffer).setUint32(0, room.currentSeed, true);
+      const seedCommit = new Uint8Array(new Bun.CryptoHasher("sha256").update(seedBytes).digest());
+      startMatchOnChain(record.sessionId, record.wallet1, record.wallet2, seedCommit).catch(() => {});
+    }
+
     // Trigger proving for ranked matches
     if (mode === "ranked" && room) {
       record.proofStatus = "proving";
@@ -108,15 +134,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
         if (artifacts) {
           record.proofArtifacts = artifacts;
           record.proofStatus = "verified";
-          // Auto-settle if admin key is configured
-          if (process.env.STELLAR_ADMIN_SECRET) {
-            const sealBytes = new Uint8Array(Buffer.from(artifacts.seal, "hex"));
-            const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
-            const numericId = parseInt(record.id.replace("match-", ""), 10);
-            settleMatchOnChain(numericId, sealBytes, journalBytes)
-              .then(() => { record.proofStatus = "settled"; })
-              .catch((err) => { console.error("Auto-settle failed:", err); });
-          }
+          autoSettleMatch(record, artifacts);
         } else {
           record.proofStatus = "pending";
         }
@@ -209,7 +227,7 @@ const server = Bun.serve<SocketData>({
     // WebSocket upgrade
     if (url.pathname === "/ws") {
       const upgraded = server.upgrade(req, {
-        data: { roomId: null, playerId: -1, username: "", walletAddress: "", character: 0 },
+        data: { roomId: null, playerId: -1, username: "", walletAddress: "", character: 0, tournamentId: null, msgCount: 0, msgResetTime: Date.now() },
       });
       if (!upgraded) {
         return new Response("WebSocket upgrade failed", {
@@ -236,7 +254,7 @@ const server = Bun.serve<SocketData>({
       if (!room.isEnded()) {
         return Response.json({ error: "Match still in progress" }, { status: 400, headers: corsHeaders });
       }
-      return Response.json(room.getTranscript(), { headers: corsHeaders });
+      return Response.json(room.getFullTranscript(), { headers: corsHeaders });
     }
 
     // Leaderboard endpoint
@@ -269,30 +287,18 @@ const server = Bun.serve<SocketData>({
       }
       return Response.json(record.proofArtifacts, { headers: corsHeaders });
     }
-    if (req.method === "POST") {
-      const proveMatch = url.pathname.match(/^\/api\/matches\/(.+)\/prove$/);
-      if (proveMatch) {
-        const matchId = proveMatch[1]!;
-        const record = matchHistory.find((m) => m.id === matchId);
-        if (!record) {
-          return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
+    // ── Worker API (prover worker polls these) ──────────────
+
+    // Worker API authentication
+    if (url.pathname.startsWith("/api/worker/")) {
+      const workerKey = process.env.WORKER_API_KEY;
+      if (workerKey) {
+        const auth = req.headers.get("Authorization");
+        if (auth !== `Bearer ${workerKey}`) {
+          return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
         }
-        record.proofStatus = "proving";
-        return Response.json({ id: record.id, proofStatus: record.proofStatus }, { headers: corsHeaders });
-      }
-      const settleMatch = url.pathname.match(/^\/api\/matches\/(.+)\/settle$/);
-      if (settleMatch) {
-        const matchId = settleMatch[1]!;
-        const record = matchHistory.find((m) => m.id === matchId);
-        if (!record) {
-          return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
-        }
-        record.proofStatus = "settled";
-        return Response.json({ id: record.id, proofStatus: record.proofStatus }, { headers: corsHeaders });
       }
     }
-
-    // ── Worker API (prover worker polls these) ──────────────
 
     // Worker polls this — also serves as heartbeat
     if (url.pathname === "/api/worker/poll") {
@@ -319,25 +325,16 @@ const server = Bun.serve<SocketData>({
       const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
       try {
         const body = await req.json() as { seal: string; journal: string; imageId: string };
+        // 1E: Validate proof artifacts are valid hex with correct lengths
+        if (typeof body.seal !== "string" || typeof body.journal !== "string" ||
+            !/^[0-9a-fA-F]{520}$/.test(body.seal) || !/^[0-9a-fA-F]{152}$/.test(body.journal)) {
+          return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
+        }
         const job = submitJobResult(matchId, body);
         if (!job) {
           return Response.json({ error: "Job not found" }, { status: 404, headers: corsHeaders });
         }
-        // Update match record
-        const record = matchHistory.find((m) => m.id === matchId);
-        if (record) {
-          record.proofArtifacts = body;
-          record.proofStatus = "verified";
-          // Auto-settle if admin key is configured
-          if (process.env.STELLAR_ADMIN_SECRET) {
-            const sealBytes = new Uint8Array(Buffer.from(body.seal, "hex"));
-            const journalBytes = new Uint8Array(Buffer.from(body.journal, "hex"));
-            const numericId = parseInt(record.id.replace("match-", ""), 10);
-            settleMatchOnChain(numericId, sealBytes, journalBytes)
-              .then(() => { record.proofStatus = "settled"; })
-              .catch((err) => { console.error("Auto-settle failed:", err); });
-          }
-        }
+        // The onResult callback on the job handles match record update + settlement
         return Response.json({ ok: true }, { headers: corsHeaders });
       } catch {
         return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
@@ -385,6 +382,14 @@ const server = Bun.serve<SocketData>({
     },
 
     message(ws: ServerWebSocket<SocketData>, message: string | Buffer) {
+      // Rate limiting: 180 msgs/sec
+      const now = Date.now();
+      if (now - ws.data.msgResetTime > 1000) {
+        ws.data.msgCount = 0;
+        ws.data.msgResetTime = now;
+      }
+      if (++ws.data.msgCount > 180) return;
+
       let msg: ClientMessage;
       try {
         msg = JSON.parse(typeof message === "string" ? message : message.toString());
@@ -413,7 +418,7 @@ const server = Bun.serve<SocketData>({
       // ── Set wallet address ──────────────────────────────────
       if (msg.type === "set_wallet") {
         const addr = ((msg as any).address ?? "").trim();
-        if (addr && addr.length > 0) {
+        if (addr && /^G[A-Z2-7]{55}$/.test(addr)) {
           ws.data.walletAddress = addr;
         }
         return;
@@ -469,7 +474,7 @@ const server = Bun.serve<SocketData>({
 
       // ── Join by code ───────────────────────────────────────
       if (msg.type === "join_code") {
-        if (ws.data.roomId) {
+        if (ws.data.roomId || ws.data.tournamentId) {
           ws.send(JSON.stringify({ type: "error", message: "Already in a room" }));
           return;
         }
@@ -482,6 +487,23 @@ const server = Bun.serve<SocketData>({
 
         const room = findRoomByJoinCode(code);
         if (!room) {
+          // Fallback: check tournament codes
+          let tournament: TournamentRoom | undefined;
+          for (const t of tournaments.values()) {
+            if (t.joinCode === code && t.status === "waiting") {
+              tournament = t;
+              break;
+            }
+          }
+          if (tournament) {
+            if (!tournament.addPlayer(ws)) {
+              ws.send(JSON.stringify({ type: "error", message: "Tournament is full" }));
+              return;
+            }
+            ws.data.tournamentId = tournament.id;
+            lobbySockets.delete(ws);
+            return;
+          }
           ws.send(JSON.stringify({ type: "error", message: "No room found with that code" }));
           return;
         }
@@ -524,11 +546,75 @@ const server = Bun.serve<SocketData>({
         return;
       }
 
+      // ── Create tournament ──────────────────────────────────
+      if (msg.type === "create_tournament") {
+        if (ws.data.roomId || ws.data.tournamentId) {
+          ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
+          return;
+        }
+        const tournamentId = crypto.randomUUID().slice(0, 8);
+        const tournament = new TournamentRoom(tournamentId, ws);
+        ws.data.tournamentId = tournamentId;
+        tournament.onEnded = (sockets) => {
+          for (const s of sockets) {
+            s.data.tournamentId = null;
+            lobbySockets.add(s);
+            sendLobby(s);
+          }
+          tournaments.delete(tournamentId);
+          broadcastLobby();
+        };
+        tournaments.set(tournamentId, tournament);
+        lobbySockets.delete(ws);
+        return;
+      }
+
+      // ── Join tournament by code ─────────────────────────────
+      if (msg.type === "join_tournament_code") {
+        if (ws.data.roomId || ws.data.tournamentId) {
+          ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
+          return;
+        }
+        const code = ((msg as any).code ?? "").trim().toUpperCase();
+        if (code.length !== 5) {
+          ws.send(JSON.stringify({ type: "error", message: "Invalid join code" }));
+          return;
+        }
+        let found: TournamentRoom | undefined;
+        for (const t of tournaments.values()) {
+          if (t.joinCode === code && t.status === "waiting") {
+            found = t;
+            break;
+          }
+        }
+        if (!found) {
+          ws.send(JSON.stringify({ type: "error", message: "No tournament found with that code" }));
+          return;
+        }
+        if (!found.addPlayer(ws)) {
+          ws.send(JSON.stringify({ type: "error", message: "Tournament is full" }));
+          return;
+        }
+        ws.data.tournamentId = found.id;
+        lobbySockets.delete(ws);
+        return;
+      }
+
       // ── Game input ───────────────────────────────────────
       if (msg.type === "input") {
+        // Tournament input: route through tournament's active game room
+        const tournamentId = ws.data.tournamentId;
+        if (tournamentId) {
+          const tournament = tournaments.get(tournamentId);
+          if (tournament) {
+            tournament.handleInput(ws, msg as any);
+          }
+          return;
+        }
         const roomId = ws.data.roomId;
         if (!roomId) return;
-        if (typeof msg.buttons !== "number" || !Number.isFinite(msg.aimX) || !Number.isFinite(msg.aimY)) return;
+        if (typeof msg.buttons !== "number" || !Number.isInteger(msg.buttons) || msg.buttons < 0 || msg.buttons > 0x1F) return;
+        if (!Number.isFinite(msg.aimX) || !Number.isFinite(msg.aimY)) return;
         const room = rooms.get(roomId);
         if (!room) return;
         room.handleInput(ws.data.playerId, msg);
@@ -538,6 +624,19 @@ const server = Bun.serve<SocketData>({
 
     close(ws: ServerWebSocket<SocketData>) {
       lobbySockets.delete(ws);
+
+      // Tournament disconnect
+      const tournamentId = ws.data.tournamentId;
+      if (tournamentId) {
+        const tournament = tournaments.get(tournamentId);
+        if (tournament) {
+          tournament.handleDisconnect(ws);
+          if (tournament.playerCount === 0) {
+            tournaments.delete(tournamentId);
+          }
+        }
+        ws.data.tournamentId = null;
+      }
 
       const roomId = ws.data.roomId;
       if (roomId) {

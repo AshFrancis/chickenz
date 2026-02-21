@@ -1,23 +1,16 @@
 import type { ServerWebSocket } from "bun";
 import {
-  createInitialState,
-  step,
   MAP_POOL,
   TICK_RATE,
-  INITIAL_LIVES,
-  MATCH_DURATION_TICKS,
-  SUDDEN_DEATH_START_TICK,
   NULL_INPUT,
 } from "@chickenz/sim";
 import type {
-  GameState,
   GameMap,
-  MatchConfig,
-  InputMap,
   PlayerInput,
 } from "@chickenz/sim";
 import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol";
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
+import { WasmState } from "./wasm";
 
 export interface SocketData {
   roomId: string | null;
@@ -25,11 +18,14 @@ export interface SocketData {
   username: string;
   walletAddress: string;
   character: number; // chosen character index (0-3)
+  tournamentId: string | null;
+  msgCount: number;
+  msgResetTime: number;
 }
 
 type GameSocket = ServerWebSocket<SocketData>;
 
-const STATE_BROADCAST_INTERVAL = 1; // send state every tick (60Hz)
+const STATE_BROADCAST_INTERVAL = 2; // send state every 2 ticks (30Hz)
 const TOTAL_ROUNDS = 3;
 const WINS_NEEDED = 2;
 const ROUND_TRANSITION_MS = 1500; // 1.5s pause between rounds
@@ -41,9 +37,10 @@ export class GameRoom {
   readonly isPrivate: boolean;
   readonly mode: GameMode;
   private sockets: GameSocket[] = [];
-  private state!: GameState;
-  private config!: MatchConfig;
-  private prevInputs: InputMap = new Map();
+  spectatorSockets: GameSocket[] = [];
+  private wasmState!: WasmState;
+  private currentMap!: GameMap;
+  private lastAppliedButtons: [number, number] = [0, 0];
   private rawInput: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
   private accInput: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
   private inputQueues: [Map<number, PlayerInput>, Map<number, PlayerInput>] = [new Map(), new Map()];
@@ -60,6 +57,7 @@ export class GameRoom {
   private roundWins: [number, number] = [0, 0];
   private mapOrder: number[] = []; // indices into MAP_POOL
   private characterSlots: [number, number] = [0, 1]; // character indices for each player
+  private roundTranscripts: { seed: number; mapIndex: number; transcript: object[] }[] = [];
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -88,6 +86,21 @@ export class GameRoom {
     return this.sockets.length;
   }
 
+  /** Current seed used by the game sim (set after startMatch/startRound). */
+  get currentSeed() {
+    return this.seed;
+  }
+
+  /** Map index used for the current round. */
+  get currentMapIndex() {
+    return this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
+  }
+
+  /** Character slots assigned to each player. */
+  get characters(): [number, number] {
+    return this.characterSlots;
+  }
+
   /** Second player joins — start the match. */
   addPlayer(ws: GameSocket) {
     if (this._status !== "waiting") return false;
@@ -109,7 +122,8 @@ export class GameRoom {
       this.inputChanges[playerId]++;
       this.lastButtonState[playerId] = incoming.buttons;
     }
-    if (msg.tick !== undefined && msg.tick > this.state.tick && msg.tick < this.state.tick + 120) {
+    const currentTick = this.wasmState.tick();
+    if (msg.tick !== undefined && msg.tick > currentTick && msg.tick < currentTick + 120) {
       // Future tick — queue for exact tick alignment (prevents phantom edges)
       // Cap at 120 ticks ahead (~2s) to prevent memory abuse
       if (this.inputQueues[playerId].size < 120) {
@@ -161,15 +175,39 @@ export class GameRoom {
     return this._status === "waiting";
   }
 
-  /** Return transcript in ProverInput format. */
+  /** Convert TS map (camelCase) to Rust ProverInput format (snake_case). */
+  private static toProverMap(map: GameMap) {
+    return {
+      width: map.width,
+      height: map.height,
+      platforms: map.platforms,
+      spawn_points: map.spawnPoints,
+      weapon_spawn_points: map.weaponSpawnPoints,
+    };
+  }
+
+  /** Return transcript for proving (last round only). */
   getTranscript() {
     return {
-      config: { seed: this.seed },
+      config: {
+        seed: this.seed,
+        map: GameRoom.toProverMap(this.currentMap),
+        player_count: 2,
+        tick_rate: TICK_RATE,
+        initial_lives: 1,
+        match_duration_ticks: 1800,
+        sudden_death_start_tick: 1200,
+      },
       transcript: this.transcript.map(([p0, p1]) => [
         { buttons: p0.buttons, aim_x: p0.aimX, aim_y: p0.aimY },
         { buttons: p1.buttons, aim_x: p1.aimX, aim_y: p1.aimY },
       ]),
     };
+  }
+
+  /** Return all rounds' transcripts for replay. */
+  getFullTranscript() {
+    return { rounds: this.roundTranscripts };
   }
 
   // ── Private ──────────────────────────────────────────────
@@ -233,19 +271,14 @@ export class GameRoom {
     this.seed = Date.now() >>> 0;
     const mapIndex = this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0]!;
+    this.currentMap = map;
 
-    this.config = {
-      seed: this.seed,
-      map,
-      playerCount: 2,
-      tickRate: TICK_RATE,
-      initialLives: INITIAL_LIVES,
-      matchDurationTicks: MATCH_DURATION_TICKS,
-      suddenDeathStartTick: SUDDEN_DEATH_START_TICK,
-    };
-
-    this.state = createInitialState(this.config);
-    this.prevInputs = new Map();
+    // Free previous WASM state if any
+    if (this.wasmState) {
+      try { this.wasmState.free(); } catch { /* already freed */ }
+    }
+    this.wasmState = new WasmState(this.seed, JSON.stringify(map));
+    this.lastAppliedButtons = [0, 0];
     this.rawInput = [NULL_INPUT, NULL_INPUT];
     this.accInput = [NULL_INPUT, NULL_INPUT];
     this.inputQueues = [new Map(), new Map()];
@@ -262,21 +295,16 @@ export class GameRoom {
   private tick() {
     if (this._status !== "playing") return;
 
-    const currentTick = this.state.tick + 1;
+    const nextTick = this.wasmState.tick() + 1;
 
     // Apply tick-tagged inputs — aligns edge detection with client prediction
     for (const id of [0, 1] as const) {
-      const queued = this.inputQueues[id].get(currentTick);
+      const queued = this.inputQueues[id].get(nextTick);
       if (queued !== undefined) {
         this.accInput[id] = queued;
         this.rawInput[id] = queued;
       }
     }
-
-    const inputs: InputMap = new Map([
-      [0, this.accInput[0]],
-      [1, this.accInput[1]],
-    ]);
 
     // Record for transcript (strip Taunt bit — cosmetic only, not part of ZK proof)
     const TAUNT_MASK = ~16;
@@ -285,8 +313,14 @@ export class GameRoom {
       { ...this.accInput[1], buttons: this.accInput[1].buttons & TAUNT_MASK },
     ]);
 
-    this.state = step(this.state, inputs, this.prevInputs, this.config);
-    this.prevInputs = inputs;
+    // Track last buttons for broadcast (WASM handles prev_buttons internally)
+    this.lastAppliedButtons = [this.accInput[0].buttons, this.accInput[1].buttons];
+
+    // Step WASM sim
+    this.wasmState.step(
+      this.accInput[0].buttons, this.accInput[0].aimX, this.accInput[0].aimY,
+      this.accInput[1].buttons, this.accInput[1].aimX, this.accInput[1].aimY,
+    );
 
     // Reset accumulated to last raw input so held keys persist
     this.accInput[0] = { ...this.rawInput[0] };
@@ -295,82 +329,39 @@ export class GameRoom {
     // Prune consumed/stale queue entries
     for (const id of [0, 1] as const) {
       for (const [tick] of this.inputQueues[id]) {
-        if (tick <= currentTick) this.inputQueues[id].delete(tick);
+        if (tick <= nextTick) this.inputQueues[id].delete(tick);
       }
     }
 
-    // Broadcast state at 20Hz
-    if (this.state.tick % STATE_BROADCAST_INTERVAL === 0) {
+    // Broadcast state
+    if (this.wasmState.tick() % STATE_BROADCAST_INTERVAL === 0) {
       this.broadcastState();
     }
 
-    if (this.state.matchOver) {
-      this.endRound(this.state.winner);
+    if (this.wasmState.match_over()) {
+      this.endRound(this.wasmState.winner());
     }
   }
 
   private broadcastState() {
-    // Broadcast authoritative sim state — positions come from the server sim
-    // (smooth, consistent 30Hz updates) rather than relayed client reports
-    // which arrive intermittently and cause interpolation stutter.
+    // Export WASM state (fp→f64, all fields camelCase)
+    const exported = this.wasmState.export_state() as any;
+
     const msg: StateMessage = {
       type: "state",
-      tick: this.state.tick,
-      lastButtons: [
-        this.prevInputs.get(0)?.buttons ?? 0,
-        this.prevInputs.get(1)?.buttons ?? 0,
-      ],
-      players: this.state.players.map((p) => ({
-        id: p.id,
-        x: p.x,
-        y: p.y,
-        vx: p.vx,
-        vy: p.vy,
-        facing: p.facing as number,
-        health: p.health,
-        lives: p.lives,
-        shootCooldown: p.shootCooldown,
-        grounded: p.grounded,
-        stateFlags: p.stateFlags,
-        respawnTimer: p.respawnTimer,
-        weapon: p.weapon,
-        ammo: p.ammo,
-        jumpsLeft: p.jumpsLeft,
-        wallSliding: p.wallSliding,
-        wallDir: p.wallDir,
-        stompedBy: p.stompedBy,
-        stompingOn: p.stompingOn,
-        stompShakeProgress: p.stompShakeProgress,
-        stompCooldown: p.stompCooldown,
-      })),
-      projectiles: this.state.projectiles.map((proj) => ({
-        id: proj.id,
-        ownerId: proj.ownerId,
-        x: proj.x,
-        y: proj.y,
-        vx: proj.vx,
-        vy: proj.vy,
-        lifetime: proj.lifetime,
-        weapon: proj.weapon,
-      })),
-      weaponPickups: this.state.weaponPickups.map((wp) => ({
-        id: wp.id,
-        x: wp.x,
-        y: wp.y,
-        weapon: wp.weapon,
-        respawnTimer: wp.respawnTimer,
-      })),
-      scores: [
-        this.state.score.get(0) ?? 0,
-        this.state.score.get(1) ?? 0,
-      ],
-      arenaLeft: this.state.arenaLeft,
-      arenaRight: this.state.arenaRight,
-      matchOver: this.state.matchOver,
-      winner: this.state.winner,
-      deathLingerTimer: this.state.deathLingerTimer,
-      rngState: this.state.rngState,
-      nextProjectileId: this.state.nextProjectileId,
+      tick: exported.tick,
+      lastButtons: this.lastAppliedButtons,
+      players: exported.players,
+      projectiles: exported.projectiles,
+      weaponPickups: exported.weaponPickups,
+      scores: exported.scores,
+      arenaLeft: exported.arenaLeft,
+      arenaRight: exported.arenaRight,
+      matchOver: exported.matchOver,
+      winner: exported.winner,
+      deathLingerTimer: exported.deathLingerTimer,
+      rngState: exported.rngState,
+      nextProjectileId: exported.nextProjectileId,
     };
 
     const json = JSON.stringify(msg);
@@ -381,6 +372,18 @@ export class GameRoom {
         // socket already closed
       }
     }
+
+    // Relay to spectators with different message type
+    if (this.spectatorSockets.length > 0) {
+      const spectateJson = JSON.stringify({ ...msg, type: "spectate_state" });
+      for (const ws of this.spectatorSockets) {
+        try {
+          ws.send(spectateJson);
+        } catch {
+          // socket already closed
+        }
+      }
+    }
   }
 
   private endRound(winner: number) {
@@ -389,15 +392,27 @@ export class GameRoom {
       this.timer = null;
     }
 
+    // Save this round's transcript before it resets
+    const mapIndex = this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
+    this.roundTranscripts.push({
+      seed: this.seed,
+      mapIndex,
+      transcript: this.transcript.map(([p0, p1]) => [
+        { buttons: p0.buttons, aim_x: p0.aimX, aim_y: p0.aimY },
+        { buttons: p1.buttons, aim_x: p1.aimX, aim_y: p1.aimY },
+      ]),
+    });
+
     if (winner === 0 || winner === 1) this.roundWins[winner]++;
 
     // Send round_end to clients
-    this.broadcast({
-      type: "round_end",
+    const roundEndMsg = {
       round: this.currentRound,
       winner,
       roundWins: [...this.roundWins] as [number, number],
-    });
+    };
+    this.broadcast({ type: "round_end", ...roundEndMsg });
+    this.broadcastSpectators({ type: "spectate_round_end", ...roundEndMsg });
 
     // Check if match is won (best of 3 → first to 2)
     if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED) {
@@ -410,12 +425,13 @@ export class GameRoom {
       setTimeout(() => {
         if (this._status !== "playing") return;
         this.seed = Date.now() >>> 0;
-        this.broadcast({
-          type: "round_start",
+        const roundStartMsg = {
           round: this.currentRound,
           seed: this.seed,
           mapIndex: nextMapIndex,
-        });
+        };
+        this.broadcast({ type: "round_start", ...roundStartMsg });
+        this.broadcastSpectators({ type: "spectate_round_start", ...roundStartMsg });
         this.startRound();
       }, ROUND_TRANSITION_MS);
     }
@@ -430,10 +446,12 @@ export class GameRoom {
       this.timer = null;
     }
 
-    const scores: [number, number] = [
-      this.state?.score.get(0) ?? 0,
-      this.state?.score.get(1) ?? 0,
-    ];
+    // Free WASM state
+    if (this.wasmState) {
+      try { this.wasmState.free(); } catch { /* already freed */ }
+    }
+
+    const scores: [number, number] = [...this.roundWins] as [number, number];
 
     const endMsg: EndedMessage = {
       type: "ended",
@@ -463,6 +481,18 @@ export class GameRoom {
   private broadcast(msg: object) {
     const json = JSON.stringify(msg);
     for (const ws of this.sockets) {
+      try {
+        ws.send(json);
+      } catch {
+        // socket already closed
+      }
+    }
+  }
+
+  private broadcastSpectators(msg: object) {
+    if (this.spectatorSockets.length === 0) return;
+    const json = JSON.stringify(msg);
+    for (const ws of this.spectatorSockets) {
       try {
         ws.send(json);
       } catch {

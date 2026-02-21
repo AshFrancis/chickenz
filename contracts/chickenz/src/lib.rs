@@ -63,6 +63,7 @@ pub enum Error {
     MatchAlreadyExists = 6,
     InvalidJournal = 7,
     SeedMismatch = 8,
+    InvalidWinner = 9,
 }
 
 // ── Journal layout ───────────────────────────────────────────────────────────
@@ -175,6 +176,9 @@ impl ChickenzContract {
         env.storage()
             .temporary()
             .extend_ttl(&key, MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
 
         Ok(())
     }
@@ -207,6 +211,11 @@ impl ChickenzContract {
             return Err(Error::InvalidJournal);
         }
 
+        // Extend instance TTL to prevent expiry
+        env.storage()
+            .instance()
+            .extend_ttl(MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
+
         // 3. Compute journal digest = SHA-256(journal)
         let journal_digest: Hash<32> = env.crypto().sha256(&journal);
 
@@ -232,6 +241,9 @@ impl ChickenzContract {
 
         // 6. Decode journal: extract winner and seed_commit
         let winner = decode_winner(&journal);
+        if winner != 0 && winner != 1 {
+            return Err(Error::InvalidWinner);
+        }
         let proof_seed_commit = extract_seed_commit(&env, &journal);
 
         // 7. Verify seed_commit matches what was registered at match start

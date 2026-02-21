@@ -142,7 +142,9 @@ async function callContract(
 
   // Wait for confirmation
   let response = await server.getTransaction(sendResult.hash);
+  let retries = 0;
   while (response.status === "NOT_FOUND") {
+    if (++retries > 60) throw new Error("Transaction polling timeout");
     await new Promise((r) => setTimeout(r, 1000));
     response = await server.getTransaction(sendResult.hash);
   }

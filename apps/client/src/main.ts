@@ -2,8 +2,9 @@ import Phaser from "phaser";
 import { gameConfig, recalcDimensions } from "./game";
 import { GameScene } from "./scenes/GameScene";
 import { friendlyKeyName, type KeyBindings } from "./input/InputManager";
+import { initChickenzWasm } from "./wasm";
 
-import { NetworkManager, type RoomInfo, type GameMode } from "./net/NetworkManager";
+import { NetworkManager, type RoomInfo, type GameMode, type TournamentBracket } from "./net/NetworkManager";
 
 const NUM_CHARACTERS = 4;
 /** Pick a random character index (0-3). */
@@ -18,6 +19,8 @@ interface MatchRecord {
   roomName: string;
   player1: string;
   player2: string;
+  wallet1?: string;
+  wallet2?: string;
   winner: number;
   scores: [number, number];
   timestamp: number;
@@ -72,6 +75,22 @@ const matchHistoryList = document.getElementById("match-history-list") as HTMLDi
 const leaderboardContent = document.getElementById("leaderboard-content") as HTMLDivElement;
 const modeCasualBtn = document.getElementById("btn-mode-casual") as HTMLButtonElement;
 const modeRankedBtn = document.getElementById("btn-mode-ranked") as HTMLButtonElement;
+const createTournamentBtn = document.getElementById("btn-create-tournament") as HTMLButtonElement;
+
+// Tournament DOM elements
+const tournamentOverlay = document.getElementById("tournament-overlay") as HTMLDivElement;
+const tournamentCode = document.getElementById("tournament-code") as HTMLDivElement;
+const tournamentPlayers = document.getElementById("tournament-players") as HTMLDivElement;
+const tournamentStatus = document.getElementById("tournament-status") as HTMLDivElement;
+const bracketOverlay = document.getElementById("bracket-overlay") as HTMLDivElement;
+const bracketGrid = document.getElementById("bracket-grid") as HTMLDivElement;
+const spectateOverlay = document.getElementById("spectate-overlay") as HTMLDivElement;
+const spectateLabel = document.getElementById("spectate-label") as HTMLSpanElement;
+const tournamentResults = document.getElementById("tournament-results") as HTMLDivElement;
+const standingsList = document.getElementById("standings-list") as HTMLDivElement;
+
+// ── WASM init ─────────────────────────────────────────────────────────────────
+await initChickenzWasm();
 
 // ── Phaser ─────────────────────────────────────────────────────────────────────
 
@@ -103,6 +122,8 @@ let currentUsername = "";
 let currentMode: GameMode = "casual";
 let lastMatchMode: GameMode = "casual";
 let proofPollTimer: ReturnType<typeof setInterval> | null = null;
+let currentTournamentId: string | null = null;
+let tournamentSpectating = false;
 
 // Auto-detect server: same host in production, localhost in dev
 const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -114,65 +135,116 @@ const DEFAULT_SERVER = location.port === "5173" || location.port === "5174"
 
 const isCasual = new URLSearchParams(location.search).get("mode") === "casual";
 
-// Auto-reconnect: if saved username exists, skip gate
-{
-  const savedName = localStorage.getItem("chickenz-username");
-  if (savedName) {
-    currentUsername = savedName;
-    topBarUsername.textContent = savedName;
-    gateOverlay.classList.add("hidden");
-    connectToServer(DEFAULT_SERVER);
-    // Deferred BGM start: Chrome blocks audio until first user interaction.
-    // Wait for a click/keypress to satisfy autoplay policy, then start BGM.
-    const startBGMOnce = () => {
-      window.removeEventListener("click", startBGMOnce);
-      window.removeEventListener("keydown", startBGMOnce);
-      const scene = getGameScene();
-      if (scene) {
-        applyAudioSettings(scene);
-        scene.startBGM();
-      }
-    };
-    window.addEventListener("click", startBGMOnce, { once: false });
-    window.addEventListener("keydown", startBGMOnce, { once: false });
-  } else if (isCasual) {
-    // Casual mode: skip wallet, show username input directly
-    gateWalletSection.style.display = "none";
-    gateStep2.classList.add("visible");
-    gateUsernameInput.focus();
-  } else {
-    // Normal mode: show wallet connect button, step 2 hidden until connected
-    const walletGateBtn = document.createElement("button");
-    walletGateBtn.className = "btn btn-primary";
-    walletGateBtn.textContent = "Connect Wallet";
-    walletGateBtn.style.marginBottom = "12px";
-    gateWalletSection.appendChild(walletGateBtn);
+// Per-wallet username storage
+function getWalletName(addr: string): string | null {
+  try {
+    const map = JSON.parse(localStorage.getItem("chickenz-wallet-names") || "{}");
+    return map[addr] || null;
+  } catch {
+    return null;
+  }
+}
 
-    walletGateBtn.addEventListener("click", async () => {
-      try {
-        await connectWallet();
-        const addr = getConnectedAddress();
-        if (addr) {
+function setWalletName(addr: string, name: string) {
+  try {
+    const map = JSON.parse(localStorage.getItem("chickenz-wallet-names") || "{}");
+    map[addr] = name;
+    localStorage.setItem("chickenz-wallet-names", JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+
+// ── Gate flow: wallet required unless ?mode=casual ────────────────────────────
+
+function deferBGMStart() {
+  const startBGMOnce = () => {
+    window.removeEventListener("click", startBGMOnce);
+    window.removeEventListener("keydown", startBGMOnce);
+    const scene = getGameScene();
+    if (scene) {
+      applyAudioSettings(scene);
+      scene.startBGM();
+    }
+  };
+  window.addEventListener("click", startBGMOnce, { once: false });
+  window.addEventListener("keydown", startBGMOnce, { once: false });
+}
+
+function autoSkipGate(name: string) {
+  currentUsername = name;
+  topBarUsername.textContent = name;
+  gateOverlay.classList.add("hidden");
+  connectToServer(DEFAULT_SERVER);
+  deferBGMStart();
+}
+
+function showWalletConnectGate() {
+  const walletGateBtn = document.createElement("button");
+  walletGateBtn.className = "btn btn-primary";
+  walletGateBtn.textContent = "Connect Wallet";
+  walletGateBtn.style.marginBottom = "12px";
+  gateWalletSection.appendChild(walletGateBtn);
+
+  walletGateBtn.addEventListener("click", async () => {
+    try {
+      await connectWallet();
+      const addr = getConnectedAddress();
+      if (addr) {
+        updateWalletUI();
+        const walletName = getWalletName(addr);
+        if (walletName) {
+          autoSkipGate(walletName);
+        } else {
           gateAddress.textContent = addr;
           gateWalletSection.style.display = "none";
           gateStep2.classList.add("visible");
           gateUsernameInput.focus();
         }
-      } catch {
-        gateError.textContent = "Wallet connection failed. Try again.";
       }
-    });
+    } catch {
+      gateError.textContent = "Wallet connection failed. Try again.";
+    }
+  });
+}
 
-    // If already connected (e.g. page refresh), skip wallet step
+{
+  if (isCasual) {
+    // Casual path: check for saved casual name
+    const savedName = localStorage.getItem("chickenz-username");
+    if (savedName) {
+      autoSkipGate(savedName);
+    } else {
+      // Show gate with username input only (no wallet section)
+      gateWalletSection.style.display = "none";
+      gateStep2.classList.add("visible");
+      gateUsernameInput.focus();
+    }
+    // Hide wallet button for casual mode
+    walletBtn.style.display = "none";
+  } else {
+    // Wallet path: init wallet kit, try reconnect
+    initWalletKit();
     tryReconnectWallet().then(() => {
       const addr = getConnectedAddress();
       if (addr) {
-        gateAddress.textContent = addr;
-        gateWalletSection.style.display = "none";
-        gateStep2.classList.add("visible");
-        gateUsernameInput.focus();
+        updateWalletUI();
+        const walletName = getWalletName(addr);
+        if (walletName) {
+          // Auto-skip gate entirely
+          autoSkipGate(walletName);
+        } else {
+          // Wallet connected but no saved name: show gate at step 2
+          gateAddress.textContent = addr;
+          gateWalletSection.style.display = "none";
+          gateStep2.classList.add("visible");
+          gateUsernameInput.focus();
+        }
+      } else {
+        // No wallet: show full gate with wallet connect button
+        showWalletConnectGate();
       }
-    }).catch(() => {});
+    }).catch(() => {
+      showWalletConnectGate();
+    });
   }
 }
 
@@ -190,7 +262,14 @@ function submitGateUsername() {
   gateError.textContent = "";
   currentUsername = name;
   topBarUsername.textContent = name;
-  localStorage.setItem("chickenz-username", name);
+
+  // Save per-wallet or casual
+  const walletAddr = getConnectedAddress();
+  if (walletAddr && !isCasual) {
+    setWalletName(walletAddr, name);
+  } else {
+    localStorage.setItem("chickenz-username", name);
+  }
 
   // Hide gate, connect to server, open lobby
   gateOverlay.classList.add("hidden");
@@ -204,16 +283,67 @@ function submitGateUsername() {
   }
 }
 
-// Pre-fill saved username
-const savedUsername = localStorage.getItem("chickenz-username");
-if (savedUsername) {
-  gateUsernameInput.value = savedUsername;
+// Pre-fill saved username (casual mode only; wallet pre-fill handled in gate flow)
+if (isCasual) {
+  const savedUsername = localStorage.getItem("chickenz-username");
+  if (savedUsername) {
+    gateUsernameInput.value = savedUsername;
+  }
 }
 
 gatePlayBtn.addEventListener("click", submitGateUsername);
 gateUsernameInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") submitGateUsername();
 });
+
+// ── Wallet Disconnect Handler ────────────────────────────────────────────────
+
+function handleWalletDisconnect() {
+  // Clear identity
+  currentUsername = "";
+  topBarUsername.textContent = "";
+  topBarAddress.textContent = "";
+
+  // End any active game state
+  const scene = getGameScene();
+  if (scene) {
+    if (scene.isSpectating) scene.stopSpectating();
+    else if (scene.isPlaying) scene.endOnlineMatch(-1);
+    if (scene.isWarmup) scene.stopWarmup();
+  }
+
+  // Hide ALL overlays
+  lobbyOverlay.classList.remove("visible");
+  settingsOverlay.classList.remove("visible");
+  tournamentOverlay.classList.remove("visible");
+  bracketOverlay.classList.remove("visible");
+  spectateOverlay.classList.remove("visible");
+  tournamentResults.classList.remove("visible");
+  document.getElementById("warmup-overlay")?.classList.remove("visible");
+  document.getElementById("announce-overlay")?.classList.remove("visible");
+  document.getElementById("sudden-death-overlay")?.classList.remove("visible");
+  settingsOpen = false;
+
+  // Disconnect from server
+  if (networkManager) {
+    networkManager.disconnect();
+    networkManager = null;
+  }
+
+  // Reset state
+  onlineRoomId = null;
+  currentTournamentId = null;
+  tournamentSpectating = false;
+
+  // Show gate, reset to wallet-connect step
+  gateOverlay.classList.remove("hidden");
+  gateWalletSection.style.display = "";
+  gateWalletSection.innerHTML = "";
+  gateStep2.classList.remove("visible");
+  gateError.textContent = "";
+  gateUsernameInput.value = "";
+  showWalletConnectGate();
+}
 
 // ── Wallet Connect ──────────────────────────────────────────────────────────
 
@@ -252,14 +382,19 @@ walletBtn.addEventListener("click", async () => {
 });
 
 window.addEventListener("walletChanged", () => {
-  updateWalletUI();
+  const addr = getConnectedAddress();
+  if (addr) {
+    updateWalletUI();
+    const walletName = getWalletName(addr);
+    if (walletName && !isCasual) {
+      currentUsername = walletName;
+      topBarUsername.textContent = walletName;
+      networkManager?.sendSetUsername(walletName);
+    }
+  } else if (!isCasual) {
+    handleWalletDisconnect();
+  }
 });
-
-// Init kit and try silent reconnect
-initWalletKit();
-tryReconnectWallet().then(() => {
-  updateWalletUI();
-}).catch(() => {});
 
 // ── Mode Toggle ───────────────────────────────────────────────────────────────
 
@@ -413,7 +548,12 @@ function saveSettingsUsername() {
   settingsUsernameError.textContent = "";
   currentUsername = name;
   topBarUsername.textContent = name;
-  localStorage.setItem("chickenz-username", name);
+  const walletAddr = getConnectedAddress();
+  if (walletAddr && !isCasual) {
+    setWalletName(walletAddr, name);
+  } else {
+    localStorage.setItem("chickenz-username", name);
+  }
   if (networkManager?.connected) {
     networkManager.sendSetUsername(name);
   }
@@ -843,7 +983,7 @@ function renderMatchHistory(matches: MatchRecord[]) {
     const showSettle = m.mode === "ranked" && m.proofStatus === "verified" && getConnectedAddress();
     el.innerHTML = `
       <div>
-        <span class="match-players">${escapeHtml(m.player1)} vs ${escapeHtml(m.player2)}</span>
+        <span class="match-players">${escapeHtml(m.player1)}${m.wallet1 ? ` <span class="match-wallet">${truncateAddress(m.wallet1)}</span>` : ""} vs ${escapeHtml(m.player2)}${m.wallet2 ? ` <span class="match-wallet">${truncateAddress(m.wallet2)}</span>` : ""}</span>
         <span class="match-score">${m.scores[0]}-${m.scores[1]}</span>
         ${modeBadge}
       </div>
@@ -895,9 +1035,14 @@ interface TranscriptInput {
   aim_y?: number;
 }
 
-interface TranscriptResponse {
+interface RoundTranscript {
+  seed: number;
+  mapIndex: number;
   transcript: [TranscriptInput, TranscriptInput][];
-  config: { seed: number };
+}
+
+interface TranscriptResponse {
+  rounds: RoundTranscript[];
 }
 
 function startReplay(roomId: string) {
@@ -909,7 +1054,7 @@ function startReplay(roomId: string) {
       closeLobby();
       const scene = getGameScene();
       if (scene) {
-        scene.startReplay(data.transcript, data.config.seed);
+        scene.startMultiRoundReplay(data.rounds);
       }
     })
     .catch(() => {
@@ -936,6 +1081,65 @@ function downloadTranscript(roomId: string) {
     });
 }
 
+// ── Tournament UI helpers ──────────────────────────────────────────────────────
+
+function hideAllTournamentOverlays() {
+  tournamentOverlay.classList.remove("visible");
+  bracketOverlay.classList.remove("visible");
+  spectateOverlay.classList.remove("visible");
+  tournamentResults.classList.remove("visible");
+}
+
+function renderBracket(bracket: TournamentBracket, currentMatchIndex?: number) {
+  bracketGrid.innerHTML = "";
+  for (const m of bracket.matches) {
+    const el = document.createElement("div");
+    el.className = "bracket-match";
+    if (m.winnerSlot !== -1) el.classList.add("completed");
+    else if (currentMatchIndex !== undefined && m.matchIndex === currentMatchIndex) el.classList.add("current");
+
+    // Determine player names for this match
+    let p1 = "TBD", p2 = "TBD";
+    if (m.matchIndex < 2) {
+      // Semi-finals: fixed slots
+      const slots = m.matchIndex === 0 ? [0, 1] : [2, 3];
+      p1 = bracket.playerNames[slots[0]!] || "???";
+      p2 = bracket.playerNames[slots[1]!] || "???";
+    } else if (m.matchIndex === 2) {
+      // Winners final
+      const w0 = bracket.matches[0]?.winnerSlot ?? -1;
+      const w1 = bracket.matches[1]?.winnerSlot ?? -1;
+      p1 = w0 >= 0 ? (bracket.playerNames[w0] || "???") : "TBD";
+      p2 = w1 >= 0 ? (bracket.playerNames[w1] || "???") : "TBD";
+    } else {
+      // Losers final
+      const l0 = bracket.matches[0]?.loserSlot ?? -1;
+      const l1 = bracket.matches[1]?.loserSlot ?? -1;
+      p1 = l0 >= 0 ? (bracket.playerNames[l0] || "???") : "TBD";
+      p2 = l1 >= 0 ? (bracket.playerNames[l1] || "???") : "TBD";
+    }
+
+    const winnerName = m.winnerSlot >= 0 ? (bracket.playerNames[m.winnerSlot] || "???") : "";
+    el.innerHTML = `
+      <span class="match-label">${escapeHtml(m.matchLabel)}</span>
+      <span class="match-players-text">${escapeHtml(p1)} vs ${escapeHtml(p2)}</span>
+      <span class="match-winner">${winnerName ? escapeHtml(winnerName) + " ✓" : ""}</span>
+    `;
+    bracketGrid.appendChild(el);
+  }
+}
+
+function renderStandings(standings: string[]) {
+  const labels = ["1st", "2nd", "3rd", "4th"];
+  standingsList.innerHTML = "";
+  for (let i = 0; i < standings.length; i++) {
+    const el = document.createElement("div");
+    el.className = "standing-row";
+    el.innerHTML = `<span class="place">${labels[i]}</span><span class="name">${escapeHtml(standings[i] || "???")}</span>`;
+    standingsList.appendChild(el);
+  }
+}
+
 // ── Network ────────────────────────────────────────────────────────────────────
 
 function connectToServer(url: string) {
@@ -951,6 +1155,8 @@ function connectToServer(url: string) {
     },
 
     onWaiting(roomId, roomName, joinCode) {
+      // Suppress when in tournament (GameRoom sends "waiting" internally)
+      if (currentTournamentId) return;
       const scene = getGameScene();
       if (scene) {
         scene.startWarmup(joinCode, currentUsername, () => {
@@ -961,6 +1167,8 @@ function connectToServer(url: string) {
     },
 
     onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode, characters) {
+      // Suppress when in tournament (tournament_match_start handles this)
+      if (currentTournamentId) return;
       onlineRoomId = roomId;
       lastMatchMode = mode;
 
@@ -996,6 +1204,8 @@ function connectToServer(url: string) {
     },
 
     onEnded(winner, scores, roundWins, roomId, mode) {
+      // Suppress when in tournament (tournament_match_end handles this)
+      if (currentTournamentId) return;
       onlineRoomId = roomId;
       lastMatchMode = mode;
       const scene = getGameScene();
@@ -1014,6 +1224,103 @@ function connectToServer(url: string) {
       lobbyStatus.textContent = "Disconnected from server.";
       setLobbyButtons(true);
       networkManager = null;
+      // Clean up tournament state
+      if (currentTournamentId) {
+        hideAllTournamentOverlays();
+        currentTournamentId = null;
+        tournamentSpectating = false;
+        const scene = getGameScene();
+        if (scene?.isSpectating) scene.stopSpectating();
+      }
+    },
+
+    // ── Tournament callbacks ──────────────────────────────
+    onTournamentLobby(tournamentId, joinCode, players, status) {
+      currentTournamentId = tournamentId;
+      closeLobby();
+      hideAllTournamentOverlays();
+      tournamentOverlay.classList.add("visible");
+      tournamentCode.textContent = joinCode;
+      tournamentStatus.textContent = players.length < 4
+        ? `Waiting for players... (${players.length}/4)`
+        : "Starting tournament...";
+      tournamentPlayers.innerHTML = "";
+      for (let i = 0; i < 4; i++) {
+        const slot = document.createElement("div");
+        slot.className = "tournament-slot" + (i < players.length ? " filled" : "");
+        slot.textContent = i < players.length ? players[i]! : "...";
+        tournamentPlayers.appendChild(slot);
+      }
+    },
+
+    onTournamentMatchStart(matchLabel, matchIndex, role, playerId, seed, usernames, mapIndex, totalRounds, characters) {
+      hideAllTournamentOverlays();
+      const scene = getGameScene();
+      if (!scene) return;
+
+      if (role === "fighter" && playerId !== undefined) {
+        tournamentSpectating = false;
+        networkManager?.resetThrottle();
+        scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
+        applyAudioSettings(scene);
+        scene.onLocalInput = (input, tick) => {
+          networkManager?.sendInput(input, tick);
+        };
+      } else {
+        tournamentSpectating = true;
+        scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
+        applyAudioSettings(scene);
+        spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
+      }
+    },
+
+    onSpectateState(state, lastButtons) {
+      const scene = getGameScene();
+      if (scene) scene.receiveSpectateState(state, lastButtons);
+    },
+
+    onSpectateRoundEnd(round, winner, roundWins) {
+      const scene = getGameScene();
+      if (scene) scene.handleRoundEnd(round, winner, roundWins);
+    },
+
+    onSpectateRoundStart(round, seed, mapIndex) {
+      const scene = getGameScene();
+      if (scene) scene.startNewRound(seed, mapIndex, round);
+    },
+
+    onTournamentMatchEnd(matchIndex, matchLabel, winnerName, bracket) {
+      const scene = getGameScene();
+      if (scene) {
+        if (tournamentSpectating) {
+          scene.stopSpectating();
+        } else {
+          scene.endOnlineMatch(-1); // suppress generic win text — bracket shows it
+        }
+      }
+      // Show bracket between matches
+      hideAllTournamentOverlays();
+      bracketOverlay.classList.add("visible");
+      renderBracket(bracket, matchIndex + 1); // highlight next match
+    },
+
+    onTournamentEnd(standings, bracket) {
+      const scene = getGameScene();
+      if (scene) {
+        if (tournamentSpectating) scene.stopSpectating();
+        else scene.endOnlineMatch(-1);
+      }
+      hideAllTournamentOverlays();
+      tournamentResults.classList.add("visible");
+      renderStandings(standings);
+
+      // Return to lobby after 8s
+      setTimeout(() => {
+        hideAllTournamentOverlays();
+        currentTournamentId = null;
+        tournamentSpectating = false;
+        openLobby();
+      }, 8000);
     },
   });
 
@@ -1084,6 +1391,12 @@ joinCodeInput.addEventListener("keydown", (e) => {
   }
 });
 
+createTournamentBtn.addEventListener("click", () => {
+  if (!networkManager?.connected) return;
+  networkManager.sendCreateTournament();
+  lobbyStatus.textContent = "Creating tournament...";
+});
+
 // ── Settlement Flow (Ranked) ─────────────────────────────────────────────────
 
 function startProofPolling(matchId: string) {
@@ -1135,8 +1448,15 @@ async function handleSettleMatch(matchId: string) {
 
     lobbyStatus.textContent = "Signing settlement transaction...";
     const numericId = parseInt(matchId.replace("match-", ""), 10);
-    const seal = new Uint8Array(Buffer.from(proof.seal, "hex"));
-    const journal = new Uint8Array(Buffer.from(proof.journal, "hex"));
+    const hexToBytes = (hex: string) => {
+      const bytes = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < hex.length; i += 2) {
+        bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+      }
+      return bytes;
+    };
+    const seal = hexToBytes(proof.seal);
+    const journal = hexToBytes(proof.journal);
 
     await settleMatch(numericId, seal, journal);
 

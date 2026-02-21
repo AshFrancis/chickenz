@@ -1,9 +1,8 @@
 import { spawn } from "child_process";
 import { writeFile, readFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
-import { join } from "path";
-
-const PROVER_BINARY = process.env.PROVER_BINARY || "../prover/target/release/chickenz-host";
+import { join, resolve } from "path";
+const PROVER_BINARY = process.env.PROVER_BINARY || resolve(import.meta.dir, "../../prover/target/release/chickenz-host");
 const WORKER_TIMEOUT_MS = 60_000; // worker considered offline after 60s without poll
 
 export interface ProofArtifacts {
@@ -18,12 +17,14 @@ export interface ProofJob {
   status: "queued" | "claimed" | "proving" | "done" | "failed";
   claimedAt?: number;
   artifacts?: ProofArtifacts;
+  onResult?: (artifacts: ProofArtifacts | null) => void;
 }
 
 // ── Proof Queue ──────────────────────────────────────────
 
 const proofQueue: ProofJob[] = [];
 let lastWorkerPing = 0;
+const JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 export function isWorkerOnline(): boolean {
   return Date.now() - lastWorkerPing < WORKER_TIMEOUT_MS;
@@ -34,8 +35,8 @@ export function workerHeartbeat() {
 }
 
 /** Queue a proof job. Called when a ranked match ends. */
-export function queueProof(matchId: string, transcript: object): ProofJob {
-  const job: ProofJob = { matchId, transcript, status: "queued" };
+export function queueProof(matchId: string, transcript: object, onResult?: (artifacts: ProofArtifacts | null) => void): ProofJob {
+  const job: ProofJob = { matchId, transcript, status: "queued", onResult };
   proofQueue.push(job);
   console.log(`[prover] Queued proof for ${matchId} (queue size: ${proofQueue.length})`);
   return job;
@@ -44,6 +45,7 @@ export function queueProof(matchId: string, transcript: object): ProofJob {
 /** Get the next unclaimed job for a worker. */
 export function claimNextJob(): ProofJob | null {
   workerHeartbeat();
+  pruneJobs();
   const job = proofQueue.find((j) => j.status === "queued");
   if (job) {
     job.status = "claimed";
@@ -66,7 +68,30 @@ export function submitJobResult(matchId: string, artifacts: ProofArtifacts): Pro
   job.artifacts = artifacts;
   job.status = "done";
   console.log(`[prover] Proof received for ${matchId}`);
+  // Invoke onResult callback if registered
+  if (job.onResult) {
+    try { job.onResult(artifacts); } catch (e) { console.error(`[prover] onResult callback error for ${matchId}:`, e); }
+  }
   return job;
+}
+
+/** Prune completed/failed jobs older than 5 min, reset stale claimed jobs. */
+function pruneJobs() {
+  const now = Date.now();
+  for (let i = proofQueue.length - 1; i >= 0; i--) {
+    const job = proofQueue[i]!;
+    // Remove completed/failed jobs older than 5 min
+    if ((job.status === "done" || job.status === "failed") && job.claimedAt && now - job.claimedAt > JOB_TIMEOUT_MS) {
+      proofQueue.splice(i, 1);
+      continue;
+    }
+    // Reset claimed jobs stuck >5 min back to queued
+    if (job.status === "claimed" && job.claimedAt && now - job.claimedAt > JOB_TIMEOUT_MS) {
+      console.log(`[prover] Job ${job.matchId} timed out, re-queuing`);
+      job.status = "queued";
+      job.claimedAt = undefined;
+    }
+  }
 }
 
 /** Get a job by match ID. */
@@ -81,18 +106,18 @@ export async function proveBoundless(
   transcript: object,
 ): Promise<ProofArtifacts | null> {
   const inputPath = join(tmpdir(), `chickenz-prove-${matchId}.json`);
-  const outputPath = join(tmpdir(), `chickenz-proof-${matchId}.json`);
 
   try {
     await writeFile(inputPath, JSON.stringify(transcript));
     console.log(`[prover] Starting Boundless proof for ${matchId}...`);
 
     const result = await new Promise<number>((resolve, reject) => {
-      const proc = spawn(PROVER_BINARY, ["--boundless", "--input", inputPath, "--output", outputPath], {
+      const proc = spawn(PROVER_BINARY, ["--boundless", inputPath], {
+        cwd: join(tmpdir()),
         env: {
           ...process.env,
-          BOUNDLESS_RPC_URL: process.env.BOUNDLESS_RPC_URL,
-          BOUNDLESS_PRIVATE_KEY: process.env.BOUNDLESS_PRIVATE_KEY,
+          RPC_URL: process.env.BOUNDLESS_RPC_URL,
+          PRIVATE_KEY: process.env.BOUNDLESS_PRIVATE_KEY,
           PINATA_JWT: process.env.PINATA_JWT,
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -118,7 +143,7 @@ export async function proveBoundless(
 
     if (result !== 0) return null;
 
-    const artifactsRaw = await readFile(outputPath, "utf-8");
+    const artifactsRaw = await readFile(join(tmpdir(), "proof_artifacts.json"), "utf-8");
     const artifacts = JSON.parse(artifactsRaw) as ProofArtifacts;
     console.log(`[prover] Boundless proof generated for ${matchId}`);
     return artifacts;
@@ -127,7 +152,7 @@ export async function proveBoundless(
     return null;
   } finally {
     try { await unlink(inputPath); } catch {}
-    try { await unlink(outputPath); } catch {}
+    try { await unlink(join(tmpdir(), "proof_artifacts.json")); } catch {}
   }
 }
 
@@ -143,9 +168,8 @@ export function proveMatch(
 ) {
   if (isWorkerOnline()) {
     // Queue for local worker — it'll poll and pick it up
-    queueProof(matchId, transcript);
+    queueProof(matchId, transcript, onResult);
     console.log(`[prover] Routed ${matchId} to local worker`);
-    // The caller will be notified when worker submits result
   } else if (process.env.BOUNDLESS_RPC_URL && process.env.BOUNDLESS_PRIVATE_KEY) {
     // Fall back to Boundless
     console.log(`[prover] Worker offline, routing ${matchId} to Boundless`);

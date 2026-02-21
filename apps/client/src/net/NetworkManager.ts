@@ -1,4 +1,4 @@
-import type { GameState, PlayerInput, PlayerState, Projectile, WeaponPickup } from "@chickenz/sim";
+import type { PlayerInput } from "@chickenz/sim";
 
 export type GameMode = "casual" | "ranked";
 
@@ -87,16 +87,29 @@ interface ServerMessage {
   lastButtons?: [number, number];
 }
 
+export interface TournamentBracket {
+  matches: { matchIndex: number; matchLabel: string; winnerSlot: number; loserSlot: number }[];
+  playerNames: string[];
+}
+
 export interface NetworkCallbacks {
   onWaiting: (roomId: string, roomName: string, joinCode: string) => void;
   onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number, mode: GameMode, characters: [number, number]) => void;
-  onState: (state: GameState, lastButtons?: [number, number]) => void;
+  onState: (state: any, lastButtons?: [number, number]) => void;
   onRoundEnd: (round: number, winner: number, roundWins: [number, number]) => void;
   onRoundStart: (round: number, seed: number, mapIndex: number) => void;
   onEnded: (winner: number, scores: [number, number], roundWins: [number, number], roomId: string, mode: GameMode) => void;
   onLobby: (rooms: RoomInfo[]) => void;
   onError: (message: string) => void;
   onDisconnect: () => void;
+  // Tournament callbacks
+  onTournamentLobby?: (tournamentId: string, joinCode: string, players: string[], status: string) => void;
+  onTournamentMatchStart?: (matchLabel: string, matchIndex: number, role: "fighter" | "spectator", playerId: number | undefined, seed: number, usernames: [string, string], mapIndex: number, totalRounds: number, characters: [number, number]) => void;
+  onSpectateState?: (state: any, lastButtons?: [number, number]) => void;
+  onSpectateRoundEnd?: (round: number, winner: number, roundWins: [number, number]) => void;
+  onSpectateRoundStart?: (round: number, seed: number, mapIndex: number) => void;
+  onTournamentMatchEnd?: (matchIndex: number, matchLabel: string, winnerName: string, bracket: TournamentBracket) => void;
+  onTournamentEnd?: (standings: string[], bracket: TournamentBracket) => void;
 }
 
 export class NetworkManager {
@@ -142,7 +155,7 @@ export class NetworkManager {
           );
           break;
         case "state":
-          this.callbacks.onState(deserializeState(msg), msg.lastButtons);
+          this.callbacks.onState(msg, msg.lastButtons);
           break;
         case "round_end":
           this.callbacks.onRoundEnd(msg.round!, msg.winner!, msg.roundWins ?? [0, 0]);
@@ -155,6 +168,39 @@ export class NetworkManager {
           break;
         case "error":
           this.callbacks.onError(msg.message!);
+          break;
+        case "tournament_lobby":
+          this.callbacks.onTournamentLobby?.(
+            (msg as any).tournamentId, (msg as any).joinCode,
+            (msg as any).players, (msg as any).status,
+          );
+          break;
+        case "tournament_match_start":
+          this.callbacks.onTournamentMatchStart?.(
+            (msg as any).matchLabel, (msg as any).matchIndex,
+            (msg as any).role, (msg as any).playerId,
+            (msg as any).seed, (msg as any).usernames ?? ["", ""],
+            (msg as any).mapIndex ?? 0, (msg as any).totalRounds ?? 3,
+            (msg as any).characters ?? [0, 1],
+          );
+          break;
+        case "spectate_state":
+          this.callbacks.onSpectateState?.(msg, msg.lastButtons);
+          break;
+        case "spectate_round_end":
+          this.callbacks.onSpectateRoundEnd?.(msg.round!, msg.winner!, msg.roundWins ?? [0, 0]);
+          break;
+        case "spectate_round_start":
+          this.callbacks.onSpectateRoundStart?.(msg.round!, msg.seed!, msg.mapIndex ?? 0);
+          break;
+        case "tournament_match_end":
+          this.callbacks.onTournamentMatchEnd?.(
+            (msg as any).matchIndex, (msg as any).matchLabel,
+            (msg as any).winnerName, (msg as any).bracket,
+          );
+          break;
+        case "tournament_end":
+          this.callbacks.onTournamentEnd?.((msg as any).standings, (msg as any).bracket);
           break;
       }
     };
@@ -230,6 +276,14 @@ export class NetworkManager {
     this.send({ type: "list_rooms" });
   }
 
+  sendCreateTournament() {
+    this.send({ type: "create_tournament" });
+  }
+
+  sendJoinTournamentByCode(code: string) {
+    this.send({ type: "join_tournament_code", code });
+  }
+
   disconnect() {
     if (this.ws) {
       this.ws.onclose = null;
@@ -245,69 +299,3 @@ export class NetworkManager {
   }
 }
 
-function deserializeState(msg: ServerMessage): GameState {
-  const score = new Map<number, number>();
-  score.set(0, (msg.scores ?? [0, 0])[0]);
-  score.set(1, (msg.scores ?? [0, 0])[1]);
-
-  return {
-    tick: msg.tick!,
-    players: msg.players!.map(
-      (p: RawPlayerState): PlayerState => ({
-        id: p.id,
-        x: p.x,
-        y: p.y,
-        vx: p.vx,
-        vy: p.vy,
-        facing: p.facing as 1 | -1,
-        health: p.health,
-        lives: p.lives,
-        shootCooldown: p.shootCooldown,
-        grounded: p.grounded,
-        stateFlags: p.stateFlags,
-        respawnTimer: p.respawnTimer,
-        weapon: p.weapon ?? null,
-        ammo: p.ammo ?? 0,
-        jumpsLeft: p.jumpsLeft ?? 2,
-        wallSliding: p.wallSliding ?? false,
-        wallDir: p.wallDir ?? 0,
-        stompedBy: p.stompedBy ?? null,
-        stompingOn: p.stompingOn ?? null,
-        stompShakeProgress: p.stompShakeProgress ?? 0,
-        stompLastShakeDir: 0,
-        stompAutoRunDir: 1,
-        stompAutoRunTimer: 0,
-        stompCooldown: (p as any).stompCooldown ?? 0,
-      }),
-    ),
-    projectiles: msg.projectiles!.map(
-      (proj: RawProjectile): Projectile => ({
-        id: proj.id,
-        ownerId: proj.ownerId,
-        x: proj.x,
-        y: proj.y,
-        vx: proj.vx,
-        vy: proj.vy,
-        lifetime: proj.lifetime,
-        weapon: proj.weapon ?? 0,
-      }),
-    ),
-    weaponPickups: (msg.weaponPickups ?? []).map(
-      (wp: RawWeaponPickup): WeaponPickup => ({
-        id: wp.id,
-        x: wp.x,
-        y: wp.y,
-        weapon: wp.weapon,
-        respawnTimer: wp.respawnTimer,
-      }),
-    ),
-    rngState: msg.rngState ?? 0,
-    score,
-    nextProjectileId: msg.nextProjectileId ?? 0,
-    arenaLeft: msg.arenaLeft!,
-    arenaRight: msg.arenaRight!,
-    matchOver: msg.matchOver!,
-    winner: msg.winner!,
-    deathLingerTimer: msg.deathLingerTimer ?? 0,
-  };
-}

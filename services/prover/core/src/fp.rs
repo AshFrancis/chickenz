@@ -42,7 +42,7 @@ pub const GRAVITY: Fp = 128; // 0.5
 pub const PLAYER_SPEED: Fp = 1024; // 4.0
 pub const ACCELERATION: Fp = 205; // 0.8 (204.8 rounded)
 pub const DECELERATION: Fp = 154; // 0.6 (153.6 rounded)
-pub const JUMP_VELOCITY: Fp = -3072; // -12.0
+pub const JUMP_VELOCITY: Fp = -2688; // -10.5
 pub const MAX_FALL_SPEED: Fp = 3072; // 12.0
 
 pub const PLAYER_WIDTH: Fp = 6144; // 24
@@ -59,8 +59,28 @@ pub const RESPAWN_TICKS: i32 = 60;
 pub const INVINCIBLE_TICKS: i32 = 60;
 pub const DEATH_LINGER_TICKS: i32 = 30;
 pub const INITIAL_LIVES: i32 = 1;
-pub const MATCH_DURATION_TICKS: i32 = 1800;
-pub const SUDDEN_DEATH_START_TICK: i32 = 1200;
+pub const MATCH_DURATION_TICKS: i32 = 1800; // 30s
+pub const SUDDEN_DEATH_START_TICK: i32 = 1200; // 20 seconds
+pub const SUDDEN_DEATH_DURATION: i32 = 300; // 5 seconds to close
+pub const ZONE_MAX_DPS: i32 = 20; // damage per second at full close
+
+// Double jump
+pub const MAX_JUMPS: i32 = 2;
+
+// Wall slide & wall jump
+pub const WALL_SLIDE_SPEED: Fp = 512; // 2.0
+pub const WALL_JUMP_VX: Fp = 1792; // 7.0
+pub const WALL_JUMP_VY: Fp = -2560; // -10.0
+
+// Stomp
+pub const STOMP_DAMAGE_INTERVAL: i32 = 2;
+pub const STOMP_DAMAGE_PER_HIT: i32 = 1;
+pub const STOMP_SHAKE_PER_PRESS: i32 = 17;
+pub const STOMP_SHAKE_THRESHOLD: i32 = 100;
+pub const STOMP_SHAKE_DECAY: i32 = 1;
+pub const STOMP_AUTO_RUN_MIN: i32 = 20;
+pub const STOMP_AUTO_RUN_MAX: i32 = 60;
+pub const STOMP_COOLDOWN_TICKS: i32 = 90;
 
 pub mod button {
     pub const LEFT: u8 = 1;
@@ -128,7 +148,7 @@ pub const WEAPON_STATS: [FpWeaponStats; WEAPON_COUNT] = [
     },
     // 3: Rocket
     FpWeaponStats {
-        damage: 50, speed: 1280 /*5.0*/, cooldown: 45, lifetime: 120,
+        damage: 50, speed: 1792 /*7.0*/, cooldown: 45, lifetime: 120,
         ammo: 4, pellets: 1, splash_radius: 10240 /*40.0*/, splash_damage: 25,
     },
     // 4: SMG
@@ -225,6 +245,19 @@ pub struct Player {
     pub respawn_timer: i32,
     pub weapon: i8,  // WEAPON_NONE (-1) or 0..4
     pub ammo: i32,
+    // Double jump
+    pub jumps_left: i32,
+    // Wall slide/jump
+    pub wall_sliding: bool,
+    pub wall_dir: i32, // -1 = wall on left, 1 = wall on right, 0 = none
+    // Stomp
+    pub stomped_by: i32,   // -1 = none, otherwise player id
+    pub stomping_on: i32,  // -1 = none, otherwise player id
+    pub stomp_shake_progress: i32,
+    pub stomp_last_shake_dir: i32,
+    pub stomp_auto_run_dir: i32,
+    pub stomp_auto_run_timer: i32,
+    pub stomp_cooldown: i32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -248,7 +281,7 @@ pub struct WeaponPickup {
     pub respawn_timer: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Platform {
     pub x: Fp,
     pub y: Fp,
@@ -256,7 +289,7 @@ pub struct Platform {
     pub height: Fp,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SpawnPoint {
     pub x: Fp,
     pub y: Fp,
@@ -291,6 +324,11 @@ pub struct State {
     pub match_over: bool,
     pub winner: i32,
     pub death_linger_timer: i32,
+    pub prev_buttons: [u8; 2],
+    // Per-match config (allows warmup/custom modes)
+    pub cfg_initial_lives: i32,
+    pub cfg_match_duration: i32,
+    pub cfg_sudden_death: i32,
 }
 
 /// Sentinel projectile (unused slot)
@@ -351,32 +389,39 @@ pub fn prng_int_range(state: u32, min: i32, max: i32) -> (i32, u32) {
 
 pub fn arena_map() -> Map {
     Map {
-        width: fp(800),
-        height: fp(600),
+        width: fp(960),
+        height: fp(540),
         platforms: [
-            Platform { x: fp(0), y: fp(568), width: fp(800), height: fp(32) },
-            Platform { x: fp(100), y: fp(450), width: fp(150), height: fp(16) },
-            Platform { x: fp(550), y: fp(450), width: fp(150), height: fp(16) },
-            Platform { x: fp(300), y: fp(350), width: fp(200), height: fp(16) },
-            Platform { x: fp(50), y: fp(250), width: fp(120), height: fp(16) },
-            Platform { x: fp(630), y: fp(250), width: fp(120), height: fp(16) },
+            Platform { x: fp(0), y: fp(512), width: fp(960), height: fp(32) },
+            Platform { x: fp(128), y: fp(416), width: fp(176), height: fp(16) },
+            Platform { x: fp(672), y: fp(416), width: fp(176), height: fp(16) },
+            Platform { x: fp(352), y: fp(304), width: fp(256), height: fp(16) },
+            Platform { x: fp(64), y: fp(208), width: fp(144), height: fp(16) },
+            Platform { x: fp(752), y: fp(208), width: fp(144), height: fp(16) },
         ],
         spawns: [
-            SpawnPoint { x: fp(100), y: fp(536) },
-            SpawnPoint { x: fp(700), y: fp(536) },
-            SpawnPoint { x: fp(350), y: fp(318) },
-            SpawnPoint { x: fp(400), y: fp(218) },
+            SpawnPoint { x: fp(144), y: fp(480) },
+            SpawnPoint { x: fp(832), y: fp(480) },
+            SpawnPoint { x: fp(432), y: fp(272) },
+            SpawnPoint { x: fp(480), y: fp(176) },
         ],
         weapon_spawns: [
-            SpawnPoint { x: fp(163), y: fp(418) },
-            SpawnPoint { x: fp(613), y: fp(418) },
-            SpawnPoint { x: fp(388), y: fp(318) },
-            SpawnPoint { x: fp(388), y: fp(536) },
+            SpawnPoint { x: fp(192), y: fp(384) },
+            SpawnPoint { x: fp(736), y: fp(384) },
+            SpawnPoint { x: fp(464), y: fp(272) },
+            SpawnPoint { x: fp(464), y: fp(480) },
         ],
     }
 }
 
 pub fn create_initial_state(seed: u32, map: &Map) -> State {
+    create_initial_state_cfg(seed, map, INITIAL_LIVES, MATCH_DURATION_TICKS, SUDDEN_DEATH_START_TICK)
+}
+
+pub fn create_initial_state_cfg(
+    seed: u32, map: &Map,
+    initial_lives: i32, match_duration: i32, sudden_death: i32,
+) -> State {
     let mut weapon_pickups = [EMPTY_PICKUP; MAX_WEAPON_PICKUPS];
     for i in 0..NUM_WEAPON_SPAWNS {
         weapon_pickups[i] = WeaponPickup {
@@ -398,13 +443,23 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
                 vx: 0, vy: 0,
                 facing: FACING_RIGHT,
                 health: MAX_HEALTH,
-                lives: INITIAL_LIVES,
+                lives: initial_lives,
                 shoot_cooldown: 0,
                 grounded: false,
                 state_flags: flag::ALIVE,
                 respawn_timer: 0,
                 weapon: WEAPON_NONE,
                 ammo: 0,
+                jumps_left: MAX_JUMPS,
+                wall_sliding: false,
+                wall_dir: 0,
+                stomped_by: -1,
+                stomping_on: -1,
+                stomp_shake_progress: 0,
+                stomp_last_shake_dir: 0,
+                stomp_auto_run_dir: 0,
+                stomp_auto_run_timer: 0,
+                stomp_cooldown: 0,
             },
             Player {
                 id: 1,
@@ -413,13 +468,23 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
                 vx: 0, vy: 0,
                 facing: FACING_LEFT,
                 health: MAX_HEALTH,
-                lives: INITIAL_LIVES,
+                lives: initial_lives,
                 shoot_cooldown: 0,
                 grounded: false,
                 state_flags: flag::ALIVE,
                 respawn_timer: 0,
                 weapon: WEAPON_NONE,
                 ammo: 0,
+                jumps_left: MAX_JUMPS,
+                wall_sliding: false,
+                wall_dir: 0,
+                stomped_by: -1,
+                stomping_on: -1,
+                stomp_shake_progress: 0,
+                stomp_last_shake_dir: 0,
+                stomp_auto_run_dir: 0,
+                stomp_auto_run_timer: 0,
+                stomp_cooldown: 0,
             },
         ],
         projectiles: [EMPTY_PROJECTILE; MAX_PROJECTILES],
@@ -434,14 +499,23 @@ pub fn create_initial_state(seed: u32, map: &Map) -> State {
         match_over: false,
         winner: -1,
         death_linger_timer: 0,
+        prev_buttons: [0, 0],
+        cfg_initial_lives: initial_lives,
+        cfg_match_duration: match_duration,
+        cfg_sudden_death: sudden_death,
     }
 }
 
 // -- Physics -----------------------------------------------------------------
 
 #[inline(always)]
-fn apply_input_mut(p: &mut Player, buttons: u8, aim_x: i8) {
+fn apply_input_mut(p: &mut Player, buttons: u8, prev_buttons: u8, aim_x: i8) {
     if p.state_flags & flag::ALIVE == 0 { return; }
+
+    // If being stomped, skip movement (victim is auto-run controlled)
+    if p.stomped_by >= 0 { return; }
+    // If stomping on someone, skip movement (rider is locked to victim)
+    if p.stomping_on >= 0 { return; }
 
     let mut target_vx: Fp = 0;
     if buttons & button::LEFT != 0 {
@@ -463,8 +537,22 @@ fn apply_input_mut(p: &mut Player, buttons: u8, aim_x: i8) {
         p.vx = (p.vx + DECELERATION).min(0);
     }
 
-    if buttons & button::JUMP != 0 && p.grounded {
-        p.vy = JUMP_VELOCITY;
+    // Jump edge detection: pressed now, not pressed last tick
+    let jump_edge = (buttons & button::JUMP != 0) && (prev_buttons & button::JUMP == 0);
+
+    if jump_edge {
+        if p.wall_sliding && p.jumps_left > 0 {
+            // Wall jump: push away from wall
+            p.vx = WALL_JUMP_VX * (-p.wall_dir);
+            p.vy = WALL_JUMP_VY;
+            p.jumps_left -= 1;
+            p.wall_sliding = false;
+            p.wall_dir = 0;
+        } else if p.jumps_left > 0 {
+            // Normal/double jump
+            p.vy = JUMP_VELOCITY;
+            p.jumps_left -= 1;
+        }
     }
 
     if aim_x > 0 {
@@ -477,39 +565,63 @@ fn apply_input_mut(p: &mut Player, buttons: u8, aim_x: i8) {
 #[inline(always)]
 fn apply_gravity_mut(p: &mut Player) {
     if p.state_flags & flag::ALIVE == 0 { return; }
-    p.vy = (p.vy + GRAVITY).min(MAX_FALL_SPEED);
+    // Skip gravity for stomp rider/victim
+    if p.stomping_on >= 0 || p.stomped_by >= 0 { return; }
+    let max_fall = if p.wall_sliding { WALL_SLIDE_SPEED } else { MAX_FALL_SPEED };
+    p.vy = (p.vy + GRAVITY).min(max_fall);
 }
 
 #[inline(always)]
-fn move_and_collide_mut(p: &mut Player, map: &Map, arena_left: Fp, arena_right: Fp) {
+fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
     if p.state_flags & flag::ALIVE == 0 { return; }
+    // Skip movement for stomp rider/victim
+    if p.stomping_on >= 0 || p.stomped_by >= 0 { return; }
 
-    let prev_y = p.y;
     p.x += p.vx;
     p.y += p.vy;
     p.grounded = false;
 
+    // Full AABB platform collision (2G)
     for plat in &map.platforms {
-        let feet_before = prev_y + PLAYER_HEIGHT;
-        let feet_after = p.y + PLAYER_HEIGHT;
-        let plat_top = plat.y;
-
-        if feet_before <= plat_top
-            && feet_after >= plat_top
-            && p.x + PLAYER_WIDTH > plat.x
+        // Check overlap
+        if p.x + PLAYER_WIDTH > plat.x
             && p.x < plat.x + plat.width
+            && p.y + PLAYER_HEIGHT > plat.y
+            && p.y < plat.y + plat.height
         {
-            p.y = plat_top - PLAYER_HEIGHT;
-            p.vy = 0;
-            p.grounded = true;
+            let overlap_left = (p.x + PLAYER_WIDTH) - plat.x;
+            let overlap_right = (plat.x + plat.width) - p.x;
+            let overlap_top = (p.y + PLAYER_HEIGHT) - plat.y;
+            let overlap_bottom = (plat.y + plat.height) - p.y;
+            let min_overlap = overlap_left.min(overlap_right).min(overlap_top).min(overlap_bottom);
+
+            if min_overlap == overlap_top {
+                // Landing on top
+                p.y = plat.y - PLAYER_HEIGHT;
+                p.vy = 0;
+                p.grounded = true;
+            } else if min_overlap == overlap_bottom {
+                // Ceiling bump
+                p.y = plat.y + plat.height;
+                p.vy = 0;
+            } else if min_overlap == overlap_left {
+                // Left side
+                p.x = plat.x - PLAYER_WIDTH;
+                p.vx = 0;
+            } else {
+                // Right side
+                p.x = plat.x + plat.width;
+                p.vx = 0;
+            }
         }
     }
 
-    if p.x < arena_left {
-        p.x = arena_left;
+    // Arena boundary clamping (use map bounds — zone is damage-only, not physical)
+    if p.x < 0 {
+        p.x = 0;
     }
-    if p.x + PLAYER_WIDTH > arena_right {
-        p.x = arena_right - PLAYER_WIDTH;
+    if p.x + PLAYER_WIDTH > map.width {
+        p.x = map.width - PLAYER_WIDTH;
     }
     if p.y < 0 {
         p.y = 0;
@@ -519,6 +631,56 @@ fn move_and_collide_mut(p: &mut Player, map: &Map, arena_left: Fp, arena_right: 
         p.y = map.height - PLAYER_HEIGHT;
         p.vy = 0;
         p.grounded = true;
+    }
+
+    // Wall slide detection (2E)
+    let pressing_left = buttons & button::LEFT != 0;
+    let pressing_right = buttons & button::RIGHT != 0;
+    p.wall_sliding = false;
+    p.wall_dir = 0;
+
+    if !p.grounded && p.vy > 0 {
+        // Map boundary walls (not zone — zone is damage-only)
+        if p.x <= 0 && pressing_left {
+            p.wall_sliding = true;
+            p.wall_dir = -1;
+        } else if p.x + PLAYER_WIDTH >= map.width && pressing_right {
+            p.wall_sliding = true;
+            p.wall_dir = 1;
+        }
+
+        // Platform side walls (2-pixel tolerance band)
+        if !p.wall_sliding {
+            for plat in &map.platforms {
+                // Vertical overlap check
+                if p.y + PLAYER_HEIGHT > plat.y && p.y < plat.y + plat.height {
+                    // Right side into left edge of platform
+                    if pressing_right && p.x + PLAYER_WIDTH >= plat.x && p.x + PLAYER_WIDTH <= plat.x + 512 {
+                        p.wall_sliding = true;
+                        p.wall_dir = 1;
+                        break;
+                    }
+                    // Left side into right edge of platform
+                    if pressing_left && p.x <= plat.x + plat.width && p.x >= plat.x + plat.width - 512 {
+                        p.wall_sliding = true;
+                        p.wall_dir = -1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Wall sliding: character and gun face away from the wall_dir side
+    if p.wall_sliding {
+        p.facing = p.wall_dir;
+    }
+
+    // Jump refund: grounded resets to MAX_JUMPS, wall slide grants 1 if exhausted
+    if p.grounded {
+        p.jumps_left = MAX_JUMPS;
+    } else if p.wall_sliding && p.jumps_left == 0 {
+        p.jumps_left = 1;
     }
 }
 
@@ -570,7 +732,9 @@ fn tick_pickup_timers(state: &mut State) {
 #[inline(always)]
 fn spawn_projectile(player: &Player, aim_x: i8, aim_y: i8, id: i32, weapon: i8, speed: Fp) -> Projectile {
     let (nx, ny) = if aim_x == 0 && aim_y == 0 {
-        (player.facing * ONE, 0)
+        // Wall sliding: shoot away from wall (not into it)
+        let dir = if player.wall_sliding { -player.wall_dir } else { player.facing };
+        (dir * ONE, 0)
     } else if aim_y == 0 {
         (if aim_x > 0 { ONE } else { -ONE }, 0)
     } else if aim_x == 0 {
@@ -625,7 +789,9 @@ fn spawn_weapon_projectiles(
     } else {
         // Multi-pellet (shotgun): spread perpendicular to aim direction
         let (nx, ny) = if aim_x == 0 && aim_y == 0 {
-            (state.players[player_idx].facing * ONE, 0)
+            let p = &state.players[player_idx];
+            let dir = if p.wall_sliding { -p.wall_dir } else { p.facing };
+            (dir * ONE, 0)
         } else if aim_y == 0 {
             (if aim_x > 0 { ONE } else { -ONE }, 0)
         } else if aim_x == 0 {
@@ -645,8 +811,9 @@ fn spawn_weapon_projectiles(
         let sx = state.players[player_idx].x + PLAYER_WIDTH / 2 + offset_x;
         let sy = state.players[player_idx].y + PLAYER_HEIGHT / 2 + offset_y;
 
-        // sin(7.5°) ≈ 33/256 per step — 5 pellets at offsets -2,-1,0,1,2
-        const SPREAD_STEP: Fp = 33;
+        // Match TS: total arc = 14° (7° each side), 5 pellets at offsets -2,-1,0,1,2
+        // Outer pellet at offset ±2 should be at ±7°: sin(3.5°) ≈ 0.061 → 16/256 per step
+        const SPREAD_STEP: Fp = 16;
 
         for i in 0..stats.pellets {
             if (state.proj_count as usize) >= MAX_PROJECTILES { break; }
@@ -658,8 +825,12 @@ fn spawn_weapon_projectiles(
             let perp_amount = offset * SPREAD_STEP + jitter;
 
             // Final velocity = base + perpendicular spread
-            let vx = mul(nx, stats.speed) + mul(perp_x, mul(perp_amount, stats.speed) / ONE);
-            let vy = mul(ny, stats.speed) + mul(perp_y, mul(perp_amount, stats.speed) / ONE);
+            // perp_amount is in fp (33 ≈ sin 7.5°), mul gives fp result — no extra /ONE
+            let spread = mul(perp_amount, stats.speed);
+            let vx = mul(nx, stats.speed) + mul(perp_x, spread);
+            // Upward bias: nudge pellets slightly upward (matches TS: dy -= 0.06)
+            // 0.06 in fp = 15; mul(15, speed) ≈ 0.06 * speed in velocity space
+            let vy = mul(ny, stats.speed) + mul(perp_y, spread) - mul(15, stats.speed);
 
             state.projectiles[state.proj_count as usize] = Projectile {
                 id: state.next_proj_id,
@@ -681,9 +852,31 @@ fn spawn_weapon_projectiles(
 }
 
 #[inline(always)]
-fn is_out_of_bounds(proj: &Projectile, map: &Map, arena_left: Fp, arena_right: Fp) -> bool {
+fn is_out_of_bounds(proj: &Projectile, map: &Map) -> bool {
     let m: Fp = 50 << 8; // 50px in fixed-point
-    proj.x < arena_left - m || proj.x > arena_right + m || proj.y < -m || proj.y > map.height + m
+    proj.x < -m || proj.x > map.width + m || proj.y < -m || proj.y > map.height + m
+}
+
+/// Check if a projectile hits any platform, map boundary, ceiling, or floor.
+/// Uses map bounds (not arena/zone bounds) — bullets pass through the death zone.
+#[inline(always)]
+fn hits_solid(proj: &Projectile, map: &Map) -> bool {
+    // Check platform collision (4px buffer above surface for visual consistency)
+    let buf: Fp = 4 << FRAC;
+    for i in 0..NUM_PLATFORMS {
+        let plat = &map.platforms[i];
+        if plat.width == 0 { continue; }
+        if proj.x >= plat.x && proj.x <= plat.x + plat.width
+            && proj.y >= plat.y - buf && proj.y <= plat.y + plat.height
+        {
+            return true;
+        }
+    }
+    // Map boundary walls (NOT zone — bullets pass through zone)
+    if proj.x <= 0 || proj.x >= map.width { return true; }
+    // Ceiling and floor
+    if proj.y <= 0 || proj.y >= map.height { return true; }
+    false
 }
 
 #[inline(always)]
@@ -692,9 +885,10 @@ fn aabb_hit(px: Fp, py: Fp, rx: Fp, ry: Fp, rw: Fp, rh: Fp) -> bool {
 }
 
 /// Apply rocket splash damage to all players within radius (Manhattan distance).
+/// `skip_id` is the player who took the direct hit (to avoid double-damage).
 #[inline(always)]
 fn apply_fp_splash_damage(
-    ex: Fp, ey: Fp, owner_id: i32,
+    ex: Fp, ey: Fp, owner_id: i32, skip_id: Option<i32>,
     players: &mut [Player; 2],
     kills: &mut KillList,
 ) {
@@ -706,6 +900,8 @@ fn apply_fp_splash_damage(
         if players[i].state_flags & flag::ALIVE == 0 { continue; }
         if players[i].state_flags & flag::INVINCIBLE != 0 { continue; }
         if players[i].id == owner_id { continue; }
+        // Skip direct-hit victim to prevent double-damage
+        if skip_id == Some(players[i].id) { continue; }
 
         let pcx = players[i].x + PLAYER_WIDTH / 2;
         let pcy = players[i].y + PLAYER_HEIGHT / 2;
@@ -760,9 +956,9 @@ fn resolve_hits_mut(state: &mut State) -> KillList {
                     state.players[i].health = new_hp;
                 }
 
-                // Rocket splash damage on impact
+                // Rocket splash damage on impact (skip direct-hit victim)
                 if proj_weapon == WEAPON_ROCKET {
-                    apply_fp_splash_damage(proj_x, proj_y, proj_owner, &mut state.players, &mut kills);
+                    apply_fp_splash_damage(proj_x, proj_y, proj_owner, Some(victim_id), &mut state.players, &mut kills);
                 }
 
                 break;
@@ -787,6 +983,17 @@ fn resolve_hits_mut(state: &mut State) -> KillList {
 
 // -- Step --------------------------------------------------------------------
 
+/// Helper: clear all stomp fields on a player.
+#[inline(always)]
+fn clear_stomp_fields(p: &mut Player) {
+    p.stomped_by = -1;
+    p.stomping_on = -1;
+    p.stomp_shake_progress = 0;
+    p.stomp_last_shake_dir = 0;
+    p.stomp_auto_run_dir = 0;
+    p.stomp_auto_run_timer = 0;
+}
+
 /// Advance game state by one tick, mutating in place (zero copies of State).
 pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     if state.match_over {
@@ -801,13 +1008,15 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
             state.match_over = true;
             state.death_linger_timer = 0;
         }
+        state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
         return;
     }
 
     state.tick += 1;
     let current_tick = state.tick;
+    let prev_buttons = state.prev_buttons;
 
-    // 2. Tick cooldowns + invincibility
+    // 2. Tick cooldowns + invincibility + stomp cooldown
     for p in &mut state.players {
         if p.state_flags & flag::ALIVE == 0 { continue; }
         p.shoot_cooldown = (p.shoot_cooldown - 1).max(0);
@@ -818,13 +1027,138 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                 p.respawn_timer = 0;
             }
         }
+        if p.stomp_cooldown > 0 && p.stomped_by < 0 {
+            p.stomp_cooldown -= 1;
+        }
     }
 
     // 3. Apply input + gravity + move/collide (all in-place, no copies)
     for i in 0..2 {
-        apply_input_mut(&mut state.players[i], inputs[i].buttons, inputs[i].aim_x);
+        apply_input_mut(&mut state.players[i], inputs[i].buttons, prev_buttons[i], inputs[i].aim_x);
         apply_gravity_mut(&mut state.players[i]);
-        move_and_collide_mut(&mut state.players[i], map, state.arena_left, state.arena_right);
+        move_and_collide_mut(&mut state.players[i], inputs[i].buttons, map);
+    }
+
+    // 5. Stomp detection — after movement
+    for a_idx in 0..2 {
+        let b_idx = 1 - a_idx;
+        // Skip if already stomping or being stomped, or target in cooldown
+        if state.players[a_idx].stomping_on >= 0 { continue; }
+        if state.players[a_idx].stomped_by >= 0 { continue; }
+        if state.players[b_idx].stomped_by >= 0 { continue; }
+        if state.players[b_idx].stomp_cooldown > 0 { continue; }
+        if state.players[a_idx].state_flags & flag::ALIVE == 0 { continue; }
+        if state.players[b_idx].state_flags & flag::ALIVE == 0 { continue; }
+
+        // A falling onto B's head
+        if state.players[a_idx].vy > 0 {
+            let a_feet = state.players[a_idx].y + PLAYER_HEIGHT;
+            let b_head = state.players[b_idx].y;
+            if a_feet >= b_head && a_feet <= b_head + fp(8)
+                && state.players[a_idx].x + PLAYER_WIDTH > state.players[b_idx].x
+                && state.players[a_idx].x < state.players[b_idx].x + PLAYER_WIDTH
+            {
+                // Initiate stomp
+                let b_id = state.players[b_idx].id;
+                let a_id = state.players[a_idx].id;
+                state.players[a_idx].stomping_on = b_id;
+                state.players[a_idx].grounded = true;
+                state.players[a_idx].vy = 0;
+                state.players[a_idx].y = state.players[b_idx].y - PLAYER_HEIGHT;
+
+                state.players[b_idx].stomped_by = a_id;
+                state.players[b_idx].stomp_shake_progress = 0;
+                state.players[b_idx].stomp_last_shake_dir = 0;
+
+                // Random auto-run direction and timer
+                let (dir_val, new_rng) = prng_int_range(state.rng_state, 0, 1);
+                state.rng_state = new_rng;
+                state.players[b_idx].stomp_auto_run_dir = if dir_val == 0 { -1 } else { 1 };
+                let (timer_val, new_rng2) = prng_int_range(state.rng_state, STOMP_AUTO_RUN_MIN, STOMP_AUTO_RUN_MAX);
+                state.rng_state = new_rng2;
+                state.players[b_idx].stomp_auto_run_timer = timer_val;
+            }
+        }
+    }
+
+    // 5b. Process active stomps
+    for victim_idx in 0..2 {
+        if state.players[victim_idx].stomped_by < 0 { continue; }
+        let rider_id = state.players[victim_idx].stomped_by;
+        let rider_idx = if state.players[0].id == rider_id { 0 } else { 1 };
+
+        // Check rider validity
+        if state.players[rider_idx].state_flags & flag::ALIVE == 0
+            || state.players[rider_idx].stomping_on != state.players[victim_idx].id
+        {
+            clear_stomp_fields(&mut state.players[victim_idx]);
+            continue;
+        }
+
+        // Damage tick
+        if current_tick % STOMP_DAMAGE_INTERVAL == 0 {
+            state.players[victim_idx].health -= STOMP_DAMAGE_PER_HIT;
+            if state.players[victim_idx].health <= 0 {
+                // Kill victim, launch rider
+                state.players[victim_idx].health = 0;
+                state.players[victim_idx].state_flags = 0;
+                state.players[rider_idx].stomping_on = -1;
+                state.players[rider_idx].vy = JUMP_VELOCITY / 2;
+                state.players[rider_idx].grounded = false;
+                clear_stomp_fields(&mut state.players[victim_idx]);
+                // Track kill in score
+                let killer = state.players[rider_idx].id;
+                if killer >= 0 && (killer as usize) < state.score.len() {
+                    state.score[killer as usize] += 1;
+                }
+                state.players[victim_idx].lives -= 1;
+                continue;
+            }
+        }
+
+        // Auto-run: move victim
+        state.players[victim_idx].stomp_auto_run_timer -= 1;
+        if state.players[victim_idx].stomp_auto_run_timer <= 0 {
+            state.players[victim_idx].stomp_auto_run_dir *= -1;
+            let (timer_val, new_rng) = prng_int_range(state.rng_state, STOMP_AUTO_RUN_MIN, STOMP_AUTO_RUN_MAX);
+            state.rng_state = new_rng;
+            state.players[victim_idx].stomp_auto_run_timer = timer_val;
+        }
+        let run_vx = PLAYER_SPEED * state.players[victim_idx].stomp_auto_run_dir;
+        state.players[victim_idx].vx = run_vx;
+
+        // Shake-off detection (alternating L/R)
+        let v_buttons = inputs[victim_idx].buttons;
+        let v_prev = prev_buttons[victim_idx];
+        let left_edge = (v_buttons & button::LEFT != 0) && (v_prev & button::LEFT == 0);
+        let right_edge = (v_buttons & button::RIGHT != 0) && (v_prev & button::RIGHT == 0);
+        if left_edge && state.players[victim_idx].stomp_last_shake_dir != -1 {
+            state.players[victim_idx].stomp_shake_progress += STOMP_SHAKE_PER_PRESS;
+            state.players[victim_idx].stomp_last_shake_dir = -1;
+        }
+        if right_edge && state.players[victim_idx].stomp_last_shake_dir != 1 {
+            state.players[victim_idx].stomp_shake_progress += STOMP_SHAKE_PER_PRESS;
+            state.players[victim_idx].stomp_last_shake_dir = 1;
+        }
+        state.players[victim_idx].stomp_shake_progress =
+            (state.players[victim_idx].stomp_shake_progress - STOMP_SHAKE_DECAY).max(0);
+
+        // Break free
+        if state.players[victim_idx].stomp_shake_progress >= STOMP_SHAKE_THRESHOLD {
+            state.players[rider_idx].stomping_on = -1;
+            state.players[rider_idx].vy = JUMP_VELOCITY;
+            state.players[rider_idx].grounded = false;
+            state.players[victim_idx].stomp_cooldown = STOMP_COOLDOWN_TICKS;
+            clear_stomp_fields(&mut state.players[victim_idx]);
+            continue;
+        }
+
+        // Lock rider to victim position
+        state.players[rider_idx].x = state.players[victim_idx].x;
+        state.players[rider_idx].y = state.players[victim_idx].y - PLAYER_HEIGHT;
+        state.players[rider_idx].vx = 0;
+        state.players[rider_idx].vy = 0;
+        state.players[rider_idx].grounded = true;
     }
 
     // 6. Weapon pickup collision
@@ -841,7 +1175,13 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
             let weapon = state.players[i].weapon;
             let stats = fp_weapon_stats(weapon);
             state.players[i].shoot_cooldown = stats.cooldown;
-            spawn_weapon_projectiles(state, i, inputs[i].aim_x, inputs[i].aim_y);
+            // Wall sliding: force aim away from wall (gun always points outward)
+            let shoot_aim_x = if state.players[i].wall_sliding {
+                -state.players[i].wall_dir as i8
+            } else {
+                inputs[i].aim_x
+            };
+            spawn_weapon_projectiles(state, i, shoot_aim_x, inputs[i].aim_y);
             state.players[i].ammo -= 1;
             if state.players[i].ammo <= 0 {
                 state.players[i].weapon = WEAPON_NONE;
@@ -850,6 +1190,8 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     }
 
     // 8. Move projectiles in-place + compact dead ones
+    //    Also check platform/wall collisions (rockets explode with splash)
+    let mut solid_kills = KillList::new();
     {
         let mut write = 0usize;
         for read in 0..state.proj_count as usize {
@@ -857,7 +1199,19 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
             state.projectiles[read].y += state.projectiles[read].vy;
             state.projectiles[read].lifetime -= 1;
 
-            if state.projectiles[read].lifetime > 0 && !is_out_of_bounds(&state.projectiles[read], map, state.arena_left, state.arena_right) {
+            let expired = state.projectiles[read].lifetime <= 0;
+            let oob = is_out_of_bounds(&state.projectiles[read], map);
+            let solid = hits_solid(&state.projectiles[read], map);
+
+            if expired || oob || solid {
+                // Rocket splash damage on any destruction
+                if state.projectiles[read].weapon == WEAPON_ROCKET {
+                    let ex = state.projectiles[read].x;
+                    let ey = state.projectiles[read].y;
+                    let oid = state.projectiles[read].owner_id;
+                    apply_fp_splash_damage(ex, ey, oid, None, &mut state.players, &mut solid_kills);
+                }
+            } else {
                 if write != read {
                     state.projectiles[write] = state.projectiles[read];
                 }
@@ -870,13 +1224,25 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
     // 9. Projectile hits
     let hit_kills = resolve_hits_mut(state);
 
-    // 10. Deaths + lives
-    for p in &mut state.players {
-        if hit_kills.contains_victim(p.id) {
-            p.lives -= 1;
-            p.respawn_timer = 0;
-            p.vx = 0;
-            p.vy = 0;
+    // 10. Deaths + lives (break stomp links on death)
+    for p_idx in 0..2 {
+        if hit_kills.contains_victim(state.players[p_idx].id)
+            || solid_kills.contains_victim(state.players[p_idx].id) {
+            state.players[p_idx].lives -= 1;
+            state.players[p_idx].respawn_timer = 0;
+            state.players[p_idx].vx = 0;
+            state.players[p_idx].vy = 0;
+            // Break stomp links
+            let my_id = state.players[p_idx].id;
+            let other = 1 - p_idx;
+            if state.players[other].stomping_on == my_id {
+                state.players[other].stomping_on = -1;
+                state.players[other].grounded = false;
+            }
+            if state.players[other].stomped_by == my_id {
+                clear_stomp_fields(&mut state.players[other]);
+            }
+            clear_stomp_fields(&mut state.players[p_idx]);
         }
     }
 
@@ -894,95 +1260,76 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         state.winner = 0;
     }
 
-    // 11. Respawn
-    if !state.match_over && state.death_linger_timer == 0 {
-        for i in 0..2 {
-            let p = &mut state.players[i];
-            if p.state_flags & flag::ALIVE == 0 && p.lives > 0 {
-                p.respawn_timer += 1;
-                if p.respawn_timer >= RESPAWN_TICKS {
-                    let (idx, new_rng) =
-                        prng_int_range(state.rng_state, 0, NUM_SPAWNS as i32 - 1);
-                    state.rng_state = new_rng;
-                    let spawn = &map.spawns[idx as usize];
-                    let sx = state.arena_left.max(spawn.x.min(state.arena_right - PLAYER_WIDTH));
-                    p.x = sx;
-                    p.y = spawn.y;
-                    p.vx = 0;
-                    p.vy = 0;
-                    p.health = MAX_HEALTH;
-                    p.state_flags = flag::ALIVE | flag::INVINCIBLE;
-                    p.respawn_timer = INVINCIBLE_TICKS;
-                    p.shoot_cooldown = 0;
-                    p.grounded = false;
-                    p.weapon = WEAPON_NONE;
-                    p.ammo = 0;
-                }
-            }
-        }
-    }
+    // 11. (Respawn removed — 1 life per round, death = round over)
 
-    // 12. Sudden death
-    if !state.match_over && state.death_linger_timer == 0 && current_tick >= SUDDEN_DEATH_START_TICK {
-        let duration = MATCH_DURATION_TICKS - SUDDEN_DEATH_START_TICK; // 600
-        let elapsed = current_tick - SUDDEN_DEATH_START_TICK;
-        let progress = if elapsed >= duration {
-            ONE
-        } else {
-            (elapsed * ONE) / duration
-        };
+    // 12. Sudden death — damage zone (not physical wall)
+    //     Zone closes over SUDDEN_DEATH_DURATION ticks starting at cfg_sudden_death.
+    //     Players inside the zone take scaling tick damage (up to ZONE_MAX_DPS at full close).
+    //     Bullets pass through the zone — it's cosmetic/damage only.
+    let sd_start = state.cfg_sudden_death;
+    let sd_dur = SUDDEN_DEATH_DURATION; // 300 ticks = 5 seconds
+    if !state.match_over && state.death_linger_timer == 0 && current_tick >= sd_start {
+        let elapsed = current_tick - sd_start;
+        let progress = if elapsed >= sd_dur { ONE } else { (elapsed * ONE) / sd_dur };
         let half_w = map.width / 2;
         state.arena_left = mul(progress, half_w);
         state.arena_right = map.width - mul(progress, half_w);
 
-        // Kill players outside arena
-        let mut last_wall_kill: i32 = -1;
-        for p in &mut state.players {
-            if p.state_flags & flag::ALIVE == 0 { continue; }
-            if p.x < state.arena_left || p.x + PLAYER_WIDTH > state.arena_right {
-                last_wall_kill = p.id;
-                p.lives -= 1;
-                p.health = 0;
-                p.state_flags = 0;
-                p.respawn_timer = 0;
-                p.vx = 0;
-                p.vy = 0;
-            }
-        }
+        // Zone damage: scaling tick damage. At full close: ZONE_MAX_DPS hp/sec = ~0.33 hp/tick.
+        // Use interval-based approach: apply 1 damage every N ticks.
+        // At full progress (sd_dur ticks elapsed): interval = 60/ZONE_MAX_DPS = 3 ticks.
+        // Before full: interval scales inversely with progress.
+        let dmg_progress = elapsed.min(sd_dur);
+        if dmg_progress > 0 {
+            // interval = (sd_dur * 60 / ZONE_MAX_DPS) / dmg_progress
+            // = sd_dur * 3 / dmg_progress  (since 60/20=3)
+            let interval = ((sd_dur * 3) / dmg_progress).max(1);
 
-        // Re-check elimination — use linger
-        let mut alive_after = 0i32;
-        let mut alive_after_id = -1i32;
-        for i in 0..2 {
-            if state.players[i].lives > 0 { alive_after += 1; alive_after_id = state.players[i].id; }
-        }
-        if alive_after == 1 {
-            state.death_linger_timer = DEATH_LINGER_TICKS;
-            state.winner = alive_after_id;
-        } else if alive_after == 0 {
-            state.death_linger_timer = DEATH_LINGER_TICKS;
-            // Give win to player who wasn't the last wall kill
-            let mut other_id = 0i32;
             for i in 0..2 {
-                if state.players[i].id != last_wall_kill { other_id = state.players[i].id; break; }
+                let p = &mut state.players[i];
+                if p.state_flags & flag::ALIVE == 0 { continue; }
+                let px_center = p.x + PLAYER_WIDTH / 2;
+                if px_center < state.arena_left || px_center > state.arena_right {
+                    // Player center is inside the zone — apply damage
+                    if elapsed % interval == 0 {
+                        p.health -= 1;
+                        if p.health <= 0 {
+                            p.health = 0;
+                            p.lives -= 1;
+                            p.state_flags = 0;
+                            p.vx = 0;
+                            p.vy = 0;
+                        }
+                    }
+                }
             }
-            state.winner = other_id;
         }
 
-        if !state.match_over && state.death_linger_timer == 0 && progress >= ONE {
-            state.match_over = true;
-            if state.players[0].lives > state.players[1].lives {
-                state.winner = state.players[0].id;
-            } else if state.players[1].lives > state.players[0].lives {
-                state.winner = state.players[1].id;
-            } else {
+        // Check for elimination after zone damage
+        let mut alive_count = 0i32;
+        let mut alive_id = -1i32;
+        for i in 0..2 {
+            if state.players[i].state_flags & flag::ALIVE != 0 {
+                alive_count += 1;
+                alive_id = state.players[i].id;
+            }
+        }
+        if alive_count == 1 && state.death_linger_timer == 0 {
+            state.death_linger_timer = DEATH_LINGER_TICKS;
+            state.winner = alive_id;
+        } else if alive_count == 0 && state.death_linger_timer == 0 {
+            state.death_linger_timer = DEATH_LINGER_TICKS;
+            // Score-based tiebreaker: higher score wins, player 0 wins ties
+            if state.score[0] >= state.score[1] {
                 state.winner = 0;
+            } else {
+                state.winner = 1;
             }
         }
     }
 
-    // 13. Time-up
-    if !state.match_over && state.death_linger_timer == 0 && current_tick >= MATCH_DURATION_TICKS {
+    // 13. Time-up (uses per-state config)
+    if !state.match_over && state.death_linger_timer == 0 && current_tick >= state.cfg_match_duration {
         state.match_over = true;
         if state.players[0].lives > state.players[1].lives {
             state.winner = state.players[0].id;
@@ -997,8 +1344,13 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         }
     }
 
-    // 14. Score
+    // 14. Score (projectile kills only; stomp kills scored in stomp processing)
     for &(killer, _) in hit_kills.iter() {
+        if killer >= 0 && (killer as usize) < state.score.len() {
+            state.score[killer as usize] += 1;
+        }
+    }
+    for &(killer, _) in solid_kills.iter() {
         if killer >= 0 && (killer as usize) < state.score.len() {
             state.score[killer as usize] += 1;
         }
@@ -1006,6 +1358,9 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
 
     // 15. Tick pickup timers
     tick_pickup_timers(state);
+
+    // 16. Update prev_buttons for next tick's edge detection
+    state.prev_buttons = [inputs[0].buttons, inputs[1].buttons];
 }
 
 /// Convenience wrapper that returns a new State (for tests / non-zkVM use).
@@ -1126,6 +1481,16 @@ pub fn encode_state(s: &State) -> Vec<u8> {
         b.extend_from_slice(&p.respawn_timer.to_le_bytes());
         b.push(p.weapon as u8);
         b.extend_from_slice(&p.ammo.to_le_bytes());
+        b.extend_from_slice(&p.jumps_left.to_le_bytes());
+        b.push(p.wall_sliding as u8);
+        b.extend_from_slice(&p.wall_dir.to_le_bytes());
+        b.extend_from_slice(&p.stomped_by.to_le_bytes());
+        b.extend_from_slice(&p.stomping_on.to_le_bytes());
+        b.extend_from_slice(&p.stomp_shake_progress.to_le_bytes());
+        b.extend_from_slice(&p.stomp_last_shake_dir.to_le_bytes());
+        b.extend_from_slice(&p.stomp_auto_run_dir.to_le_bytes());
+        b.extend_from_slice(&p.stomp_auto_run_timer.to_le_bytes());
+        b.extend_from_slice(&p.stomp_cooldown.to_le_bytes());
     }
     b.push(s.proj_count);
     for i in 0..s.proj_count as usize {
@@ -1157,6 +1522,11 @@ pub fn encode_state(s: &State) -> Vec<u8> {
     b.push(s.match_over as u8);
     b.extend_from_slice(&s.winner.to_le_bytes());
     b.extend_from_slice(&s.death_linger_timer.to_le_bytes());
+    b.push(s.prev_buttons[0]);
+    b.push(s.prev_buttons[1]);
+    b.extend_from_slice(&s.cfg_initial_lives.to_le_bytes());
+    b.extend_from_slice(&s.cfg_match_duration.to_le_bytes());
+    b.extend_from_slice(&s.cfg_sudden_death.to_le_bytes());
     b
 }
 
@@ -1177,6 +1547,10 @@ pub fn decode_state(b: &[u8]) -> State {
         id: 0, x: 0, y: 0, vx: 0, vy: 0, facing: 0, health: 0,
         lives: 0, shoot_cooldown: 0, grounded: false, state_flags: 0, respawn_timer: 0,
         weapon: WEAPON_NONE, ammo: 0,
+        jumps_left: MAX_JUMPS, wall_sliding: false, wall_dir: 0,
+        stomped_by: -1, stomping_on: -1, stomp_shake_progress: 0,
+        stomp_last_shake_dir: 0, stomp_auto_run_dir: 0, stomp_auto_run_timer: 0,
+        stomp_cooldown: 0,
     }; 2];
     for p in &mut players {
         p.id = r32(b, &mut off);
@@ -1193,6 +1567,16 @@ pub fn decode_state(b: &[u8]) -> State {
         p.respawn_timer = r32(b, &mut off);
         p.weapon = b[off] as i8; off += 1;
         p.ammo = r32(b, &mut off);
+        p.jumps_left = r32(b, &mut off);
+        p.wall_sliding = b[off] != 0; off += 1;
+        p.wall_dir = r32(b, &mut off);
+        p.stomped_by = r32(b, &mut off);
+        p.stomping_on = r32(b, &mut off);
+        p.stomp_shake_progress = r32(b, &mut off);
+        p.stomp_last_shake_dir = r32(b, &mut off);
+        p.stomp_auto_run_dir = r32(b, &mut off);
+        p.stomp_auto_run_timer = r32(b, &mut off);
+        p.stomp_cooldown = r32(b, &mut off);
     }
     let proj_count = b[off]; off += 1;
     let mut projectiles = [EMPTY_PROJECTILE; MAX_PROJECTILES];
@@ -1228,11 +1612,19 @@ pub fn decode_state(b: &[u8]) -> State {
     let match_over = b[off] != 0; off += 1;
     let winner = r32(b, &mut off);
     let death_linger_timer = r32(b, &mut off);
+    let prev_b0 = b[off]; off += 1;
+    let prev_b1 = b[off]; off += 1;
+    // Config fields (appended in newer format; default to constants if missing)
+    let cfg_initial_lives = if off + 4 <= b.len() { r32(b, &mut off) } else { INITIAL_LIVES };
+    let cfg_match_duration = if off + 4 <= b.len() { r32(b, &mut off) } else { MATCH_DURATION_TICKS };
+    let cfg_sudden_death = if off + 4 <= b.len() { r32(b, &mut off) } else { SUDDEN_DEATH_START_TICK };
+    let _ = off; // suppress unused warning
 
     State {
         tick, players, projectiles, proj_count, weapon_pickups, pickup_count,
         rng_state, score: [s0, s1], next_proj_id, arena_left, arena_right,
-        match_over, winner, death_linger_timer,
+        match_over, winner, death_linger_timer, prev_buttons: [prev_b0, prev_b1],
+        cfg_initial_lives, cfg_match_duration, cfg_sudden_death,
     }
 }
 
@@ -1257,6 +1649,16 @@ pub fn hash_state(s: &State) -> [u8; 32] {
         h.update(p.respawn_timer.to_le_bytes());
         h.update([p.weapon as u8]);
         h.update(p.ammo.to_le_bytes());
+        h.update(p.jumps_left.to_le_bytes());
+        h.update([p.wall_sliding as u8]);
+        h.update(p.wall_dir.to_le_bytes());
+        h.update(p.stomped_by.to_le_bytes());
+        h.update(p.stomping_on.to_le_bytes());
+        h.update(p.stomp_shake_progress.to_le_bytes());
+        h.update(p.stomp_last_shake_dir.to_le_bytes());
+        h.update(p.stomp_auto_run_dir.to_le_bytes());
+        h.update(p.stomp_auto_run_timer.to_le_bytes());
+        h.update(p.stomp_cooldown.to_le_bytes());
     }
     h.update([s.proj_count]);
     for i in 0..s.proj_count as usize {
@@ -1288,6 +1690,11 @@ pub fn hash_state(s: &State) -> [u8; 32] {
     h.update([s.match_over as u8]);
     h.update(s.winner.to_le_bytes());
     h.update(s.death_linger_timer.to_le_bytes());
+    h.update([s.prev_buttons[0]]);
+    h.update([s.prev_buttons[1]]);
+    h.update(s.cfg_initial_lives.to_le_bytes());
+    h.update(s.cfg_match_duration.to_le_bytes());
+    h.update(s.cfg_sudden_death.to_le_bytes());
     h.finalize().into()
 }
 

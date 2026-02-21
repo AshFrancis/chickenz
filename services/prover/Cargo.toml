@@ -2,6 +2,8 @@
 members = ["core", "guest", "chunk-guest", "match-guest", "methods", "host"]
 # Only build core by default; guest/methods/host need RISC Zero toolchain
 default-members = ["core"]
+# wasm crate excluded: has std deps (wasm-bindgen) incompatible with no_std guest builds
+exclude = ["wasm"]
 resolver = "2"
 
 [workspace.dependencies]

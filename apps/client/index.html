@@ -453,6 +453,7 @@
         font-size: 12px;
       }
       .match-players { color: #eee; }
+      .match-wallet { color: #888; font-size: 10px; }
       .match-score { color: #aaa; margin-left: 8px; }
       .proof-badge {
         font-size: 10px;
@@ -800,6 +801,158 @@
         transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
         transition-delay: var(--td, 0ms);
       }
+      /* Tournament lobby overlay */
+      #tournament-overlay {
+        display: none;
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(10, 10, 20, 0.95);
+        z-index: 100;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+      #tournament-overlay.visible { display: flex; }
+      #tournament-overlay h2 {
+        font-size: 24px;
+        color: #ffee58;
+        text-shadow: 2px 2px 0 #c9a800;
+      }
+      #tournament-code {
+        font-size: 28px;
+        font-weight: 700;
+        color: #ffee58;
+        letter-spacing: 6px;
+        text-shadow: 2px 2px 0 #c9a800, 4px 4px 0 #222;
+      }
+      .tournament-players {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .tournament-slot {
+        width: 120px;
+        padding: 12px;
+        background: #1a1a2e;
+        border: 2px solid #333;
+        text-align: center;
+        font-size: 14px;
+        color: #888;
+      }
+      .tournament-slot.filled {
+        color: #fff;
+        border-color: #ffee58;
+      }
+      #tournament-status {
+        font-size: 12px;
+        color: #888;
+      }
+
+      /* Bracket overlay (between matches) */
+      #bracket-overlay {
+        display: none;
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(10, 10, 20, 0.95);
+        z-index: 100;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 24px;
+      }
+      #bracket-overlay.visible { display: flex; }
+      #bracket-overlay h2 {
+        font-size: 20px;
+        color: #ffee58;
+        text-shadow: 2px 2px 0 #c9a800;
+      }
+      .bracket-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+        max-width: 500px;
+      }
+      .bracket-match {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px;
+        background: #1a1a2e;
+        border: 2px solid #333;
+        font-size: 12px;
+      }
+      .bracket-match.completed { border-color: #66bb6a; }
+      .bracket-match.current { border-color: #ffa726; }
+      .bracket-match .match-label { color: #ffa726; min-width: 120px; }
+      .bracket-match .match-players-text { color: #ccc; flex: 1; text-align: center; }
+      .bracket-match .match-winner { color: #66bb6a; min-width: 80px; text-align: right; }
+
+      /* Spectate overlay (during match) */
+      #spectate-overlay {
+        display: none;
+        position: absolute;
+        top: 44px; left: 0;
+        width: 100%;
+        z-index: 55;
+        pointer-events: none;
+        text-align: center;
+      }
+      #spectate-overlay.visible { display: block; }
+      #spectate-label {
+        font-size: 12px;
+        color: #fff;
+        letter-spacing: 2px;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        background: rgba(0,0,0,0.4);
+        display: inline-block;
+        padding: 4px 16px;
+      }
+
+      /* Tournament results overlay */
+      #tournament-results {
+        display: none;
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(10, 10, 20, 0.95);
+        z-index: 100;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+      #tournament-results.visible { display: flex; }
+      #tournament-results h2 {
+        font-size: 24px;
+        color: #ffee58;
+        text-shadow: 2px 2px 0 #c9a800;
+      }
+      .standings-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+        max-width: 300px;
+      }
+      .standing-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 16px;
+        background: #1a1a2e;
+        border: 2px solid #333;
+        font-size: 14px;
+      }
+      .standing-row .place { color: #ffa726; font-weight: 700; }
+      .standing-row .name { color: #fff; }
+      .standing-row:first-child { border-color: #ffee58; }
+      .standing-row:first-child .place { color: #ffee58; }
     </style>
   </head>
   <body>
@@ -956,14 +1109,38 @@
           <div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div><div class="t-cell"></div>
         </div>
 
+        <!-- Tournament lobby overlay -->
+        <div id="tournament-overlay">
+          <h2>TOURNAMENT</h2>
+          <div id="tournament-code"></div>
+          <div class="tournament-players" id="tournament-players"></div>
+          <div id="tournament-status">Waiting for players...</div>
+        </div>
+
+        <!-- Bracket overlay (between matches) -->
+        <div id="bracket-overlay">
+          <h2>BRACKET</h2>
+          <div class="bracket-grid" id="bracket-grid"></div>
+        </div>
+
+        <!-- Spectate overlay (during match) -->
+        <div id="spectate-overlay">
+          <span id="spectate-label">SPECTATING</span>
+        </div>
+
+        <!-- Tournament results -->
+        <div id="tournament-results">
+          <h2>TOURNAMENT RESULTS</h2>
+          <div class="standings-list" id="standings-list"></div>
+        </div>
+
         <!-- Lobby overlay -->
         <div id="lobby-overlay">
           <div id="lobby-header">
             <h2>CHICKENZ</h2>
           </div>
           <div id="lobby-actions">
-            <!-- Ranked mode hidden for demo -->
-            <div class="mode-toggle" style="display:none">
+            <div class="mode-toggle">
               <button id="btn-mode-casual" class="btn-mode active">Casual</button>
               <button id="btn-mode-ranked" class="btn-mode locked">Ranked</button>
             </div>
@@ -974,6 +1151,8 @@
             <span class="lobby-divider">|</span>
             <input id="input-join-code" type="text" placeholder="CODE" maxlength="5" />
             <button id="btn-join-code" class="btn">Join</button>
+            <span class="lobby-divider">|</span>
+            <button id="btn-create-tournament" class="btn" style="border-color:#ffa726;color:#ffa726">Tournament</button>
           </div>
           <div id="lobby-tabs" role="tablist">
             <button class="lobby-tab active" data-tab="rooms" role="tab" aria-selected="true">Rooms</button>

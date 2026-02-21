@@ -47,6 +47,15 @@ export interface SetUsernameMessage {
   username: string;
 }
 
+export interface CreateTournamentMessage {
+  type: "create_tournament";
+}
+
+export interface JoinTournamentCodeMessage {
+  type: "join_tournament_code";
+  code: string;
+}
+
 export type ClientMessage =
   | QuickplayMessage
   | CreateRoomMessage
@@ -55,7 +64,9 @@ export type ClientMessage =
   | InputMessage
   | ListRoomsMessage
   | SetUsernameMessage
-  | SetWalletMessage;
+  | SetWalletMessage
+  | CreateTournamentMessage
+  | JoinTournamentCodeMessage;
 
 // ── Server → Client ────────────────────────────────────────
 
@@ -139,6 +150,86 @@ export interface ErrorMessage {
   message: string;
 }
 
+// ── Tournament messages ──────────────────────────────────
+
+export interface TournamentMatchResult {
+  matchIndex: number;
+  matchLabel: string;
+  winnerSlot: number; // slot index (0-3) of winner, or -1 if not played
+  loserSlot: number;
+}
+
+export interface TournamentBracket {
+  matches: TournamentMatchResult[];
+  playerNames: string[];
+}
+
+export interface TournamentLobbyMessage {
+  type: "tournament_lobby";
+  tournamentId: string;
+  joinCode: string;
+  players: string[];
+  status: "waiting" | "playing" | "ended";
+}
+
+export interface TournamentMatchStartMessage {
+  type: "tournament_match_start";
+  matchLabel: string;
+  matchIndex: number;
+  role: "fighter" | "spectator";
+  playerId?: number; // only for fighters (0 or 1)
+  seed: number;
+  usernames: [string, string];
+  mapIndex: number;
+  totalRounds: number;
+  characters: [number, number];
+}
+
+export interface SpectateStateMessage {
+  type: "spectate_state";
+  tick: number;
+  players: SerializedPlayer[];
+  projectiles: SerializedProjectile[];
+  weaponPickups: SerializedWeaponPickup[];
+  scores: [number, number];
+  arenaLeft: number;
+  arenaRight: number;
+  matchOver: boolean;
+  winner: number;
+  deathLingerTimer: number;
+  rngState: number;
+  nextProjectileId: number;
+  lastButtons: [number, number];
+}
+
+export interface SpectateRoundEndMessage {
+  type: "spectate_round_end";
+  round: number;
+  winner: number;
+  roundWins: [number, number];
+}
+
+export interface SpectateRoundStartMessage {
+  type: "spectate_round_start";
+  round: number;
+  seed: number;
+  mapIndex: number;
+}
+
+export interface TournamentMatchEndMessage {
+  type: "tournament_match_end";
+  matchIndex: number;
+  matchLabel: string;
+  winnerName: string;
+  bracket: TournamentBracket;
+}
+
+export interface TournamentEndMessage {
+  type: "tournament_end";
+  standings: string[]; // 1st, 2nd, 3rd, 4th
+  bracket: TournamentBracket;
+}
+
 export type ServerMessage =
   | WaitingMessage
   | MatchedMessage
@@ -147,7 +238,14 @@ export type ServerMessage =
   | RoundEndMessage
   | RoundStartMessage
   | LobbyMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | TournamentLobbyMessage
+  | TournamentMatchStartMessage
+  | SpectateStateMessage
+  | SpectateRoundEndMessage
+  | SpectateRoundStartMessage
+  | TournamentMatchEndMessage
+  | TournamentEndMessage;
 
 // ── Serialized state sub-types ─────────────────────────────
 
@@ -172,6 +270,7 @@ export interface SerializedPlayer {
   stompedBy: number | null;
   stompingOn: number | null;
   stompShakeProgress: number;
+  stompCooldown: number;
 }
 
 export interface SerializedProjectile {

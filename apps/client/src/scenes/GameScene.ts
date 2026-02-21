@@ -16,11 +16,10 @@ import {
   PlayerStateFlag,
   WeaponType,
   Facing,
-  createInitialState,
-  step,
   NULL_INPUT,
 } from "@chickenz/sim";
-import type { GameState, GameMap, MatchConfig, PlayerInput, PlayerState, WeaponPickup, InputMap } from "@chickenz/sim";
+import type { GameMap, MatchConfig, PlayerInput } from "@chickenz/sim";
+import { WasmState } from "../wasm";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
 import { DPR, VIEW_W, VIEW_H } from "../game";
@@ -157,9 +156,11 @@ function smoothLerp(a: number, b: number, factor: number, dt: number): number {
 }
 
 export class GameScene extends Phaser.Scene {
-  private prevState: GameState | null = null;
-  private currState: GameState | null = null;
+  private prevState: any = null;
+  private currState: any = null;
   private config!: MatchConfig;
+  private warmupWasm: WasmState | null = null;
+  private replayWasm: WasmState | null = null;
   readonly inputManager = new InputManager();
   private playing = false;
   private localPlayerId = 0;
@@ -240,9 +241,8 @@ export class GameScene extends Phaser.Scene {
 
   // Warmup mode (waiting room with jumping)
   private warmupMode = false;
-  private warmupState: GameState | null = null;
+  private warmupState: any = null;
   private warmupConfig: MatchConfig | null = null;
-  private warmupPrevInputs: InputMap = new Map();
   private warmupAccum = 0;
   private warmupJoinCode = "";
   // Warmup overlay is DOM-based (see index.html #warmup-overlay)
@@ -257,9 +257,16 @@ export class GameScene extends Phaser.Scene {
   private lastReceivedButtons: [number, number] = [0, 0];
   private prevFrameButtons: [number, number] = [0, 0];
 
+  // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
+  private pendingServerState: any = null;
+  private pendingServerButtons: [number, number] | undefined = undefined;
+
   // Scene lifecycle — create() may not have run yet when network callbacks fire
   private sceneReady = false;
   private readyQueue: (() => void)[] = [];
+
+  // Spectate mode (tournament)
+  private spectateMode = false;
 
   // Replay mode
   private replayMode = false;
@@ -268,7 +275,10 @@ export class GameScene extends Phaser.Scene {
   private replayPaused = false;
   private replaySpeed = 1;
   private replayAccum = 0;
-  private replayPrevInputs: InputMap = new Map();
+  private replayRounds: { seed: number; mapIndex: number; transcript: TickInputPair[] }[] = [];
+  private replayCurrentRound = 0;
+  private replayRoundWins: [number, number] = [0, 0];
+  private replayRoundTransitionTimer = 0;
   private replayInfoText!: Phaser.GameObjects.Text;
   private roundText!: Phaser.GameObjects.Text;
 
@@ -346,20 +356,13 @@ export class GameScene extends Phaser.Scene {
     }).setResolution(DPR).setVisible(false);
     this.time.delayedCall(100, () => warmFont.destroy());
 
-    // JIT warmup: run ~300 silent sim ticks so V8 optimizes step() before any match
+    // JIT warmup: run ~300 silent WASM sim ticks to warm up the module
     {
-      const warmCfg: MatchConfig = {
-        seed: 1, map: ARENA, playerCount: 2, tickRate: TICK_RATE,
-        initialLives: INITIAL_LIVES, matchDurationTicks: MATCH_DURATION_TICKS,
-        suddenDeathStartTick: SUDDEN_DEATH_START_TICK,
-      };
-      let ws = createInitialState(warmCfg);
-      let prevInputs: InputMap = new Map();
-      const dummyInputs: InputMap = new Map([[0, NULL_INPUT], [1, NULL_INPUT]]);
+      const ws = WasmState.new_arena(1);
       for (let t = 0; t < 300; t++) {
-        ws = step(ws, dummyInputs, prevInputs, warmCfg);
-        prevInputs = dummyInputs;
+        ws.step(0, 0, 0, 0, 0, 0);
       }
+      ws.free();
     }
 
     // HUD texts (rendered on separate HUD camera, immune to zoom)
@@ -641,7 +644,6 @@ export class GameScene extends Phaser.Scene {
     this.warmupJoinCode = joinCode;
     this.playerUsernames = [username || "", ""];
     this.warmupAccum = 0;
-    this.warmupPrevInputs = new Map();
 
     const map = ARENA;
     this.createMapTiles(map, Date.now() >>> 0);
@@ -654,9 +656,16 @@ export class GameScene extends Phaser.Scene {
       matchDurationTicks: 999999, // infinite
       suddenDeathStartTick: 999999,
     };
-    this.warmupState = createInitialState(this.warmupConfig);
-    // Banish player 2 off-screen so they don't absorb bullets or affect camera
+    // Free previous WASM state if any
+    if (this.warmupWasm) {
+      try { this.warmupWasm.free(); } catch { /* already freed */ }
+    }
+    // Use warmup constructor: 99 lives, no sudden death, no match end
+    this.warmupWasm = (WasmState as any).new_warmup(0, JSON.stringify(map)) as WasmState;
+    this.warmupState = this.warmupWasm!.export_state();
+    // Banish player 2 off-screen and import back so WASM sim knows they're gone
     this.banishWarmupPlayer2(this.warmupState);
+    this.warmupWasm!.import_state(this.warmupState);
     this.currState = this.warmupState;
     this.prevState = this.warmupState;
     this.config = this.warmupConfig;
@@ -689,7 +698,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Move player 2 far off-screen so they can't absorb bullets or affect camera. */
-  private banishWarmupPlayer2(state: GameState) {
+  private banishWarmupPlayer2(state: any) {
     const p1 = state.players[1] as { x: number; y: number; vx: number; vy: number } | undefined;
     if (p1) {
       p1.x = -9999;
@@ -702,6 +711,10 @@ export class GameScene extends Phaser.Scene {
   stopWarmup() {
     this.warmupMode = false;
     this.warmupState = null;
+    if (this.warmupWasm) {
+      try { this.warmupWasm.free(); } catch { /* already freed */ }
+      this.warmupWasm = null;
+    }
     document.getElementById("warmup-overlay")?.classList.remove("visible");
   }
 
@@ -752,6 +765,8 @@ export class GameScene extends Phaser.Scene {
     // Transition covers screen, swap map at midpoint (fully black), then reveal
     this.playTransition(() => {
       this.initRound(seed, mapIndex);
+      // Spectators don't predict
+      if (this.spectateMode) this.prediction = null;
       this.showRoundPopup(round + 1);
       this.playSound("match-start");
     });
@@ -867,6 +882,7 @@ export class GameScene extends Phaser.Scene {
 
   private initRound(seed: number, mapIndex: number) {
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0] ?? ARENA;
+    const mapJson = JSON.stringify(map);
     this.createMapTiles(map, seed);
     this.config = {
       seed,
@@ -877,14 +893,20 @@ export class GameScene extends Phaser.Scene {
       matchDurationTicks: MATCH_DURATION_TICKS,
       suddenDeathStartTick: SUDDEN_DEATH_START_TICK,
     };
-    const initial = createInitialState(this.config);
+    // Get initial state from a temp WASM instance for display
+    const tempWasm = new WasmState(seed, mapJson);
+    const initial = tempWasm.export_state();
+    tempWasm.free();
     this.prevState = initial;
     this.currState = initial;
     this.playing = true;
     hideAnnounce();
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
-    this.prediction = new PredictionManager(initial, this.config, this.localPlayerId);
+    if (this.prediction) {
+      try { this.prediction.free(); } catch { /* already freed */ }
+    }
+    this.prediction = new PredictionManager(seed, mapJson, this.localPlayerId);
     this.predictionAccum = 0;
     // Snap camera to midpoint between both players so they're visible immediately
     const p0 = initial.players[0];
@@ -1000,7 +1022,7 @@ export class GameScene extends Phaser.Scene {
     const tilesY = Math.ceil(mh / 16);
 
     const addBorder = (x: number, y: number, frame: number) => {
-      const img = this.add.image(x, y, "terrain", frame).setDepth(1);
+      const img = this.add.image(x, y, "terrain", frame).setDepth(11);
       this.hudCamera?.ignore(img);
       this.borderTiles.push(img);
     };
@@ -1022,9 +1044,9 @@ export class GameScene extends Phaser.Scene {
     addBorder(mw - bo, mh - bo, B_BR);
   }
 
-  startReplay(transcript: TickInputPair[], seed: number) {
+  startReplay(transcript: TickInputPair[], seed: number, mapIndex?: number) {
     if (!this.sceneReady) {
-      this.onReady(() => this.startReplay(transcript, seed));
+      this.onReady(() => this.startReplay(transcript, seed, mapIndex));
       return;
     }
     this.assignCharacters();
@@ -1034,22 +1056,28 @@ export class GameScene extends Phaser.Scene {
     this.replayPaused = false;
     this.replaySpeed = 1;
     this.replayAccum = 0;
-    this.replayPrevInputs = new Map();
     this.localPlayerId = 0;
     this.playerUsernames = ["P1", "P2"];
     this.prediction = null;
 
-    this.createMapTiles(ARENA, seed);
+    const map = mapIndex !== undefined ? (MAP_POOL[mapIndex] ?? ARENA) : ARENA;
+    const mapJson = JSON.stringify(map);
+    this.createMapTiles(map, seed);
     this.config = {
       seed,
-      map: ARENA,
+      map,
       playerCount: 2,
       tickRate: TICK_RATE,
       initialLives: INITIAL_LIVES,
       matchDurationTicks: MATCH_DURATION_TICKS,
       suddenDeathStartTick: SUDDEN_DEATH_START_TICK,
     };
-    const initial = createInitialState(this.config);
+    // Free previous replay WASM state
+    if (this.replayWasm) {
+      try { this.replayWasm.free(); } catch { /* already freed */ }
+    }
+    this.replayWasm = new WasmState(seed, mapJson);
+    const initial = this.replayWasm.export_state();
     this.prevState = initial;
     this.currState = initial;
     this.playing = true;
@@ -1081,38 +1109,77 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  startMultiRoundReplay(rounds: { seed: number; mapIndex: number; transcript: TickInputPair[] }[]) {
+    if (!rounds.length) return;
+    this.replayRounds = rounds;
+    this.replayCurrentRound = 0;
+    this.replayRoundWins = [0, 0];
+    this.replayRoundTransitionTimer = 0;
+    const first = rounds[0]!;
+    this.startReplay(first.transcript, first.seed, first.mapIndex);
+  }
+
+  private startReplayRound(roundIndex: number) {
+    const round = this.replayRounds[roundIndex];
+    if (!round) return;
+    this.replayCurrentRound = roundIndex;
+    this.replayTick = 0;
+    this.replayAccum = 0;
+    this.replayTranscript = round.transcript;
+    this.replayRoundTransitionTimer = 0;
+
+    const map = MAP_POOL[round.mapIndex] ?? MAP_POOL[0] ?? ARENA;
+    const mapJson = JSON.stringify(map);
+    this.createMapTiles(map, round.seed);
+    this.config = {
+      seed: round.seed,
+      map,
+      playerCount: 2,
+      tickRate: TICK_RATE,
+      initialLives: INITIAL_LIVES,
+      matchDurationTicks: MATCH_DURATION_TICKS,
+      suddenDeathStartTick: SUDDEN_DEATH_START_TICK,
+    };
+    // Free previous replay WASM state
+    if (this.replayWasm) {
+      try { this.replayWasm.free(); } catch { /* already freed */ }
+    }
+    this.replayWasm = new WasmState(round.seed, mapJson);
+    const initial = this.replayWasm.export_state();
+    this.prevState = initial;
+    this.currState = initial;
+    this.playing = true;
+    hideAnnounce();
+    document.getElementById("sudden-death-overlay")?.classList.remove("visible");
+    this.explosions = [];
+  }
+
   private exitReplay() {
     this.replayMode = false;
     this.playing = false;
+    this.replayRounds = [];
+    this.replayRoundTransitionTimer = 0;
     this.replayInfoText.setVisible(false);
+    if (this.replayWasm) {
+      try { this.replayWasm.free(); } catch { /* already freed */ }
+      this.replayWasm = null;
+    }
     hideAnnounce();
     this.input.keyboard?.removeAllListeners();
     // Return to lobby (dispatch event to main.ts)
     window.dispatchEvent(new CustomEvent("replayEnded"));
   }
 
-  receiveState(state: GameState, lastButtons?: [number, number]) {
+  receiveState(state: any, lastButtons?: [number, number]) {
     // Drop out-of-order packets — prevents old states from overwriting newer ones
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
 
-    // Track button state for crouch animation
-    if (lastButtons) {
-      this.lastReceivedButtons = [...lastButtons] as [number, number];
-    }
-
-    // Detect events for audio
-    if (this.currState) {
-      this.detectAudioEvents(this.currState, state);
-    }
-
-    this.prevState = this.currState;
-    this.currState = state;
-
-    // Feed server state to prediction manager for reconciliation
-    if (this.prediction) {
-      this.prediction.applyServerState(state, state.tick, lastButtons);
-    }
+    // Buffer latest state — only applied once per update frame.
+    // This prevents a feedback loop: if the frame is slow, multiple WebSocket
+    // states queue up → processing all of them makes the next frame even slower.
+    this.pendingServerState = state;
+    this.pendingServerButtons = lastButtons as [number, number] | undefined;
   }
 
   endOnlineMatch(winner: number) {
@@ -1126,6 +1193,63 @@ export class GameScene extends Phaser.Scene {
     }
     this.playSound("match-end");
     // Music keeps playing between matches — no stopBGM()
+  }
+
+  // ── Spectator Mode (Tournament) ───────────────────────────────────────────
+
+  startSpectating(seed: number, usernames: [string, string], mapIndex: number, totalRounds: number, characters: [number, number]) {
+    if (!this.sceneReady) {
+      this.onReady(() => this.startSpectating(seed, usernames, mapIndex, totalRounds, characters));
+      return;
+    }
+    this.spectateMode = true;
+    this.localPlayerId = 0; // arbitrary, spectator doesn't control anyone
+    this.characterSlots = characters;
+    this.playerUsernames = usernames;
+    this.replayMode = false;
+    this.currentRound = 0;
+    this.totalRounds = totalRounds;
+    this.roundWins = [0, 0];
+    this.roundTransition = false;
+    this.lastServerTick = 0;
+
+    this.playTransition(() => {
+      this.warmupMode = false;
+      this.warmupState = null;
+      document.getElementById("warmup-overlay")?.classList.remove("visible");
+      this.initRound(seed, mapIndex);
+      this.prediction = null; // spectators don't predict
+      this.playing = true;
+      document.getElementById("spectate-overlay")?.classList.add("visible");
+    });
+  }
+
+  receiveSpectateState(state: any, lastButtons?: [number, number]) {
+    // Same as receiveState but skip prediction
+    if (state.tick <= this.lastServerTick) return;
+    this.lastServerTick = state.tick;
+
+    if (lastButtons) {
+      this.lastReceivedButtons = [...lastButtons] as [number, number];
+    }
+
+    if (this.currState) {
+      this.detectAudioEvents(this.currState, state);
+    }
+
+    this.prevState = this.currState;
+    this.currState = state;
+    // No prediction for spectators
+  }
+
+  stopSpectating() {
+    this.spectateMode = false;
+    this.playing = false;
+    document.getElementById("spectate-overlay")?.classList.remove("visible");
+  }
+
+  get isSpectating(): boolean {
+    return this.spectateMode;
   }
 
   setMuted(muted: boolean) {
@@ -1187,33 +1311,51 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number) {
+    // Flush pending server state (only the latest — prevents queue feedback loop)
+    if (this.pendingServerState) {
+      const state = this.pendingServerState;
+      const lastButtons = this.pendingServerButtons;
+      this.pendingServerState = null;
+      this.pendingServerButtons = undefined;
+
+      if (lastButtons) {
+        this.lastReceivedButtons = [...lastButtons] as [number, number];
+      }
+      if (this.currState) {
+        this.detectAudioEvents(this.currState, state);
+      }
+      this.prevState = this.currState;
+      this.currState = state;
+      if (this.prediction) {
+        this.prediction.applyServerState(state, state.tick, lastButtons);
+      }
+    }
+
     if (!this.currState) return;
     // Cap delta to prevent burst of ticks after scene transitions
     if (delta > 100) delta = TICK_DT_MS;
 
-    // Warmup mode — step local sim with player 0 input
-    if (this.warmupMode && this.warmupState && this.warmupConfig) {
+    // Warmup mode — step local WASM sim with player 0 input
+    if (this.warmupMode && this.warmupWasm && this.warmupConfig) {
       this.warmupAccum += delta;
       const maxTicks = 3;
       let ticksRun = 0;
       while (this.warmupAccum >= TICK_DT_MS && ticksRun < maxTicks) {
         this.warmupAccum -= TICK_DT_MS;
         ticksRun++;
-        if (this.warmupState.matchOver) break;
-        const p0 = this.warmupState.players[0];
+        if (this.warmupWasm.match_over()) break;
+        const p0 = this.warmupState?.players?.[0];
         const input = p0 ? this.inputManager.getPlayer1Input(
           p0.x + PLAYER_WIDTH / 2,
           p0.y + PLAYER_HEIGHT / 2,
         ) : NULL_INPUT;
-        const inputs: InputMap = new Map([
-          [0, input],
-          [1, NULL_INPUT],
-        ]);
         const prevWarmup = this.warmupState;
-        this.warmupState = step(this.warmupState, inputs, this.warmupPrevInputs, this.warmupConfig);
-        this.detectAudioEvents(prevWarmup, this.warmupState);
+        this.warmupWasm.step(input.buttons, input.aimX, input.aimY, 0, 0, 0);
+        this.warmupState = this.warmupWasm.export_state();
         this.banishWarmupPlayer2(this.warmupState);
-        this.warmupPrevInputs = inputs;
+        // Import banished state back so WASM sim has P2 off-screen (prevents bullet absorption)
+        this.warmupWasm.import_state(this.warmupState);
+        this.detectAudioEvents(prevWarmup, this.warmupState);
       }
       if (this.warmupAccum > TICK_DT_MS * 2) this.warmupAccum = 0;
       this.currState = this.warmupState;
@@ -1229,23 +1371,41 @@ export class GameScene extends Phaser.Scene {
       while (this.replayAccum >= TICK_DT_MS && ticksRun < maxTicks) {
         this.replayAccum -= TICK_DT_MS;
         ticksRun++;
-        if (this.replayTick < this.replayTranscript.length && !this.currState!.matchOver) {
+        if (this.replayTick < this.replayTranscript.length && !this.currState!.matchOver && this.replayWasm) {
           const tickInputs = this.replayTranscript[this.replayTick]!;
-          const p0 = tickInputs[0];
-          const p1 = tickInputs[1];
-          const inputs: InputMap = new Map([
-            [0, { buttons: p0.buttons, aimX: p0.aim_x ?? p0.aimX ?? 0, aimY: p0.aim_y ?? p0.aimY ?? 0 }],
-            [1, { buttons: p1.buttons, aimX: p1.aim_x ?? p1.aimX ?? 0, aimY: p1.aim_y ?? p1.aimY ?? 0 }],
-          ]);
+          const p0i = tickInputs[0];
+          const p1i = tickInputs[1];
+          const b0 = p0i.buttons, ax0 = p0i.aim_x ?? p0i.aimX ?? 0, ay0 = p0i.aim_y ?? p0i.aimY ?? 0;
+          const b1 = p1i.buttons, ax1 = p1i.aim_x ?? p1i.aimX ?? 0, ay1 = p1i.aim_y ?? p1i.aimY ?? 0;
           this.prevState = this.currState;
-          this.currState = step(this.currState!, inputs, this.replayPrevInputs, this.config);
-          this.replayPrevInputs = inputs;
+          this.replayWasm.step(b0, ax0, ay0, b1, ax1, ay1);
+          this.currState = this.replayWasm.export_state();
           this.replayTick++;
         } else if (this.currState!.matchOver) {
           const w = this.currState!.winner;
-          showAnnounce(w === -1 ? "DRAW!" : `Player ${w + 1} wins!`);
-          this.playing = false;
+          if (w === 0) this.replayRoundWins[0]++;
+          else if (w === 1) this.replayRoundWins[1]++;
+          const hasMoreRounds = this.replayCurrentRound + 1 < this.replayRounds.length;
+          if (hasMoreRounds) {
+            // Show round result, then transition
+            showAnnounce(`Round ${this.replayCurrentRound + 1}: P${w + 1} wins! (${this.replayRoundWins[0]}-${this.replayRoundWins[1]})`);
+            this.replayRoundTransitionTimer = 2000; // 2s pause between rounds
+            this.playing = false;
+          } else {
+            // Final round — show match result
+            const mw = this.replayRoundWins[0] > this.replayRoundWins[1] ? 0 : 1;
+            showAnnounce(`Player ${mw + 1} wins! (${this.replayRoundWins[0]}-${this.replayRoundWins[1]})`);
+            this.playing = false;
+          }
         }
+      }
+    }
+
+    // Replay round transition timer
+    if (this.replayMode && !this.playing && this.replayRoundTransitionTimer > 0) {
+      this.replayRoundTransitionTimer -= delta;
+      if (this.replayRoundTransitionTimer <= 0) {
+        this.startReplayRound(this.replayCurrentRound + 1);
       }
     }
 
@@ -1278,8 +1438,8 @@ export class GameScene extends Phaser.Scene {
 
       // Maintain prediction lead over server: ensures serverTick < predictedTick
       // so reconciliation always has a replay window for jump edge detection.
-      // Without this, server states overwrite prediction (jump snap-back).
-      const PRED_LEAD = 6; // ~100ms lead at 60Hz
+      // prev_buttons is now exported/imported, so jump edges survive reconciliation.
+      const PRED_LEAD = 2; // ~33ms lead at 60Hz
       if (this.lastServerTick > 0) {
         const targetTick = this.lastServerTick + PRED_LEAD;
         let extraTicks = 0;
@@ -1347,10 +1507,10 @@ export class GameScene extends Phaser.Scene {
     this.drawHUD(curr, displayState, predicted);
   }
 
-  private drawArena(g: Phaser.GameObjects.Graphics, displayState: GameState) {
+  private drawArena(g: Phaser.GameObjects.Graphics, displayState: any) {
     const map = this.config?.map ?? ARENA;
     // Platforms are rendered by tile sprites (createMapTiles), not Graphics.
-    // Only draw sudden death walls here.
+    // Draw sudden death damage zone (cosmetic — zone is damage-only, not physical).
     if (displayState.arenaLeft > 0) {
       g.fillStyle(WALL_COLOR, 0.5);
       g.fillRect(0, 0, displayState.arenaLeft, map.height);
@@ -1358,7 +1518,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawPickups(_g: Phaser.GameObjects.Graphics, displayState: GameState) {
+  private drawPickups(_g: Phaser.GameObjects.Graphics, displayState: any) {
     const tick = displayState.tick;
     const activeIds = new Set<number>();
 
@@ -1428,13 +1588,13 @@ export class GameScene extends Phaser.Scene {
 
   private drawPlayers(
     g: Phaser.GameObjects.Graphics,
-    curr: GameState,
-    predicted: GameState | null | undefined,
+    curr: any,
+    predicted: any,
     delta?: number,
   ) {
     // First pass: compute draw positions for all players
     const drawPositions: { x: number; y: number }[] = [];
-    const playerStates: (PlayerState | null)[] = [];
+    const playerStates: any[] = [];
 
     for (let i = 0; i < curr.players.length; i++) {
       if (this.warmupMode && i === 1) {
@@ -1444,7 +1604,7 @@ export class GameScene extends Phaser.Scene {
       }
       const isLocal = i === this.localPlayerId && !this.replayMode;
       const raw = curr.players[i]!;
-      let cp: PlayerState;
+      let cp: any;
       let drawX: number, drawY: number;
 
       if (this.replayMode) {
@@ -1489,8 +1649,8 @@ export class GameScene extends Phaser.Scene {
     // Snap riders to victim draw positions so they match exactly
     for (let i = 0; i < playerStates.length; i++) {
       const cp = playerStates[i];
-      if (!cp || cp.stompingOn === null) continue;
-      const victimIdx = curr.players.findIndex(p => p.id === cp.stompingOn);
+      if (!cp || cp.stompingOn == null || cp.stompingOn < 0) continue;
+      const victimIdx = curr.players.findIndex((p: any) => p.id === cp.stompingOn);
       if (victimIdx >= 0 && drawPositions[victimIdx]) {
         drawPositions[i] = {
           x: drawPositions[victimIdx]!.x,
@@ -1544,21 +1704,21 @@ export class GameScene extends Phaser.Scene {
       if (sprite) {
         const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
         let animKey: string;
-        const hasGun = cp.weapon !== null;
+        const hasGun = cp.weapon != null && cp.weapon >= 0;
         // Determine crouch button state for edge detection
         // Local player: read inputManager directly (no round-trip delay)
         const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
         const playerBtns = isLocal
           ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
           : this.lastReceivedButtons[i];
-        const tauntNow = !!(playerBtns & Button.Taunt);
-        const tauntPrev = !!(this.prevFrameButtons[i] & Button.Taunt);
+        const tauntNow = !!((playerBtns ?? 0) & Button.Taunt);
+        const tauntPrev = !!((this.prevFrameButtons[i] ?? 0) & Button.Taunt);
         const tauntEdge = tauntNow && !tauntPrev && cp.grounded;
         const tauntPlaying = sprite.anims.currentAnim?.key === `${slug}-crouch` && sprite.anims.isPlaying;
         if (tauntEdge) {
           // Restart animation + sound immediately (interrupts previous)
           sprite.play(`${slug}-crouch`);
-          const soundKey = CROUCH_SOUNDS[slug];
+          const soundKey = CROUCH_SOUNDS[slug!];
           if (soundKey) this.playSoundInterrupt(soundKey);
           animKey = `${slug}-crouch`;
         } else if (tauntPlaying) {
@@ -1584,9 +1744,9 @@ export class GameScene extends Phaser.Scene {
         sprite.setVisible(true);
         sprite.setAlpha(invincible ? 0.6 : 1);
         // Rider renders behind victim; victim on top so their bars are visible
-        if (cp.stompingOn !== null) {
+        if (cp.stompingOn != null && cp.stompingOn >= 0) {
           sprite.setDepth(18);
-        } else if (cp.stompedBy !== null) {
+        } else if (cp.stompedBy != null && cp.stompedBy >= 0) {
           sprite.setDepth(22);
         } else {
           sprite.setDepth(20);
@@ -1596,7 +1756,7 @@ export class GameScene extends Phaser.Scene {
       // Gun sprite — position at character's hand, bob synced to animation frame
       const gunSprite = this.gunSprites[i];
       if (gunSprite) {
-        if (cp.weapon !== null && alive) {
+        if (cp.weapon != null && cp.weapon >= 0 && alive) {
           const tex = GUN_TEXTURES[cp.weapon];
           if (tex && gunSprite.texture.key !== tex) {
             gunSprite.setTexture(tex);
@@ -1621,7 +1781,7 @@ export class GameScene extends Phaser.Scene {
           gunSprite.setVisible(true);
           gunSprite.setAlpha(invincible ? 0.6 : 1);
           // Match sprite depth for stomp layering
-          gunSprite.setDepth(cp.stompingOn !== null ? 19 : cp.stompedBy !== null ? 23 : 21);
+          gunSprite.setDepth(cp.stompingOn != null && cp.stompingOn >= 0 ? 19 : cp.stompedBy != null && cp.stompedBy >= 0 ? 23 : 21);
         } else {
           gunSprite.setVisible(false);
         }
@@ -1676,21 +1836,21 @@ export class GameScene extends Phaser.Scene {
       const btns = isLocal
         ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
         : this.lastReceivedButtons[i];
-      this.prevFrameButtons[i] = btns;
+      this.prevFrameButtons[i] = btns ?? 0;
     }
   }
 
   private drawPlayerOverlays(
     g: Phaser.GameObjects.Graphics,
-    cp: PlayerState,
+    cp: any,
     drawX: number,
     drawY: number,
     index: number,
-    predicted: GameState | null | undefined,
-    curr: GameState,
+    predicted: any,
+    curr: any,
   ) {
     // Stomped victims draw bars on high-depth overlay so they render above rider sprite
-    const barGfx = cp.stompedBy !== null ? this.gfxOverlay : g;
+    const barGfx = cp.stompedBy != null && cp.stompedBy >= 0 ? this.gfxOverlay : g;
 
     // Health bar with black stroke
     const barY = drawY - 3;
@@ -1705,7 +1865,7 @@ export class GameScene extends Phaser.Scene {
     // "Shake him off!" alert + progress bar below stomped player
     const alertText = this.stompAlertTexts[index];
     const shakeBarBelow = drawY + PLAYER_HEIGHT + 2;
-    if (cp.stompedBy !== null && cp.stompShakeProgress > 0) {
+    if (cp.stompedBy != null && cp.stompedBy >= 0 && cp.stompShakeProgress > 0) {
       const shakePct = cp.stompShakeProgress / 100;
       barGfx.fillStyle(0x000000);
       barGfx.fillRect(drawX - 1, shakeBarBelow - 1, PLAYER_WIDTH + 2, 5);
@@ -1715,11 +1875,11 @@ export class GameScene extends Phaser.Scene {
       barGfx.fillRect(drawX, shakeBarBelow, PLAYER_WIDTH * shakePct, 3);
     }
     if (alertText) {
-      const alertY = (cp.stompedBy !== null && cp.stompShakeProgress > 0)
+      const alertY = (cp.stompedBy != null && cp.stompedBy >= 0 && cp.stompShakeProgress > 0)
         ? shakeBarBelow + 6
         : drawY + PLAYER_HEIGHT + 2;
       alertText.setPosition(drawX + PLAYER_WIDTH / 2, alertY);
-      if (cp.stompedBy !== null) {
+      if (cp.stompedBy != null && cp.stompedBy >= 0) {
         const pulse = Math.sin((predicted?.tick ?? curr.tick) * 0.2) * 0.3 + 0.7;
         alertText.setAlpha(pulse);
       } else {
@@ -1742,8 +1902,8 @@ export class GameScene extends Phaser.Scene {
 
   private drawProjectiles(
     g: Phaser.GameObjects.Graphics,
-    curr: GameState,
-    predicted: GameState | null | undefined,
+    curr: any,
+    predicted: any,
     _delta: number,
   ) {
     const displayState = predicted ?? curr;
@@ -1757,7 +1917,7 @@ export class GameScene extends Phaser.Scene {
       // First frame only: snap X to muzzle position (forward motion masks the transition)
       const maxLife = WEAPON_STATS[p.weapon as WeaponType]?.lifetime ?? 90;
       if (p.lifetime >= maxLife - 1 && gcfg) {
-        const owner = displayState.players.find(pl => pl.id === p.ownerId);
+        const owner = displayState.players.find((pl: any) => pl.id === p.ownerId);
         if (owner) {
           // When wall sliding, gun points away from wall (same logic as gun sprite)
           const fdir = owner.wallSliding ? -(owner.facing as number) : (owner.facing as number);
@@ -1798,7 +1958,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private drawHUD(curr: GameState, displayState: GameState, predicted: GameState | null | undefined) {
+  private drawHUD(curr: any, displayState: any, predicted: any) {
     // Warmup mode — hide all game HUD
     if (this.warmupMode) {
       this.timerText.setText("");
@@ -1809,12 +1969,12 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Timer
-    const ticksRemaining = (this.config?.matchDurationTicks ?? 1800) - displayState.tick;
+    const ticksRemaining = (this.config?.matchDurationTicks ?? MATCH_DURATION_TICKS) - displayState.tick;
     const secondsRemaining = Math.max(0, Math.ceil(ticksRemaining / TICK_RATE));
     this.timerText.setText(`${secondsRemaining}s`);
 
     // Sudden death countdown + text (DOM overlay for guaranteed visibility)
-    const sdTick = this.config?.suddenDeathStartTick ?? 1200;
+    const sdTick = this.config?.suddenDeathStartTick ?? SUDDEN_DEATH_START_TICK;
     const ticksUntilSD = sdTick - displayState.tick;
     const inSuddenDeath = displayState.tick >= sdTick;
     const sdOverlay = document.getElementById("sudden-death-overlay");
@@ -1848,7 +2008,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.replayMode) {
       const localPlayer = (predicted ?? curr).players[this.localPlayerId];
       if (localPlayer && (localPlayer.stateFlags & PlayerStateFlag.Alive)) {
-        if (localPlayer.weapon !== null) {
+        if (localPlayer.weapon != null && localPlayer.weapon >= 0) {
           const name = WEAPON_NAMES[localPlayer.weapon] ?? "???";
           this.weaponText.setText(`${name} [${localPlayer.ammo}]`);
           this.weaponText.setColor(`#${(WEAPON_PICKUP_COLORS[localPlayer.weapon] ?? 0xffffff).toString(16).padStart(6, "0")}`);
@@ -1872,7 +2032,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private updateCamera(curr: GameState, predicted: GameState | null | undefined, delta: number) {
+  private updateCamera(curr: any, predicted: any, delta: number) {
     const cam = this.cameras.main;
 
     // Fixed zoom mode: show whole arena, centered (with padding so edges aren't clipped)
@@ -1996,7 +2156,12 @@ export class GameScene extends Phaser.Scene {
     let step = 0;
     const timer = setInterval(() => {
       step++;
-      track.volume = from + (to - from) * (step / steps);
+      try {
+        track.volume = from + (to - from) * (step / steps);
+      } catch {
+        clearInterval(timer);
+        return;
+      }
       if (step >= steps) clearInterval(timer);
     }, interval);
   }
@@ -2038,9 +2203,9 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private detectAudioEvents(prev: GameState, curr: GameState) {
+  private detectAudioEvents(prev: any, curr: any) {
     // New projectiles → shoot sound (detect by ID, not count, since old ones expire)
-    const prevIds = new Set(prev.projectiles.map(p => p.id));
+    const prevIds = new Set(prev.projectiles.map((p: any) => p.id));
     for (const proj of curr.projectiles) {
       if (!prevIds.has(proj.id)) {
         if (proj.weapon === WeaponType.SMG) {
@@ -2063,7 +2228,7 @@ export class GameScene extends Phaser.Scene {
         if ((pp.stateFlags & PlayerStateFlag.Alive) && !(cp.stateFlags & PlayerStateFlag.Alive)) {
           this.playSound("death");
         }
-        if (cp.weapon !== null && cp.weapon !== pp.weapon) {
+        if (cp.weapon != null && cp.weapon >= 0 && cp.weapon !== pp.weapon) {
           this.playSound("pickup");
         }
         // Jump: jumpsLeft decreased while alive
