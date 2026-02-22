@@ -610,9 +610,12 @@ const server = Bun.serve<SocketData>({
 
           // Auto-add bot after 20s if no human joins (casual only)
           if (mode === "casual") {
+            console.log(`[Bot] Scheduling bot timer for room ${roomId} (casual quickplay)`);
             setTimeout(() => {
+              console.log(`[Bot] Timer fired for room ${roomId}: waiting=${room.isWaiting()} players=${room.playerCount}`);
               if (room.isWaiting() && room.playerCount === 1) {
                 room.addBot();
+                console.log(`[Bot] Bot added to room ${roomId}`);
                 broadcastLobby();
               }
             }, 20_000);
