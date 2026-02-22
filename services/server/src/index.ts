@@ -63,8 +63,8 @@ function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArt
 function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) {
   const room = rooms.get(roomId);
 
-  // Only update ELO for ranked matches with sufficient input activity
-  if (mode === "ranked" && sockets.length === 2 && winner >= 0 && winner <= 1) {
+  // Only update ELO for ranked matches with sufficient input activity (never bots)
+  if (mode === "ranked" && !room?.isBotMatch && sockets.length === 2 && winner >= 0 && winner <= 1) {
     const winnerName = sockets[winner]?.data.username;
     const loserName = sockets[1 - winner]?.data.username;
     if (winnerName && loserName) {
@@ -88,7 +88,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       sessionId,
       roomName,
       player1: sockets[0]?.data.username || "Player 1",
-      player2: sockets[1]?.data.username || "Player 2",
+      player2: (room?.isBotMatch ? "[BOT] " : "") + (sockets[1]?.data.username || "Player 2"),
       wallet1: sockets[0]?.data.walletAddress || "",
       wallet2: sockets[1]?.data.walletAddress || "",
       winner,
@@ -108,8 +108,8 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     record.wallet1Verified = !!(sockets[0] as any)?.data.walletVerified;
     record.wallet2Verified = !!(sockets[1] as any)?.data.walletVerified;
 
-    // Start match on-chain for ranked matches with wallets
-    if (mode === "ranked" && record.wallet1 && record.wallet2 && process.env.STELLAR_ADMIN_SECRET && room) {
+    // Start match on-chain for ranked matches with wallets (never bots)
+    if (mode === "ranked" && !room?.isBotMatch && record.wallet1 && record.wallet2 && process.env.STELLAR_ADMIN_SECRET && room) {
       const seedBytes = new Uint8Array(4);
       new DataView(seedBytes.buffer).setUint32(0, room.currentSeed, true);
       const seedCommit = new Uint8Array(new Bun.CryptoHasher("sha256").update(seedBytes).digest());
@@ -118,8 +118,8 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
         .catch(() => {});
     }
 
-    // Trigger proving for ranked matches
-    if (mode === "ranked" && room) {
+    // Trigger proving for ranked matches (never bots)
+    if (mode === "ranked" && !room?.isBotMatch && room) {
       record.proofStatus = "proving";
       const transcript = room.getTranscript();
       const proofRequestedAt = Date.now();
@@ -607,6 +607,16 @@ const server = Bun.serve<SocketData>({
           rooms.set(roomId, room);
           lobbySockets.delete(ws);
           broadcastLobby();
+
+          // Auto-add bot after 20s if no human joins (casual only)
+          if (mode === "casual") {
+            setTimeout(() => {
+              if (room.isWaiting() && room.playerCount === 1) {
+                room.addBot();
+                broadcastLobby();
+              }
+            }, 20_000);
+          }
         }
         return;
       }

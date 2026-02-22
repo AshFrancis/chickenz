@@ -11,6 +11,7 @@ import type {
 import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol";
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
 import { WasmState } from "./wasm";
+import { randomBotName, createBotSocket, createBotState, botThink, type BotState } from "./BotAI";
 
 export interface SocketData {
   roomId: string | null;
@@ -61,6 +62,8 @@ export class GameRoom {
   private roundTranscripts: { seed: number; mapIndex: number; transcript: object[] }[] = [];
   private matchOverTick = -1; // tick when match_over first detected (-1 = not yet)
   private _matchStartTime = 0; // wall-clock ms when match started
+  private botState: BotState | null = null;
+  private _isBotMatch = false;
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -107,6 +110,19 @@ export class GameRoom {
   /** Character slots assigned to each player. */
   get characters(): [number, number] {
     return this.characterSlots;
+  }
+
+  get isBotMatch(): boolean {
+    return this._isBotMatch;
+  }
+
+  /** Add a bot opponent to this room. */
+  addBot() {
+    const name = randomBotName();
+    const botSocket = createBotSocket(name);
+    this._isBotMatch = true;
+    this.botState = createBotState();
+    this.addPlayer(botSocket);
   }
 
   /** Second player joins — start the match. */
@@ -305,6 +321,7 @@ export class GameRoom {
     this.inputQueues = [new Map(), new Map()];
     this.transcript = [];
     this.matchOverTick = -1;
+    if (this.botState) this.botState = createBotState();
 
     // Start game loop — self-correcting to prevent drift
     this.loopStartTime = performance.now();
@@ -347,6 +364,14 @@ export class GameRoom {
         this.accInput[id] = queued;
         this.rawInput[id] = queued;
       }
+    }
+
+    // Inject bot input before transcript recording
+    if (this.botState !== null) {
+      const exported = this.wasmState.export_state() as any;
+      const input = botThink(1, exported, this.currentMap, this.botState);
+      this.rawInput[1] = input;
+      this.accInput[1] = { ...input };
     }
 
     // Record for transcript (strip Taunt bit — cosmetic only, not part of ZK proof)
