@@ -1,23 +1,30 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
-.DS_Store
 *.tsbuildinfo
 
 # Rust
 target/
+
+# WASM (built locally, copied to server)
 *.wasm
+!services/prover/wasm/pkg/.gitkeep
+
+# Environment (secrets)
+.env
+.env.local
 
 # Prover artifacts
 proof_artifacts.json
+services/prover/proof_artifacts.json
+test-transcript.json
 services/prover/test_combat.json
 services/prover/test_short.json
-*.log
-test-transcript.json
 services/prover/bench-noir/
-services/prover/proof_artifacts.json
 
 # Soroban
-contracts/chickenz/target/
 contracts/chickenz/test_snapshots/
 .soroban/
 
@@ -25,6 +32,16 @@ contracts/chickenz/test_snapshots/
 .idea/
 .vscode/
 
-# Env
-.env
-.env.local
+# OS
+.DS_Store
+*.log
+
+# Dev artifacts (local only)
+initial.json
+new-test-transcript.json
+assets/
+scripts/process-guns.ts
+plan.md
+claude-audit.md
+codex-audit.md
+services/server/data/

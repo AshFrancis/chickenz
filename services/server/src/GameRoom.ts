@@ -11,14 +11,16 @@ import type {
 import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol";
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
 import { WasmState } from "./wasm";
-import { randomBotName, createBotSocket, createBotState, botThink, type BotState } from "./BotAI";
+import { randomBotName, createBotSocket, createBotState, botThink, type BotState, type BotDifficulty } from "./BotAI";
 
 export interface SocketData {
   roomId: string | null;
   playerId: number;
   username: string;
   walletAddress: string;
+  walletVerified?: boolean;
   character: number; // chosen character index (0-3)
+  awayCharacter: number; // fallback character if home conflicts
   tournamentId: string | null;
   msgCount: number;
   msgResetTime: number;
@@ -53,17 +55,22 @@ export class GameRoom {
   private loopStartTime = 0; // wall-clock time when game loop started
   private _status: "waiting" | "playing" | "ended" = "waiting";
   onEnded?: (sockets: GameSocket[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) => void;
+  onStarted?: (room: GameRoom) => void;
 
   // Round system
   private currentRound = 0;
   private roundWins: [number, number] = [0, 0];
   private mapOrder: number[] = []; // indices into MAP_POOL
   private characterSlots: [number, number] = [0, 1]; // character indices for each player
-  private roundTranscripts: { seed: number; mapIndex: number; transcript: object[] }[] = [];
+  private roundTranscripts: { seed: number; mapIndex: number; winner: number; transcript: object[] }[] = [];
+  private pendingTimeouts: ReturnType<typeof setTimeout>[] = [];
   private matchOverTick = -1; // tick when match_over first detected (-1 = not yet)
+  private countdownTick = 0; // tracks tick calls (including countdown before sim steps)
   private _matchStartTime = 0; // wall-clock ms when match started
   private botState: BotState | null = null;
   private _isBotMatch = false;
+  private _sessionId = 0;
+  private _startTxHash: string | null = null;
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -116,12 +123,24 @@ export class GameRoom {
     return this._isBotMatch;
   }
 
+  get sessionId() { return this._sessionId; }
+
+  get startTxHash() { return this._startTxHash; }
+  set startTxHash(h: string | null) { this._startTxHash = h; }
+
+  get walletAddresses(): [string, string] {
+    return [
+      this.sockets[0]?.data.walletAddress || "",
+      this.sockets[1]?.data.walletAddress || "",
+    ];
+  }
+
   /** Add a bot opponent to this room. */
-  addBot() {
+  addBot(difficulty: BotDifficulty = "easy") {
     const name = randomBotName();
     const botSocket = createBotSocket(name);
     this._isBotMatch = true;
-    this.botState = createBotState();
+    this.botState = createBotState(difficulty);
     this.addPlayer(botSocket);
   }
 
@@ -164,6 +183,21 @@ export class GameRoom {
     }
   }
 
+  /** Player voluntarily leaves while waiting. Returns the socket if removed. */
+  handleLeave(playerId: number): GameSocket | null {
+    if (this._status !== "waiting") return null;
+    const idx = this.sockets.findIndex(ws => ws.data.playerId === playerId);
+    if (idx < 0) return null;
+    const ws = this.sockets[idx]!;
+    ws.data.roomId = null;
+    ws.data.playerId = -1;
+    this.sockets.splice(idx, 1);
+    if (this.sockets.length === 0) {
+      this._status = "ended";
+    }
+    return ws;
+  }
+
   handleDisconnect(playerId: number) {
     if (this._status === "waiting") {
       this._status = "ended";
@@ -199,6 +233,11 @@ export class GameRoom {
     return this._status === "waiting";
   }
 
+  removeSpectator(ws: GameSocket) {
+    const idx = this.spectatorSockets.indexOf(ws);
+    if (idx >= 0) this.spectatorSockets.splice(idx, 1);
+  }
+
   /** Convert TS map (camelCase) to Rust ProverInput format (snake_case). */
   private static toProverMap(map: GameMap) {
     return {
@@ -210,8 +249,14 @@ export class GameRoom {
     };
   }
 
-  /** Return transcript for proving (last round only). */
+  /** Return transcript for proving (both winning rounds in multi-round format). */
   getTranscript() {
+    // Determine the match winner
+    const matchWinner = this.roundWins[0] >= WINS_NEEDED ? 0 : 1;
+
+    // Extract transcripts from rounds the match winner won
+    const winningRounds = this.roundTranscripts.filter(r => r.winner === matchWinner);
+
     return {
       config: {
         seed: this.seed,
@@ -222,10 +267,7 @@ export class GameRoom {
         match_duration_ticks: 1800,
         sudden_death_start_tick: 1200,
       },
-      transcript: this.transcript.map(([p0, p1]) => [
-        { buttons: p0.buttons, aim_x: p0.aimX, aim_y: p0.aimY },
-        { buttons: p1.buttons, aim_x: p1.aimX, aim_y: p1.aimY },
-      ]),
+      rounds: winningRounds.map(r => r.transcript),
     };
   }
 
@@ -257,6 +299,11 @@ export class GameRoom {
       [this.mapOrder[i]!, this.mapOrder[j]!] = [this.mapOrder[j]!, this.mapOrder[i]!];
     }
 
+    // Ranked: force arena map (only map the ZK prover supports)
+    if (this.mode === "ranked") {
+      this.mapOrder = [0, 0, 0];
+    }
+
     // Auto-generate guest names for players without usernames
     for (const ws of this.sockets) {
       if (!ws.data.username) {
@@ -271,9 +318,14 @@ export class GameRoom {
     const p1Char = this.sockets[0]?.data.character ?? Math.floor(Math.random() * NUM_CHARACTERS);
     let p2Char = this.sockets[1]?.data.character ?? -1;
     if (p2Char === p1Char || p2Char < 0 || p2Char >= NUM_CHARACTERS) {
-      // Conflict or no choice — assign random from remaining pool
-      p2Char = Math.floor(Math.random() * (NUM_CHARACTERS - 1));
-      if (p2Char >= p1Char) p2Char++;
+      // Try away character before random
+      const p2Away = this.sockets[1]?.data.awayCharacter ?? -1;
+      if (p2Away >= 0 && p2Away < NUM_CHARACTERS && p2Away !== p1Char) {
+        p2Char = p2Away;
+      } else {
+        p2Char = Math.floor(Math.random() * (NUM_CHARACTERS - 1));
+        if (p2Char >= p1Char) p2Char++;
+      }
     }
     this.characterSlots = [p1Char, p2Char];
 
@@ -283,6 +335,10 @@ export class GameRoom {
       this.sockets[1]?.data.username || "",
     ];
     this.seed = Date.now() >>> 0;
+    // Unique session ID: combine timestamp with random bits to avoid collisions
+    const randomBits = crypto.getRandomValues(new Uint16Array(1))[0]!;
+    this._sessionId = ((Date.now() & 0xFFFF0000) | randomBits) >>> 0;
+
     for (const ws of this.sockets) {
       this.send(ws, {
         type: "matched",
@@ -297,15 +353,14 @@ export class GameRoom {
       });
     }
 
+    // Notify server for on-chain registration before gameplay begins
+    this.onStarted?.(this);
+
     this.startRound();
   }
 
   private startRound() {
-    // Round 0 seed is already set in startMatch() and sent to clients in "matched"
-    // Only generate a new seed for rounds 1+
-    if (this.currentRound > 0) {
-      this.seed = Date.now() >>> 0;
-    }
+    // Seed is set before this method: round 0 in startMatch(), rounds 1+ in endRound() timeout.
     const mapIndex = this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0]!;
     this.currentMap = map;
@@ -321,7 +376,8 @@ export class GameRoom {
     this.inputQueues = [new Map(), new Map()];
     this.transcript = [];
     this.matchOverTick = -1;
-    if (this.botState) this.botState = createBotState();
+    this.countdownTick = 0;
+    if (this.botState) this.botState = createBotState(this.botState.difficulty);
 
     // Start game loop — self-correcting to prevent drift
     this.loopStartTime = performance.now();
@@ -334,11 +390,11 @@ export class GameRoom {
 
     const elapsed = performance.now() - this.loopStartTime;
     const targetTick = Math.floor(elapsed / (1000 / TICK_RATE));
-    const currentTick = this.wasmState.tick();
 
     // Run ticks to catch up (max 4 per interval to avoid lag spikes)
+    // Use countdownTick (not WASM tick) since WASM doesn't advance during countdown
     let ticked = 0;
-    while (currentTick + ticked < targetTick && ticked < 4) {
+    while (this.countdownTick < targetTick && ticked < 4) {
       this.tick();
       ticked++;
     }
@@ -347,19 +403,21 @@ export class GameRoom {
   private tick() {
     if (this._status !== "playing") return;
 
-    const nextTick = this.wasmState.tick() + 1;
+    this.countdownTick++;
 
-    // Freeze players during countdown (~1.5s = 90 ticks)
+    // Freeze sim during countdown (~1.5s = 90 ticks) — broadcast state but don't advance
     const COUNTDOWN_TICKS = 90;
-    if (nextTick <= COUNTDOWN_TICKS) {
-      this.wasmState.step(0, 0, 0, 0, 0, 0);
-      if (nextTick % STATE_BROADCAST_INTERVAL === 0) this.broadcastState();
+    if (this.countdownTick <= COUNTDOWN_TICKS) {
+      this.broadcastState();
       return;
     }
 
+    // The WASM tick we're about to step into
+    const nextWasmTick = this.wasmState.tick() + 1;
+
     // Apply tick-tagged inputs — aligns edge detection with client prediction
     for (const id of [0, 1] as const) {
-      const queued = this.inputQueues[id].get(nextTick);
+      const queued = this.inputQueues[id].get(nextWasmTick);
       if (queued !== undefined) {
         this.accInput[id] = queued;
         this.rawInput[id] = queued;
@@ -397,7 +455,7 @@ export class GameRoom {
     // Prune consumed/stale queue entries
     for (const id of [0, 1] as const) {
       for (const [tick] of this.inputQueues[id]) {
-        if (tick <= nextTick) this.inputQueues[id].delete(tick);
+        if (tick <= nextWasmTick) this.inputQueues[id].delete(tick);
       }
     }
 
@@ -406,16 +464,8 @@ export class GameRoom {
       this.broadcastState();
     }
 
-    // Diagnostic: log drift every 2 seconds (120 ticks)
-    const currentTick = this.wasmState.tick();
-    if (currentTick > 0 && currentTick % 120 === 0) {
-      const elapsed = performance.now() - this.loopStartTime;
-      const expectedTick = Math.floor(elapsed / (1000 / TICK_RATE));
-      const drift = expectedTick - currentTick;
-      console.log(`[GameRoom ${this.id}] tick=${currentTick} elapsed=${elapsed.toFixed(0)}ms expected=${expectedTick} drift=${drift}`);
-    }
-
     if (this.wasmState.match_over()) {
+      const currentTick = this.wasmState.tick();
       if (this.matchOverTick < 0) {
         this.matchOverTick = currentTick;
         // Send round_end immediately so clients show the banner
@@ -429,7 +479,7 @@ export class GameRoom {
         this.broadcast({ type: "round_end", ...roundEndMsg });
         this.broadcastSpectators({ type: "spectate_round_end", ...roundEndMsg });
       }
-      // Keep broadcasting state for 120 extra ticks (2s) so clients see winner movement + bullet travel
+      // Keep broadcasting state for 60 extra ticks (1s) so clients see winner movement + bullet travel
       if (currentTick - this.matchOverTick >= 60) {
         this.endRound(this.wasmState.winner());
       }
@@ -490,6 +540,7 @@ export class GameRoom {
     this.roundTranscripts.push({
       seed: this.seed,
       mapIndex,
+      winner,
       transcript: this.transcript.map(([p0, p1]) => [
         { buttons: p0.buttons, aim_x: p0.aimX, aim_y: p0.aimY },
         { buttons: p1.buttons, aim_x: p1.aimX, aim_y: p1.aimY },
@@ -501,14 +552,15 @@ export class GameRoom {
     // Check if match is won (best of 3 → first to 2)
     if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED) {
       const matchWinner = this.roundWins[0] >= WINS_NEEDED ? 0 : 1;
-      setTimeout(() => this.endMatch(matchWinner), 100);
+      this.pendingTimeouts.push(setTimeout(() => this.endMatch(matchWinner), 100));
     } else {
       // Start next round after delay
       this.currentRound++;
       const nextMapIndex = this.mapOrder[this.currentRound % this.mapOrder.length];
-      setTimeout(() => {
+      this.pendingTimeouts.push(setTimeout(() => {
         if (this._status !== "playing") return;
-        this.seed = Date.now() >>> 0;
+        // Ranked: keep same seed across rounds so on-chain seedCommit matches the proof
+        if (this.mode !== "ranked") this.seed = Date.now() >>> 0;
         const roundStartMsg = {
           round: this.currentRound,
           seed: this.seed,
@@ -517,7 +569,7 @@ export class GameRoom {
         this.broadcast({ type: "round_start", ...roundStartMsg });
         this.broadcastSpectators({ type: "spectate_round_start", ...roundStartMsg });
         this.startRound();
-      }, ROUND_TRANSITION_MS);
+      }, ROUND_TRANSITION_MS));
     }
   }
 
@@ -529,6 +581,8 @@ export class GameRoom {
       clearInterval(this.timer);
       this.timer = null;
     }
+    for (const t of this.pendingTimeouts) clearTimeout(t);
+    this.pendingTimeouts.length = 0;
 
     // Free WASM state
     if (this.wasmState) {

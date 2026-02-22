@@ -161,7 +161,7 @@ impl ChickenzContract {
             &session_id,
             &player1,
             &player2,
-            &3i128, // initial lives
+            &3i128, // initial points (best of 3 rounds)
             &3i128,
         );
 

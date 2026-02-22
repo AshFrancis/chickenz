@@ -226,24 +226,24 @@ export class NetworkManager {
     this.send({ type: "set_username", username });
   }
 
-  sendQuickplay(mode: GameMode = "casual", character?: number) {
-    this.send({ type: "quickplay", mode, character });
+  sendQuickplay(mode: GameMode = "casual", character?: number, awayCharacter?: number) {
+    this.send({ type: "quickplay", mode, character, awayCharacter });
   }
 
-  sendCreate(isPrivate: boolean = false, mode: GameMode = "casual", character?: number) {
-    this.send({ type: "create", isPrivate, mode, character });
+  sendCreate(isPrivate: boolean = false, mode: GameMode = "casual", character?: number, awayCharacter?: number) {
+    this.send({ type: "create", isPrivate, mode, character, awayCharacter });
   }
 
   sendSetWallet(address: string, verified?: boolean) {
     this.send({ type: "set_wallet", address, verified: !!verified });
   }
 
-  sendJoinRoom(roomId: string, character?: number) {
-    this.send({ type: "join_room", roomId, character });
+  sendJoinRoom(roomId: string, character?: number, awayCharacter?: number) {
+    this.send({ type: "join_room", roomId, character, awayCharacter });
   }
 
-  sendJoinByCode(code: string, character?: number) {
-    this.send({ type: "join_code", code, character });
+  sendJoinByCode(code: string, character?: number, awayCharacter?: number) {
+    this.send({ type: "join_code", code, character, awayCharacter });
   }
 
   /** Reset throttle state so next input sends immediately. Call on round/match start. */
@@ -274,6 +274,10 @@ export class NetworkManager {
 
   sendListRooms() {
     this.send({ type: "list_rooms" });
+  }
+
+  sendLeave() {
+    this.send({ type: "leave" });
   }
 
   sendCreateTournament() {

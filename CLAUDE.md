@@ -7,7 +7,7 @@
 
 ---
 
-Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes settled on Stellar Soroban. Two players compete in 60-second matches with 3 lives each. Five weapons spawn on the map. A sudden death mechanic closes the arena walls at 50s. The full input transcript feeds a RISC Zero ZK proof that verifies the result on-chain.
+Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes settled on Stellar Soroban. Two players compete in best-of-3 rounds (30 seconds each, 1 life per round). Five weapons spawn on the map. A sudden death mechanic closes the arena walls at 20s. The full input transcript feeds a RISC Zero ZK proof that verifies the result on-chain.
 
 ## Hackathon
 
@@ -22,26 +22,27 @@ Submission requirements:
 
 ## Status
 
-All phases complete. Deterministic sim (54 TS tests), Rust prover (47 tests), Soroban contracts deployed, multiplayer server with lobby/ELO/replays, Phaser client with prediction + wallet connect.
+All phases complete. Deterministic sim (64 TS tests), Rust prover (52 tests), Soroban contracts deployed, multiplayer server with lobby/ELO/replays/bots/tournaments, Phaser client with prediction + wallet connect.
 
 ## Tech Stack
 
-- **Sim core**: TypeScript, pure deterministic functions (`packages/sim`)
+- **Sim core**: Rust fixed-point i32 compiled to WASM (single source of truth). Legacy TS types in `packages/sim`
 - **Client**: Phaser 2D renderer, lobby UI, wallet connect (`apps/client`)
-- **Server**: Bun WebSocket, server-authoritative netcode (`services/server`)
-- **ZK Prover**: RISC Zero zkVM, Groth16 compression (`services/prover`)
+- **Server**: Bun WebSocket, server-authoritative netcode, bot opponents (`services/server`)
+- **ZK Prover**: RISC Zero zkVM, Groth16 compression, multi-round proofs (`services/prover`)
 - **Contracts**: Soroban smart contract + Nethermind Groth16 verifier (`contracts/chickenz`)
 
 ## Monorepo Layout
 
 ```
-packages/sim/           Deterministic game logic (pure TS, no I/O, 54 tests)
+packages/sim/           Deterministic game logic (pure TS, no I/O, 64 tests)
 apps/client/            Phaser renderer, lobby UI, wallet connect
-services/server/        Bun WebSocket server — matchmaking, rooms, ELO
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO, bots
 services/prover/
-  core/                 Rust port of sim (f64 + fixed-point i32, 47 tests)
-  guest/                RISC Zero monolithic guest
-  chunk-guest/          Chunk prover guest
+  core/                 Rust fixed-point sim (i32, 52 tests, single source of truth)
+  wasm/                 WASM build of core (used by client + server)
+  guest/                RISC Zero guest — multi-round proof (2 winning rounds)
+  chunk-guest/          Chunk prover guest (360 ticks, single-round)
   match-guest/          Match composer guest
   host/                 Orchestration (monolithic + chunked + Boundless)
 contracts/chickenz/     Soroban game contract (deployed on testnet)
@@ -50,10 +51,10 @@ contracts/chickenz/     Soroban game contract (deployed on testnet)
 ## Critical Design Invariants
 
 1. **Deterministic sim** — `nextState = step(prevState, inputs, prevInputs, config)`. Given identical inputs and seed, replay from tick 0 must produce identical final state.
-2. **60 Hz fixed tick** — all state changes are per-tick; no variable time deltas. Matches are 3600 ticks (60s).
-3. **3 lives + sudden death** — each player has 3 lives. At tick 3000 (50s), arena walls close inward. Player with more lives wins at time-up.
+2. **60 Hz fixed tick** — all state changes are per-tick; no variable time deltas. Rounds are 1800 ticks (30s).
+3. **1 life per round + sudden death** — each player has 1 life per round, best of 3. At tick 1200 (20s), arena walls close inward. Player with more health wins at time-up.
 4. **Missing-input rule** — if no input at tick T, reuse input from T-1. This rule must be identical across client, server, and ZK verification.
-5. **ZK-provable outcome** — the ZK proof verifies that running the deterministic sim with the given inputs + seed produces the claimed winner. This is the core mechanic.
+5. **Multi-round ZK proof** — the ZK proof replays both winning rounds (same seed), verifies the same player won both, and commits combined transcript hashes + seed_commit. This is the core mechanic.
 6. **Game Hub integration** — every match calls `start_game()` at match start and `end_game()` with the verified winner on the Game Hub contract.
 7. **Death linger** — 30-tick (0.5s) delay before `matchOver` after final kill, so both players see the death.
 
@@ -71,18 +72,20 @@ The sim core must be a pure function: `(state, inputs, prevInputs, config) → s
 
 **Framework**: RISC Zero zkVM with Groth16 compression via Boundless/Bonsai.
 
-**What the proof verifies:**
-1. Inputs match the committed transcript (SHA-256)
-2. Seed matches seed_commit (SHA-256)
-3. Deterministic sim replay produces the claimed final state
-4. Winner derived correctly from final state
+**What the proof verifies (multi-round):**
+1. Both winning rounds replayed with the same committed seed (SHA-256)
+2. Input transcripts match combined transcript_hash (SHA-256 chain of per-round hashes)
+3. Deterministic sim replay produces correct final state per round
+4. Same player won both rounds → confirmed as match winner
 
-**Journal layout**: 76 bytes — winner(i32) + scores([u32;2]) + transcript_hash([u8;32]) + seed_commit([u8;32])
+**Multi-round encoding**: `[round_count: 4 LE] [seed: 4 LE] per round: [tick_count: 4 LE] [ticks × 6 bytes]`
+
+**Journal layout**: 76 bytes — winner(i32) + round_wins([u32;2]) + transcript_hash([u8;32]) + seed_commit([u8;32])
 
 **Integration flow:**
-1. Match plays out online (server-authoritative)
-2. Server records input transcript
-3. RISC Zero guest replays sim in zkVM, generates Groth16 proof
+1. Match plays out online (server-authoritative, best-of-3 rounds)
+2. Server records per-round input transcripts
+3. RISC Zero guest replays both winning rounds in zkVM, generates Groth16 proof
 4. Proof submitted to Soroban contract
 5. Contract verifies proof via Nethermind Groth16 verifier (BN254 pairing)
 6. Contract calls `end_game()` on Game Hub with verified winner
@@ -92,8 +95,8 @@ The sim core must be a pure function: `(state, inputs, prevInputs, config) → s
 Game Hub contract (testnet): `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG`
 
 Required calls:
-- `start_game(game_id, player1, player2, points1, points2)` — at match start
-- `end_game(game_id, winner)` — after ZK proof verifies outcome
+- `start_game(game_id, session_id, player1, player2, player1_points, player2_points)` — at match start
+- `end_game(session_id, player1_won)` — after ZK proof verifies outcome
 
 ## Documentation Index
 

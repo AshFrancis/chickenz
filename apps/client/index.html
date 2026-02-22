@@ -1207,6 +1207,7 @@
             <div id="warmup-code-label">JOIN CODE</div>
             <div id="warmup-code"></div>
           </div>
+          <button id="btn-warmup-back" class="btn btn-sm" style="margin-top:78px;pointer-events:auto">&larr; LOBBY</button>
         </div>
 
         <!-- Settings overlay -->
@@ -1226,6 +1227,26 @@
                 </div>
               </div>
               <div id="settings-username-error" style="color:#ef5350;font-size:11px;text-align:right;min-height:14px"></div>
+            </div>
+
+            <div class="settings-section">
+              <h3>Character</h3>
+              <div class="settings-row">
+                <label>Home</label>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <button class="btn btn-sm" id="btn-home-prev">&uarr;</button>
+                  <span id="char-home-name" style="min-width:88px;text-align:center;color:#ffee58;font-size:12px">NINJA FROG</span>
+                  <button class="btn btn-sm" id="btn-home-next">&darr;</button>
+                </div>
+              </div>
+              <div class="settings-row">
+                <label>Away</label>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <button class="btn btn-sm" id="btn-away-prev">&uarr;</button>
+                  <span id="char-away-name" style="min-width:88px;text-align:center;color:#aaa;font-size:12px">MASK DUDE</span>
+                  <button class="btn btn-sm" id="btn-away-next">&darr;</button>
+                </div>
+              </div>
             </div>
 
             <div class="settings-section">
@@ -1316,6 +1337,7 @@
 
         <!-- Tournament lobby overlay -->
         <div id="tournament-overlay">
+          <button id="btn-tournament-back" class="btn btn-sm" style="position:absolute;top:12px;left:12px;pointer-events:auto">&larr; LOBBY</button>
           <h2>TOURNAMENT</h2>
           <div id="tournament-code"></div>
           <div class="tournament-players" id="tournament-players"></div>

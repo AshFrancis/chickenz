@@ -43,14 +43,18 @@ fi
 
 if [ "$MODE" = "client" ] || [ "$MODE" = "both" ]; then
   log "Uploading client dist..."
+  ssh $SSH_OPTS "$SERVER" "mkdir -p $REMOTE_DIR/services/server/public"
   scp $SSH_OPTS -r "$PROJECT_ROOT/apps/client/dist/"* "$SERVER:$REMOTE_DIR/services/server/public/"
 fi
 
-# --- Upload WASM binary (built locally by wasm-pack) ---
+# --- Upload WASM pkg (built locally by wasm-pack, not in git) ---
 
 if [ "$MODE" = "server" ] || [ "$MODE" = "both" ]; then
-  log "Uploading WASM binary..."
-  scp $SSH_OPTS "$PROJECT_ROOT/services/server/chickenz_wasm_bg.wasm" "$SERVER:$REMOTE_DIR/services/server/"
+  log "Uploading WASM pkg..."
+  ssh $SSH_OPTS "$SERVER" "mkdir -p $REMOTE_DIR/services/prover/wasm/pkg"
+  scp $SSH_OPTS "$PROJECT_ROOT/services/prover/wasm/pkg/chickenz_wasm_bg.wasm" "$SERVER:$REMOTE_DIR/services/prover/wasm/pkg/"
+  scp $SSH_OPTS "$PROJECT_ROOT/services/prover/wasm/pkg/chickenz_wasm.js" "$SERVER:$REMOTE_DIR/services/prover/wasm/pkg/"
+  scp $SSH_OPTS "$PROJECT_ROOT/services/prover/wasm/pkg/chickenz_wasm.d.ts" "$SERVER:$REMOTE_DIR/services/prover/wasm/pkg/"
 fi
 
 # --- Restart server ---

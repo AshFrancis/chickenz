@@ -2,7 +2,7 @@ FROM oven/bun:1 AS builder
 WORKDIR /app
 
 # Copy workspace config
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json ./
+COPY package.json pnpm-lock.yaml ./
 COPY packages/sim/package.json packages/sim/
 COPY apps/client/package.json apps/client/
 COPY services/server/package.json services/server/
@@ -14,6 +14,9 @@ RUN bun install --frozen-lockfile
 COPY packages/sim packages/sim
 COPY apps/client apps/client
 COPY services/server services/server
+
+# Copy pre-built WASM pkg (built locally via: cd services/prover/wasm && wasm-pack build --target web)
+COPY services/prover/wasm/pkg services/prover/wasm/pkg
 
 # Build client
 RUN cd apps/client && bun run build
@@ -27,6 +30,9 @@ COPY --from=builder /app/packages/sim packages/sim
 
 # Copy server source
 COPY --from=builder /app/services/server services/server
+
+# Copy WASM pkg (server loads from services/prover/wasm/pkg/)
+COPY --from=builder /app/services/prover/wasm/pkg services/prover/wasm/pkg
 
 # Copy built client into server's public dir
 COPY --from=builder /app/apps/client/dist services/server/public

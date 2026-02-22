@@ -4,9 +4,42 @@ import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
 import { startMatchOnChain, settleMatchOnChain, verifySignature } from "./stellar";
 import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
-import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, updateStartTxHash, updateSettleTxHash, updateProofTimestamps, updateMatchStartTime, updateWalletVerified, saveTranscript, getTranscriptByRoomId, type MatchRecord } from "./db";
+import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, updateStartTxHash, updateSettleTxHash, updateProofTimestamps, updateMatchStartTime, updateWalletVerified, saveTranscript, getTranscriptByRoomId, updateTranscriptCid, updateBoundlessRequestId, type MatchRecord } from "./db";
+import { normalize, resolve } from "path";
 
 const PORT = Number(process.env.PORT) || 3000;
+const BOT_JOIN_DELAY_MS = 16_000; // delay before bot auto-joins casual room
+
+// ── Startup env validation ─────────────────────────────────
+{
+  const features: string[] = [];
+  const warnings: string[] = [];
+
+  if (process.env.STELLAR_ADMIN_SECRET) {
+    features.push("on-chain settlement (start_match + auto-settle)");
+  } else {
+    warnings.push("STELLAR_ADMIN_SECRET not set — on-chain features disabled");
+  }
+
+  if (process.env.WORKER_API_KEY) {
+    features.push("remote proof worker API");
+  } else {
+    warnings.push("WORKER_API_KEY not set — remote proof worker disabled");
+  }
+
+  if (process.env.CORS_ORIGIN && process.env.CORS_ORIGIN !== "*") {
+    features.push(`CORS restricted to ${process.env.CORS_ORIGIN}`);
+  }
+
+  if (warnings.length > 0) {
+    console.warn("[env] Warnings:");
+    for (const w of warnings) console.warn(`  - ${w}`);
+  }
+  if (features.length > 0) {
+    console.log("[env] Enabled features:");
+    for (const f of features) console.log(`  + ${f}`);
+  }
+}
 
 // ── State ──────────────────────────────────────────────────
 
@@ -57,7 +90,39 @@ function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArt
       updateProofStatus(matchId, "settled");
       if (hash) updateSettleTxHash(matchId, hash);
     })
-    .catch((err) => { console.error("Auto-settle failed:", err); });
+    .catch((err) => {
+      console.error("Auto-settle failed:", err);
+      updateProofStatus(matchId, "verified"); // revert to verified so manual settle can retry
+    });
+}
+
+/** Pin transcript JSON to IPFS via Pinata and store the CID. */
+async function pinTranscriptToIPFS(matchId: string, transcript: object) {
+  const jwt = process.env.PINATA_JWT;
+  if (!jwt) return;
+  try {
+    const res = await fetch("https://api.pinata.cloud/pinning/pinJSONToIPFS", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+      },
+      body: JSON.stringify({
+        pinataContent: transcript,
+        pinataMetadata: { name: `chickenz-transcript-${matchId}` },
+      }),
+    });
+    if (!res.ok) {
+      console.error(`[ipfs] Pinata pin failed for ${matchId}: ${res.status}`);
+      return;
+    }
+    const data = await res.json() as { IpfsHash: string };
+    const cid = data.IpfsHash;
+    updateTranscriptCid(matchId, cid);
+    console.log(`[ipfs] Transcript pinned for ${matchId}: ${cid}`);
+  } catch (err) {
+    console.error(`[ipfs] Failed to pin transcript for ${matchId}:`, err);
+  }
 }
 
 function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) {
@@ -72,7 +137,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       // Minimum button-state changes required from each player before ELO updates.
       // Prevents farming via AFK alts. Set to 0 to disable (useful for testing).
       // A real match typically produces 100+ changes; 30 is a safe production threshold.
-      const MIN_INPUT_CHANGES = 0;
+      const MIN_INPUT_CHANGES = 30;
       if (activity[0] >= MIN_INPUT_CHANGES && activity[1] >= MIN_INPUT_CHANGES) {
         updateElo(winnerName, loserName);
       }
@@ -82,7 +147,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
   // Record match history
   if (sockets.length === 2) {
     const matchId = generateMatchId();
-    const sessionId = Date.now() >>> 0;
+    const sessionId = room?.sessionId || (Date.now() >>> 0);
     const record: MatchRecord = {
       id: matchId,
       sessionId,
@@ -105,18 +170,8 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     }
 
     // Store wallet verification status
-    record.wallet1Verified = !!(sockets[0] as any)?.data.walletVerified;
-    record.wallet2Verified = !!(sockets[1] as any)?.data.walletVerified;
-
-    // Start match on-chain for ranked matches with wallets (never bots)
-    if (mode === "ranked" && !room?.isBotMatch && record.wallet1 && record.wallet2 && process.env.STELLAR_ADMIN_SECRET && room) {
-      const seedBytes = new Uint8Array(4);
-      new DataView(seedBytes.buffer).setUint32(0, room.currentSeed, true);
-      const seedCommit = new Uint8Array(new Bun.CryptoHasher("sha256").update(seedBytes).digest());
-      startMatchOnChain(record.sessionId, record.wallet1, record.wallet2, seedCommit)
-        .then((hash) => { if (hash) updateStartTxHash(matchId, hash); })
-        .catch(() => {});
-    }
+    record.wallet1Verified = !!sockets[0]?.data.walletVerified;
+    record.wallet2Verified = !!sockets[1]?.data.walletVerified;
 
     // Trigger proving for ranked matches (never bots)
     if (mode === "ranked" && !room?.isBotMatch && room) {
@@ -127,6 +182,9 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
         if (artifacts) {
           updateProofTimestamps(matchId, proofRequestedAt, Date.now(), source || "unknown");
           updateProofStatus(matchId, "verified", artifacts);
+          if (artifacts.boundlessRequestId) {
+            updateBoundlessRequestId(matchId, artifacts.boundlessRequestId);
+          }
           autoSettleMatch(matchId, sessionId, artifacts);
         } else {
           updateProofStatus(matchId, "pending");
@@ -137,9 +195,17 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
 
     insertMatch(record);
 
+    // Apply startTxHash after insert so the UPDATE finds the row
+    if (room?.startTxHash) {
+      updateStartTxHash(matchId, room.startTxHash);
+    }
+
     // Save full transcript for replays (persists beyond room cleanup)
     if (room) {
-      saveTranscript(matchId, room.getFullTranscript());
+      const fullTranscript = room.getFullTranscript();
+      saveTranscript(matchId, fullTranscript);
+      // Pin to IPFS for immutable data availability (async, non-blocking)
+      pinTranscriptToIPFS(matchId, fullTranscript);
     }
 
     // Store timeline fields that insertMatch doesn't cover
@@ -157,6 +223,19 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
   // Schedule room cleanup (keeps transcript accessible for 2 minutes)
   cleanupRoom(roomId);
   broadcastLobby();
+}
+
+/** Register match on-chain when gameplay starts (before any rounds). */
+function onMatchStarted(room: GameRoom) {
+  if (room.mode !== "ranked" || room.isBotMatch) return;
+  const [w1, w2] = room.walletAddresses;
+  if (!w1 || !w2 || !process.env.STELLAR_ADMIN_SECRET) return;
+  const seedBytes = new Uint8Array(4);
+  new DataView(seedBytes.buffer).setUint32(0, room.currentSeed, true);
+  const seedCommit = new Uint8Array(new Bun.CryptoHasher("sha256").update(seedBytes).digest());
+  startMatchOnChain(room.sessionId, w1, w2, seedCommit)
+    .then((hash) => { if (hash) room.startTxHash = hash; })
+    .catch(() => {});
 }
 
 function cleanupRoom(roomId: string) {
@@ -214,10 +293,11 @@ function isValidUsername(name: string): boolean {
 
 // ── Server ─────────────────────────────────────────────────
 
+const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "*";
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 const server = Bun.serve<SocketData>({
@@ -233,13 +313,19 @@ const server = Bun.serve<SocketData>({
     // Redirect raw IP access to domain
     const host = req.headers.get("host") || "";
     if (host.startsWith("178.156.244.26")) {
-      return Response.redirect(`https://chickenz.io${url.pathname}${url.search}`, 301);
+      return new Response(null, {
+        status: 301,
+        headers: {
+          "Location": `https://chickenz.io${url.pathname}${url.search}`,
+          "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        },
+      });
     }
 
     // WebSocket upgrade
     if (url.pathname === "/ws") {
       const upgraded = server.upgrade(req, {
-        data: { roomId: null, playerId: -1, username: "", walletAddress: "", character: 0, tournamentId: null, msgCount: 0, msgResetTime: Date.now() },
+        data: { roomId: null, playerId: -1, username: "", walletAddress: "", character: 0, awayCharacter: 1, tournamentId: null, msgCount: 0, msgResetTime: Date.now() },
       });
       if (!upgraded) {
         return new Response("WebSocket upgrade failed", {
@@ -321,6 +407,26 @@ const server = Bun.serve<SocketData>({
       }, { headers: corsHeaders });
     }
 
+    // ── Client-triggered settle notification ──────────────
+    const matchSettleMatch = url.pathname.match(/^\/api\/matches\/(.+)\/settle$/);
+    if (req.method === "POST" && matchSettleMatch) {
+      const matchId = matchSettleMatch[1]!;
+      const record = getMatchById(matchId);
+      if (!record) {
+        return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
+      }
+      const body = await req.json().catch(() => ({} as any));
+      const txHash = body?.txHash;
+      if (!txHash || typeof txHash !== "string" || txHash.length < 10) {
+        return Response.json({ error: "txHash required" }, { status: 400, headers: corsHeaders });
+      }
+      if (record.proofStatus === "verified") {
+        updateProofStatus(matchId, "settled");
+        updateSettleTxHash(matchId, txHash);
+      }
+      return Response.json({ ok: true, proofStatus: record.proofStatus }, { headers: corsHeaders });
+    }
+
     // ── Wallet challenge/verify endpoints ─────────────────
     if (url.pathname === "/api/wallet/challenge") {
       const addr = url.searchParams.get("address") ?? "";
@@ -343,7 +449,21 @@ const server = Bun.serve<SocketData>({
         if (!body.challenge.startsWith("chickenz-auth:")) {
           return Response.json({ error: "Invalid challenge" }, { status: 400, headers: corsHeaders });
         }
+        // Validate challenge freshness (5 min window)
+        const parts = body.challenge.split(":");
+        const challengeTs = parseInt(parts[2] ?? "0", 10);
+        if (isNaN(challengeTs) || Date.now() - challengeTs > 5 * 60 * 1000) {
+          return Response.json({ error: "Challenge expired" }, { status: 400, headers: corsHeaders });
+        }
         const verified = verifySignature(body.address, body.challenge, body.signature);
+        // Mark matching WebSocket connections as verified server-side
+        if (verified) {
+          for (const ws of lobbySockets) {
+            if (ws.data.walletAddress === body.address) {
+              ws.data.walletVerified = true;
+            }
+          }
+        }
         return Response.json({ verified }, { headers: corsHeaders });
       } catch {
         return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
@@ -352,14 +472,12 @@ const server = Bun.serve<SocketData>({
 
     // ── Worker API (prover worker polls these) ──────────────
 
-    // Worker API authentication
+    // Worker API authentication (always required)
     if (url.pathname.startsWith("/api/worker/")) {
       const workerKey = process.env.WORKER_API_KEY;
-      if (workerKey) {
-        const auth = req.headers.get("Authorization");
-        if (auth !== `Bearer ${workerKey}`) {
-          return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
-        }
+      const auth = req.headers.get("Authorization");
+      if (!workerKey || auth !== `Bearer ${workerKey}`) {
+        return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
       }
     }
 
@@ -425,7 +543,11 @@ const server = Bun.serve<SocketData>({
     // Static file serving (production client build)
     const STATIC_DIR = new URL("../public", import.meta.url).pathname;
     const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = Bun.file(STATIC_DIR + filePath);
+    const resolved = normalize(resolve(STATIC_DIR, "." + filePath));
+    if (!resolved.startsWith(STATIC_DIR)) {
+      return new Response("Not found", { status: 404, headers: corsHeaders });
+    }
+    const file = Bun.file(resolved);
     if (await file.exists()) {
       return new Response(file);
     }
@@ -484,15 +606,46 @@ const server = Bun.serve<SocketData>({
         const addr = ((msg as any).address ?? "").trim();
         if (addr && /^G[A-Z2-7]{55}$/.test(addr)) {
           ws.data.walletAddress = addr;
-          (ws.data as any).walletVerified = !!(msg as any).verified;
+          // Don't trust client-supplied verified flag; require server-side verification
+          ws.data.walletVerified = false;
         }
         return;
       }
 
-      // Store character choice from any room-related message
+      // Store character choices from any room-related message
       if (typeof (msg as any).character === "number") {
         const ch = (msg as any).character;
         if (ch >= 0 && ch <= 3) ws.data.character = ch;
+      }
+      if (typeof (msg as any).awayCharacter === "number") {
+        const ch = (msg as any).awayCharacter;
+        if (ch >= 0 && ch <= 3) ws.data.awayCharacter = ch;
+      }
+
+      // ── Leave room / tournament ────────────────────────
+      if (msg.type === "leave") {
+        const roomId = ws.data.roomId;
+        if (roomId) {
+          const room = rooms.get(roomId);
+          if (room?.handleLeave(ws.data.playerId)) {
+            lobbySockets.add(ws);
+            sendLobby(ws);
+            if (room.isEnded()) rooms.delete(roomId);
+            broadcastLobby();
+          }
+        }
+        const tournamentId = ws.data.tournamentId;
+        if (tournamentId) {
+          const tournament = tournaments.get(tournamentId);
+          if (tournament) {
+            tournament.handleDisconnect(ws);
+            ws.data.tournamentId = null;
+            lobbySockets.add(ws);
+            sendLobby(ws);
+            if (tournament.playerCount === 0) tournaments.delete(tournamentId);
+          }
+        }
+        return;
       }
 
       // ── Create room ─────────────────────────────────────
@@ -508,6 +661,7 @@ const server = Bun.serve<SocketData>({
         const roomId = generateRoomId();
         const room = new GameRoom(roomId, name, ws, isPrivate, mode);
         room.onEnded = returnToLobby;
+        room.onStarted = onMatchStarted;
         rooms.set(roomId, room);
         lobbySockets.delete(ws);
         broadcastLobby();
@@ -604,21 +758,19 @@ const server = Bun.serve<SocketData>({
           const roomId = generateRoomId();
           const room = new GameRoom(roomId, "Quick Play", ws, false, mode);
           room.onEnded = returnToLobby;
+          room.onStarted = onMatchStarted;
           rooms.set(roomId, room);
           lobbySockets.delete(ws);
           broadcastLobby();
 
-          // Auto-add bot after 20s if no human joins (casual only)
+          // Auto-add bot if no human joins (casual only)
           if (mode === "casual") {
-            console.log(`[Bot] Scheduling bot timer for room ${roomId} (casual quickplay)`);
             setTimeout(() => {
-              console.log(`[Bot] Timer fired for room ${roomId}: waiting=${room.isWaiting()} players=${room.playerCount}`);
               if (room.isWaiting() && room.playerCount === 1) {
                 room.addBot();
-                console.log(`[Bot] Bot added to room ${roomId}`);
                 broadcastLobby();
               }
-            }, 20_000);
+            }, BOT_JOIN_DELAY_MS);
           }
         }
         return;
@@ -693,6 +845,9 @@ const server = Bun.serve<SocketData>({
         if (!roomId) return;
         if (typeof msg.buttons !== "number" || !Number.isInteger(msg.buttons) || msg.buttons < 0 || msg.buttons > 0x1F) return;
         if (!Number.isFinite(msg.aimX) || !Number.isFinite(msg.aimY)) return;
+        // Clamp aim to valid integer range
+        msg.aimX = Math.max(-1, Math.min(1, Math.round(msg.aimX)));
+        msg.aimY = Math.max(-1, Math.min(1, Math.round(msg.aimY)));
         const room = rooms.get(roomId);
         if (!room) return;
         room.handleInput(ws.data.playerId, msg);
@@ -702,6 +857,11 @@ const server = Bun.serve<SocketData>({
 
     close(ws: ServerWebSocket<SocketData>) {
       lobbySockets.delete(ws);
+
+      // Clean up spectator references
+      for (const room of rooms.values()) {
+        room.removeSpectator(ws);
+      }
 
       // Tournament disconnect
       const tournamentId = ws.data.tournamentId;

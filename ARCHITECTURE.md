@@ -9,13 +9,14 @@ Core loop: play match online → server records transcript → generate RISC Zer
 ## Components
 
 ```
-packages/sim/           Deterministic game logic (pure TS, no I/O, 54 tests)
-apps/client/            Phaser renderer, lobby UI, wallet connect, settlement
-services/server/        Bun WebSocket server — matchmaking, rooms, ELO, transcripts
+packages/sim/           Deterministic game logic (pure TS, no I/O, 64 tests)
+apps/client/            Phaser renderer, lobby UI, wallet connect
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO, on-chain settlement
 services/prover/
-  core/                 Rust port of sim (f64 + fixed-point i32, 47 tests)
-  guest/                RISC Zero monolithic guest (3600 ticks, 5.2M cycles)
-  chunk-guest/          Chunk prover guest (360 ticks per chunk)
+  core/                 Rust sim (fixed-point i32, single source of truth, 52 tests)
+  wasm/                 WASM crate — wasm-bindgen wrapper (used by client + server)
+  guest/                RISC Zero monolithic guest (multi-round, ~5.2M cycles/round)
+  chunk-guest/          Chunk prover guest (single-round, 360 ticks per chunk)
   match-guest/          Match composer guest (verifies chunk proof chain)
   host/                 Orchestration (monolithic + chunked + Boundless modes)
 contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
@@ -32,25 +33,23 @@ Browser                          Server                    Blockchain
   ├─ Set username ────────────────→│                          │
   ├─ Quick Play / Create Room ───→│                          │
   │                                ├─ Match players           │
+  │                                ├─ start_match() ────────→ │ Game Hub
   │←── matched(playerId, seed) ───┤                          │
   │                                │                          │
-  │  ┌─ 60-second match ────────┐ │                          │
+  │  ┌─ 30-second round (best of 3) ──┐ │                          │
   │  │ Client sends inputs ────→│ │                          │
-  │  │ Server runs sim at 60Hz  │ │                          │
+  │  │ Server runs WASM sim 60Hz│ │                          │
   │  │ Server broadcasts state  │ │                          │
   │  │ Client predicts + renders│ │                          │
   │  └─────────────────────────┘ │                          │
   │                                │                          │
   │←── ended(winner, scores) ─────┤                          │
   │                                ├─ Store transcript        │
-  │                                │                          │
-  ├─ start_match() ───────────────────────────────────────→  │ Game Hub
-  │                                │                          │
-  ├─ Generate ZK proof (prover host) ─────────────────────┐  │
-  │                                │                       │  │
-  ├─ settle_match(seal, journal) ─────────────────────────→│  │ Verifier
+  │                                ├─ Generate ZK proof ────┐ │
+  │                                │  (worker or Boundless)  │ │
+  │                                ├─ settle_match(seal) ──→│ │ Verifier
   │                                │                       └→ │ Game Hub
-  │←── Settlement confirmed ──────────────────────────────── │
+  │←── Settlement confirmed ──────┤                          │
 ```
 
 ---
@@ -78,7 +77,7 @@ Browser                          Server                    Blockchain
 - All state changes occur per tick — no variable time deltas
 - Inputs are bound to tick numbers
 - Missing inputs reuse previous tick's input (deterministic rule)
-- Matches last 3600 ticks (60 seconds)
+- Rounds last 1800 ticks (30 seconds), best of 3 rounds per match
 
 ---
 

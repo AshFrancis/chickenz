@@ -6,7 +6,7 @@ The server-authoritative multiplayer system is live with the following features:
 
 - Server-authoritative sim at 60Hz
 - Client-side prediction with rollback reconciliation
-- Online lobby with quick play, named rooms, private rooms, password protection
+- Online lobby with quick play, named rooms, private rooms
 - Join codes (5-letter, excludes I/O for readability)
 - ELO ranking system, leaderboard, match history
 - Replay viewer (fetch transcript, step through at variable speed)
@@ -26,9 +26,9 @@ The server-authoritative multiplayer system is live with the following features:
 ```
 
 Rules:
-- One input per tick per player
+- Client sends input on change (not every tick) — server uses missing-input rule for gaps
 - Missing input → server reuses previous tick's input (deterministic rule)
-- `buttons` is a bitmask: Left=1, Right=2, Jump=4, Shoot=8
+- `buttons` is a bitmask: Left=1, Right=2, Jump=4, Shoot=8, Taunt=16
 
 ---
 
@@ -40,6 +40,7 @@ State broadcast at 60Hz (every tick):
 {
   "type": "state",
   "tick": 142,
+  "lastButtons": [5, 0],
   "players": [...],
   "projectiles": [...],
   "weaponPickups": [...],
@@ -60,11 +61,11 @@ State broadcast at 60Hz (every tick):
 
 The client uses a `PredictionManager` that:
 1. Stores an `InputBuffer` of recent local inputs (ring buffer)
-2. Runs local sim `step()` ahead of server state for responsive feel
+2. Runs local WASM sim `step()` ahead of server state for responsive feel
 3. On receiving server state: compares predicted vs actual
 4. On mismatch: rolls back to server state, replays buffered inputs
 
-This gives instant-feeling controls while maintaining server authority.
+Both client and server use the same Rust sim compiled to WASM (single source of truth).
 
 ---
 
@@ -84,9 +85,11 @@ The server resolves all hits on its current authoritative state — it never rew
 create/quickplay → waiting (1/2) → matched (2/2) → playing → ended
                                                               ↓
                                                     players return to lobby
-                                                    transcript stored (5 min TTL)
+                                                    transcript persisted to DB
 ```
 
-- Rooms are cleaned up 5 minutes after match ends
-- Transcripts available via `GET /transcript/{roomId}` for ZK proving
-- Match history stored in memory (last 50 matches)
+- In-memory rooms cleaned up 2 minutes after match ends
+- Transcripts persisted to SQLite DB (survive room cleanup and server restarts)
+- Available via `GET /transcript/{roomId}` — tries in-memory first, falls back to DB
+- Match history stored in SQLite with ELO rankings, proof status, wallet verification
+- Bot matches: auto-join casual quickplay after 20s if no human joins

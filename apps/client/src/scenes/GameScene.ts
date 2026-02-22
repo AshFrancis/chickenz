@@ -631,7 +631,7 @@ export class GameScene extends Phaser.Scene {
 
   startWarmup(joinCode: string, username?: string, onStarted?: () => void, character?: number) {
     if (!this.sceneReady) {
-      console.log(`[startWarmup] deferred — scene not ready yet`);
+      // deferred — scene not ready yet
       this.onReady(() => this.startWarmup(joinCode, username, onStarted, character));
       return;
     }
@@ -725,7 +725,7 @@ export class GameScene extends Phaser.Scene {
 
   startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3, characters?: [number, number], onCovered?: () => void) {
     if (!this.sceneReady) {
-      console.log(`[startOnlineMatch] deferred — scene not ready yet`);
+      // deferred — scene not ready yet
       this.onReady(() => this.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters, onCovered));
       return;
     }
@@ -1496,12 +1496,9 @@ export class GameScene extends Phaser.Scene {
         }
       }
 
-      // Periodic diagnostics (every 2s)
       this.diagTimer += delta;
       if (this.diagTimer > 2000) {
         this.diagTimer = 0;
-        const gap = this.prediction.currentTick - this.lastServerTick;
-        console.log(`[Netcode] predTick=${this.prediction.currentTick} serverTick=${this.lastServerTick} gap=${gap} replay=${this.prediction.lastReplayCount} delta=${delta.toFixed(1)}ms`);
       }
     }
 

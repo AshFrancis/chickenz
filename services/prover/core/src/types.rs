@@ -191,6 +191,14 @@ pub struct ProverInput {
     pub transcript: Vec<[PlayerInput; 2]>,
 }
 
+/// Multi-round input: all winning rounds share the same seed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MultiRoundProverInput {
+    pub config: MatchConfig,
+    /// One entry per winning round. Each round is a Vec of per-tick input pairs.
+    pub rounds: Vec<Vec<[PlayerInput; 2]>>,
+}
+
 /// Public output written to the zkVM journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProverOutput {

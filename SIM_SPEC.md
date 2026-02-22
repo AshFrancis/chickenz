@@ -1,6 +1,6 @@
 # Sim Spec — Deterministic Simulation
 
-The simulation must be pure, deterministic, and replayable from a transcript. It runs identically in three environments: TypeScript (client/server), Rust f64 (reference), and Rust fixed-point i32 (zkVM guest).
+The simulation must be pure, deterministic, and replayable from a transcript. The single source of truth is the Rust fixed-point i32 implementation, compiled to WASM (client/server) and RISC-V (zkVM guest). A legacy TypeScript implementation exists for type definitions and constants.
 
 ---
 
@@ -18,7 +18,7 @@ The simulation must be pure, deterministic, and replayable from a transcript. It
 
 1. Player is killed → opponent wins the round (after linger)
 2. Time runs out → most health wins
-3. Tied on health → deterministic coin flip via PRNG
+3. Tied on health → player 0 (home) wins tiebreaker (deterministic, no draws)
 
 Match winner: first player to win 2 rounds.
 
@@ -33,7 +33,7 @@ interface GameState {
   projectiles: Projectile[];     // variable length, bounded
   weaponPickups: WeaponPickup[]; // map-defined spawn points
   rngState: number;              // Mulberry32 PRNG state
-  score: Map<number, number>;    // kills per player
+  score: [number, number];       // kills per player
   nextProjectileId: number;
   arenaLeft: number;             // current left wall (sudden death)
   arenaRight: number;            // current right wall (sudden death)
@@ -66,7 +66,7 @@ interface PlayerState {
 nextState = step(prevState, inputs, prevInputs, config)
 ```
 
-Sub-step order (16 steps):
+Sub-step order:
 
 1. **Match over check** — if `matchOver`, return unchanged
 2. **Death linger** — if `deathLingerTimer > 0`, decrement and skip gameplay
@@ -74,15 +74,17 @@ Sub-step order (16 steps):
 4. **Tick cooldowns** — decrement shoot cooldown, invincibility, respawn timers
 5. **Apply movement** — horizontal acceleration from input, facing direction
 6. **Apply gravity** — constant downward acceleration
-7. **Move and collide** — AABB platform collision, one-way platforms
-8. **Weapon pickups** — player overlaps spawn point, equip weapon + ammo
-9. **Process shooting** — spawn projectiles based on weapon type and cooldown
-10. **Move projectiles** — advance position, remove expired/OOB
-11. **Projectile hits** — damage players, remove on hit, check eliminations
-12. **Respawn pickups** — tick respawn timers on collected pickups
-13. **Sudden death** — advance arena walls after tick 1200, kill OOB players
+7. **Move and collide** — AABB platform collision, wall slide detection
+8. **Stomp processing** — head-on-head detection, shake-off, auto-run
+9. **Weapon pickups** — player overlaps spawn point, equip weapon + ammo
+10. **Process shooting** — spawn projectiles based on weapon type and cooldown
+11. **Move projectiles** — advance position, remove expired/OOB
+12. **Projectile hits** — damage players, splash damage, check eliminations
+13. **Sudden death** — advance arena walls after tick 1200, zone damage
 14. **Time-up** — check if tick >= 1800, determine winner by health
-15. **Advance tick** — increment tick counter
+15. **Score tracking** — record kills from projectile and stomp eliminations
+16. **Respawn pickups** — tick respawn timers on collected pickups
+17. **Update prev_buttons** — store current buttons for next tick's edge detection
 
 ---
 
@@ -109,5 +111,5 @@ Given identical match params (seed, map, config) and full input transcript (up t
 - Up to 1800 ticks per round replayed inside RISC Zero zkVM (not Noir)
 - Fixed-point i32 with 8 fractional bits (256 = 1.0) for zkVM efficiency
 - Bounded loops, fixed array sizes (2 players, bounded projectile count)
-- Three implementations kept in sync: TypeScript, Rust f64, Rust fixed-point i32
-- Cross-validation tests ensure all three produce identical match outcomes
+- Single Rust fixed-point i32 implementation compiled to WASM and RISC-V
+- Cross-validation tests ensure WASM and zkVM produce identical outcomes

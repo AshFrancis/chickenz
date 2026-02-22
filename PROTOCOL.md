@@ -1,42 +1,82 @@
-# PROTOCOL.md
+# Protocol
 
-# Transport
+## Transport
 
-- WebSocket (initial phase)
-- 60Hz input send
-- 20–30Hz snapshot send
+- WebSocket (Bun server, port 3000)
+- Input sent on change (client → server), server reuses last input for gaps
+- 60Hz state broadcast (server → client, every tick)
 
 ---
 
-# Message Types
+## Message Types
 
-## Input
+### Client → Server
+
+**Input** (sent on change during gameplay)
+```
+type: "input"
+tick: number        // optional: target tick for precise alignment
+buttons: number     // bitmask: Left=1, Right=2, Jump=4, Shoot=8, Taunt=16
+aimX: number        // -1, 0, or 1 (aim direction horizontal)
+aimY: number        // -1, 0, or 1 (aim direction vertical)
+```
+
+**Lobby Actions**
+```
+type: "set_username" | "quickplay" | "create" | "join_room" | "join_code" | "leave" | "set_wallet"
+type: "create_tournament" | "join_tournament_code"
+```
+
+### Server → Client
+
+**State** (sent every tick during gameplay)
+```
+type: "state"
 tick: number
-seq: number
-buttons: number
-aimX: number
-aimY: number
+lastButtons: [number, number]   // last applied buttons per player
+players: SerializedPlayer[]     // 2 players (fp → f64 from WASM export)
+projectiles: SerializedProjectile[]
+weaponPickups: SerializedWeaponPickup[]
+scores: [number, number]
+arenaLeft: number               // sudden death zone left edge
+arenaRight: number              // sudden death zone right edge
+matchOver: boolean
+winner: number                  // -1 if no winner yet
+deathLingerTimer: number
+rngState: number
+nextProjectileId: number
+```
 
-## Snapshot
-serverTick: number
-ackSeq: number
-stateDelta: object
+**Match Lifecycle**
+```
+type: "waiting"       // room created, waiting for opponent (includes joinCode)
+type: "matched"       // match found, includes playerId, seed, mapIndex, mode, characters
+type: "round_start"   // new round beginning, includes seed, mapIndex, round number
+type: "round_end"     // round finished, includes winner and roundWins
+type: "ended"         // match over, includes winner, scores, roundWins, mode
+type: "lobby"         // lobby state update (rooms list)
+type: "error"         // error message (string)
+```
 
-## SignedInputBatch
-t0: number
-t1: number
-batch_hash: bytes32
-signature: bytes
-
-Signature covers:
-H(match_id || t0 || t1 || batch_hash || prev_commitment)
+**Tournament Messages**
+```
+type: "tournament_lobby"       // tournament waiting room state
+type: "tournament_match_start" // tournament match beginning (fighter or spectator role)
+type: "tournament_match_end"   // tournament match result + updated bracket
+type: "tournament_end"         // tournament over, final standings
+type: "spectate_state"         // spectator state broadcast (same fields as "state")
+type: "spectate_round_end"     // spectator round end notification
+type: "spectate_round_start"   // spectator new round notification
+```
 
 ---
 
-# Missing Input Rule
+## Missing Input Rule
 
 If no input at tick T:
+```
 input[T] = input[T-1]
+```
 
 This rule must be identical across:
 - client prediction

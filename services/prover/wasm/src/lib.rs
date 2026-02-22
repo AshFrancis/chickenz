@@ -51,6 +51,9 @@ struct JsPlayer {
     stomping_on: i32,
     stomp_shake_progress: i32,
     stomp_cooldown: i32,
+    stomp_last_shake_dir: i32,
+    stomp_auto_run_dir: i32,
+    stomp_auto_run_timer: i32,
 }
 
 /// JSON-serializable projectile (f64 values for JS)
@@ -133,6 +136,9 @@ fn player_to_js(p: &Player) -> JsPlayer {
         stomping_on: p.stomping_on,
         stomp_shake_progress: p.stomp_shake_progress,
         stomp_cooldown: p.stomp_cooldown,
+        stomp_last_shake_dir: p.stomp_last_shake_dir,
+        stomp_auto_run_dir: p.stomp_auto_run_dir,
+        stomp_auto_run_timer: p.stomp_auto_run_timer,
     }
 }
 
@@ -158,9 +164,9 @@ fn player_from_js(p: &JsPlayer) -> Player {
         stomped_by: p.stomped_by,
         stomping_on: p.stomping_on,
         stomp_shake_progress: p.stomp_shake_progress,
-        stomp_last_shake_dir: 0,
-        stomp_auto_run_dir: 0,
-        stomp_auto_run_timer: 0,
+        stomp_last_shake_dir: p.stomp_last_shake_dir,
+        stomp_auto_run_dir: p.stomp_auto_run_dir,
+        stomp_auto_run_timer: p.stomp_auto_run_timer,
         stomp_cooldown: p.stomp_cooldown,
     }
 }

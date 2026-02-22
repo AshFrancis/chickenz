@@ -27,6 +27,8 @@ export interface MatchRecord {
   settleTxHash?: string;
   wallet1Verified?: boolean;
   wallet2Verified?: boolean;
+  transcriptCid?: string;
+  boundlessRequestId?: string;
 }
 
 export interface LeaderboardEntry {
@@ -90,6 +92,8 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN wallet1_verified INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN wallet2_verified INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN transcript_data TEXT",
+  "ALTER TABLE matches ADD COLUMN transcript_cid TEXT",
+  "ALTER TABLE matches ADD COLUMN boundless_request_id TEXT",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* column already exists */ }
@@ -165,6 +169,8 @@ function rowToMatch(row: any): MatchRecord {
   if (row.settle_tx_hash) record.settleTxHash = row.settle_tx_hash;
   record.wallet1Verified = !!row.wallet1_verified;
   record.wallet2Verified = !!row.wallet2_verified;
+  if (row.transcript_cid) record.transcriptCid = row.transcript_cid;
+  if (row.boundless_request_id) record.boundlessRequestId = row.boundless_request_id;
   return record;
 }
 
@@ -308,4 +314,20 @@ export function getTranscriptByRoomId(roomId: string): object | null {
   const row = stmtGetTranscript.get({ $roomId: roomId }) as any;
   if (!row?.transcript_data) return null;
   try { return JSON.parse(row.transcript_data); } catch { return null; }
+}
+
+// ── IPFS transcript CID ─────────────────────────────────
+
+const stmtUpdateTranscriptCid = db.prepare(`UPDATE matches SET transcript_cid = $cid WHERE id = $id`);
+
+export function updateTranscriptCid(matchId: string, cid: string) {
+  stmtUpdateTranscriptCid.run({ $id: matchId, $cid: cid });
+}
+
+// ── Boundless request ID ─────────────────────────────────
+
+const stmtUpdateBoundlessRequestId = db.prepare(`UPDATE matches SET boundless_request_id = $rid WHERE id = $id`);
+
+export function updateBoundlessRequestId(matchId: string, requestId: string) {
+  stmtUpdateBoundlessRequestId.run({ $id: matchId, $rid: requestId });
 }

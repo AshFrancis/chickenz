@@ -7,11 +7,14 @@ import { initChickenzWasm } from "./wasm";
 import { NetworkManager, type RoomInfo, type GameMode, type TournamentBracket } from "./net/NetworkManager";
 
 const NUM_CHARACTERS = 4;
-/** Pick a random character index (0-3). */
-function pickCharacter(): number {
-  return Math.floor(Math.random() * NUM_CHARACTERS);
-}
-let pendingCharacter = 0; // character chosen for next match
+const CHARACTER_NAMES = ["NINJA FROG", "MASK DUDE", "PINK MAN", "VIRTUAL GUY"];
+
+// ── Character preferences (home/away) ────────────────────────────────────────
+let homeCharacter = parseInt(localStorage.getItem("chickenz-home-char") ?? "0", 10);
+let awayCharacter = parseInt(localStorage.getItem("chickenz-away-char") ?? "1", 10);
+if (homeCharacter < 0 || homeCharacter >= NUM_CHARACTERS) homeCharacter = 0;
+if (awayCharacter < 0 || awayCharacter >= NUM_CHARACTERS) awayCharacter = 1;
+let pendingCharacter = homeCharacter; // character chosen for next match
 import { initWalletKit, tryReconnectWallet, connectWallet, disconnectWallet, getConnectedAddress, settleMatch, signChallenge } from "./stellar";
 
 interface MatchRecord {
@@ -39,6 +42,9 @@ interface MatchRecord {
   contractAddress?: string;
   verifierAddress?: string;
   gameHubAddress?: string;
+  transcriptCid?: string;
+  boundlessRequestId?: string;
+  sessionId?: number;
 }
 
 // Wallet verification state
@@ -420,6 +426,7 @@ function openSettings() {
   checkDynamicZoom.checked = localStorage.getItem("chickenz-dynamic-zoom") !== "false";
   settingsUsername.value = currentUsername;
   settingsUsernameError.textContent = "";
+  updateCharUI();
 }
 
 function closeSettings() {
@@ -692,6 +699,52 @@ document.addEventListener("fullscreenchange", () => {
   fullscreenBtn.title = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen";
 });
 
+// ── Character Preference Buttons ─────────────────────────────────────────────
+
+const charHomeName = document.getElementById("char-home-name") as HTMLSpanElement;
+const charAwayName = document.getElementById("char-away-name") as HTMLSpanElement;
+
+function updateCharUI() {
+  charHomeName.textContent = CHARACTER_NAMES[homeCharacter] ?? "???";
+  charAwayName.textContent = CHARACTER_NAMES[awayCharacter] ?? "???";
+}
+updateCharUI();
+
+function setHomeChar(idx: number) {
+  homeCharacter = ((idx % NUM_CHARACTERS) + NUM_CHARACTERS) % NUM_CHARACTERS;
+  localStorage.setItem("chickenz-home-char", String(homeCharacter));
+  pendingCharacter = homeCharacter;
+  updateCharUI();
+}
+
+function setAwayChar(idx: number) {
+  awayCharacter = ((idx % NUM_CHARACTERS) + NUM_CHARACTERS) % NUM_CHARACTERS;
+  localStorage.setItem("chickenz-away-char", String(awayCharacter));
+  updateCharUI();
+}
+
+document.getElementById("btn-home-prev")!.addEventListener("click", () => setHomeChar(homeCharacter - 1));
+document.getElementById("btn-home-next")!.addEventListener("click", () => setHomeChar(homeCharacter + 1));
+document.getElementById("btn-away-prev")!.addEventListener("click", () => setAwayChar(awayCharacter - 1));
+document.getElementById("btn-away-next")!.addEventListener("click", () => setAwayChar(awayCharacter + 1));
+
+// ── Back-to-lobby buttons ─────────────────────────────────────────────────────
+
+document.getElementById("btn-warmup-back")!.addEventListener("click", () => {
+  const scene = getGameScene();
+  if (scene?.isWarmup) scene.stopWarmup();
+  networkManager?.sendLeave();
+  openLobby();
+});
+
+document.getElementById("btn-tournament-back")!.addEventListener("click", () => {
+  networkManager?.sendLeave();
+  hideAllTournamentOverlays();
+  currentTournamentId = null;
+  tournamentSpectating = false;
+  openLobby();
+});
+
 /** Apply saved audio settings to the game scene. */
 function applyAudioSettings(scene: GameScene) {
   const bgm = parseInt(localStorage.getItem("chickenz-bgm-volume") ?? "10", 10);
@@ -809,8 +862,8 @@ function createRoomElement(room: RoomInfo): HTMLDivElement {
     joinBtn.addEventListener("click", () => {
       if (!networkManager?.connected) return;
     
-      pendingCharacter = pickCharacter();
-      networkManager.sendJoinRoom(room.id, pendingCharacter);
+      pendingCharacter = homeCharacter;
+      networkManager.sendJoinRoom(room.id, pendingCharacter, awayCharacter);
       lobbyStatus.textContent = "Joining...";
       setLobbyButtons(false);
     });
@@ -1050,6 +1103,27 @@ function explorerAccountUrl(addr: string): string {
   return `https://stellar.expert/explorer/testnet/account/${addr}`;
 }
 
+function renderDataAvailability(m: MatchRecord): string {
+  const rows: string[] = [];
+  if (m.transcriptCid) {
+    const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${m.transcriptCid}`;
+    rows.push(`<div class="dpg-row"><span class="dpg-label">Transcript</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">IPFS: ${m.transcriptCid.slice(0, 12)}...</a></span></div>`);
+  }
+  if (m.boundlessRequestId) {
+    const boundlessUrl = `https://sepolia.etherscan.io/address/0xB74800f8E921F1a5b62B657b42DEa2867bfD4Ff3#events`;
+    rows.push(`<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value"><a href="${boundlessUrl}" target="_blank" rel="noopener">${m.boundlessRequestId.slice(0, 16)}...</a></span></div>`);
+  }
+  if (rows.length === 0) return "";
+  return `
+    <div class="detail-section">
+      <h3>Data Availability</h3>
+      <div class="detail-proof-grid">
+        ${rows.join("")}
+      </div>
+    </div>
+  `;
+}
+
 function renderMatchDetail(m: MatchRecord) {
   const winnerName = m.winner === 0 ? m.player1 : m.winner === 1 ? m.player2 : "Draw";
   const modeBadge = m.mode === "ranked"
@@ -1177,6 +1251,7 @@ function renderMatchDetail(m: MatchRecord) {
 
     ${proofHtml}
     ${contractsHtml}
+    ${renderDataAvailability(m)}
 
     <div class="detail-actions">
       <button class="btn btn-sm btn-replay-detail" data-room-id="${m.roomId}">Replay</button>
@@ -1473,24 +1548,24 @@ function connectToServer(url: string) {
 
 quickplayBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
-  pendingCharacter = pickCharacter();
-  networkManager.sendQuickplay(currentMode, pendingCharacter);
+  pendingCharacter = homeCharacter;
+  networkManager.sendQuickplay(currentMode, pendingCharacter, awayCharacter);
   lobbyStatus.textContent = `Finding a ${currentMode} match...`;
   setLobbyButtons(false);
 });
 
 createPublicBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
-  pendingCharacter = pickCharacter();
-  networkManager.sendCreate(false, currentMode, pendingCharacter);
+  pendingCharacter = homeCharacter;
+  networkManager.sendCreate(false, currentMode, pendingCharacter, awayCharacter);
   lobbyStatus.textContent = `Creating ${currentMode} public match...`;
   setLobbyButtons(false);
 });
 
 createPrivateBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
-  pendingCharacter = pickCharacter();
-  networkManager.sendCreate(true, currentMode, pendingCharacter);
+  pendingCharacter = homeCharacter;
+  networkManager.sendCreate(true, currentMode, pendingCharacter, awayCharacter);
   lobbyStatus.textContent = `Creating ${currentMode} private match...`;
   setLobbyButtons(false);
 });
@@ -1503,8 +1578,8 @@ joinCodeBtn.addEventListener("click", () => {
     lobbyStatus.textContent = "Join code must be 5 letters.";
     return;
   }
-  pendingCharacter = pickCharacter();
-  networkManager.sendJoinByCode(code, pendingCharacter);
+  pendingCharacter = homeCharacter;
+  networkManager.sendJoinByCode(code, pendingCharacter, awayCharacter);
   lobbyStatus.textContent = `Joining with code ${code}...`;
   setLobbyButtons(false);
 });
@@ -1570,8 +1645,19 @@ async function handleSettleMatch(matchId: string) {
     }
     const proof = await proofRes.json();
 
+    lobbyStatus.textContent = "Fetching match details...";
+    const detailRes = await fetch(`${origin}/api/matches/${matchId}/detail`);
+    if (!detailRes.ok) {
+      lobbyStatus.textContent = "Could not load match details.";
+      return;
+    }
+    const detail = await detailRes.json();
+    const numericId = detail.sessionId as number;
+    if (numericId == null) {
+      lobbyStatus.textContent = "Session ID not available.";
+      return;
+    }
     lobbyStatus.textContent = "Signing settlement transaction...";
-    const numericId = parseInt(matchId.replace("match-", ""), 10);
     const hexToBytes = (hex: string) => {
       const bytes = new Uint8Array(hex.length / 2);
       for (let i = 0; i < hex.length; i += 2) {

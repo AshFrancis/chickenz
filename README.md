@@ -2,35 +2,90 @@
 
 Competitive 2D platformer shooter with ZK-provable game outcomes settled on Stellar Soroban.
 
-Two players compete in 60-second matches with 3 lives each. Five weapons spawn on the map (Shotgun, Rocket, Sniper, SMG, Pistol default). A sudden death mechanic closes the arena walls at 50s. The full input transcript feeds a RISC Zero ZK proof that cryptographically verifies the match result on-chain — no trusted server needed.
+Two players compete in best-of-3 rounds (30 seconds each, 1 life per round). Five weapons spawn on the map (Shotgun, Rocket, Sniper, SMG, Pistol default). A sudden death mechanic closes the arena walls at 20s. The ZK proof replays **both winning rounds** inside RISC Zero's zkVM and cryptographically verifies the match result on-chain — no trusted server needed.
 
 Built for [Stellar Hacks: ZK Gaming](https://dorahacks.io/hackathon/stellar-hacks-zk-gaming) hackathon.
+
+## Quick Start (Local Development)
+
+### Prerequisites
+
+- [Bun](https://bun.sh) v1.0+ (runtime for server + tests)
+- [pnpm](https://pnpm.io) v9+ (package manager)
+- [Rust](https://rustup.rs) (stable toolchain)
+- [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/) (for building the WASM sim)
+
+> **Optional** (only needed for ZK proving and on-chain settlement):
+> - [RISC Zero toolchain](https://dev.risczero.com/api/zkvm/install) (`rzup install`)
+> - [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/install-cli)
+
+### 1. Install dependencies
+
+```bash
+git clone https://github.com/AshFrancis/chickenz && cd chickenz
+pnpm install
+```
+
+### 2. Build the WASM sim
+
+The game sim runs as a WASM module (compiled from Rust). Build it once:
+
+```bash
+pnpm build:wasm
+```
+
+The server loads WASM directly from `services/prover/wasm/pkg/` — no copy needed.
+
+### 3. Run the game
+
+Open two terminals:
+
+```bash
+# Terminal 1: Start the game server (localhost:3000)
+pnpm dev:server
+
+# Terminal 2: Start the client dev server (localhost:5173)
+pnpm dev:client
+```
+
+Open `http://localhost:5173` in two browser tabs to play against yourself. If no opponent joins within 20 seconds, a bot will automatically join casual games.
+
+### 4. Run tests
+
+```bash
+# TypeScript sim tests (64 tests)
+bun test packages/sim
+
+# Rust prover tests (52 tests)
+cd services/prover && cargo test -p chickenz-core
+```
 
 ## How It Works
 
 ```
-1. Connect wallet, set username, join a room
-2. Play 60-second match online (server-authoritative, 60Hz)
+1. Connect wallet, set username, join a ranked match
+2. Play best-of-3 rounds online (server-authoritative, 60Hz)
 3. Input transcript recorded every tick by the server
-4. RISC Zero prover replays sim in zkVM, generates Groth16 proof
+4. RISC Zero prover replays both winning rounds in zkVM → Groth16 proof
 5. settle_match() verifies proof on-chain → Game Hub end_game(winner)
 ```
 
 The ZK proof verifies that:
-- The deterministic sim was replayed correctly from the committed seed
-- The input transcript was not tampered with (SHA-256 commitment)
-- The claimed winner matches the sim's final state
+- Both winning rounds were replayed correctly from the same committed seed
+- The input transcripts were not tampered with (SHA-256 commitment chain)
+- The same player won both rounds, confirming them as the match winner
 
 ## Architecture
 
 ```
-packages/sim/           Deterministic game logic (TypeScript, 54 tests)
+packages/sim/           Deterministic game logic (TypeScript, 64 tests)
 apps/client/            Phaser 2D renderer, lobby UI, wallet connect
 services/server/        Bun WebSocket server — matchmaking, rooms, ELO, transcripts
 services/prover/
-  core/                 Rust port of sim (f64 + fixed-point i32, 47 tests)
-  guest/                RISC Zero monolithic guest (5.2M cycles)
-  chunk-guest/          Chunk prover (360 ticks per chunk)
+  core/                 Rust fixed-point sim (i32, 52 tests, single source of truth)
+  wasm/                 WASM build of core (used by client + server)
+  guest/                RISC Zero guest — multi-round proof (replays 2 winning rounds)
+  chunk-guest/          Chunk prover (360 ticks per chunk, single-round)
   match-guest/          Match composer (verifies chunk chain)
   host/                 Orchestration (monolithic + chunked + Boundless modes)
 contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
@@ -38,22 +93,23 @@ contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
 
 ### ZK Proving Pipeline
 
-The game sim runs at 60Hz for 60 seconds (3600 ticks). To make proving tractable:
+The game sim runs at 60Hz for 30 seconds per round (1800 ticks). A best-of-3 match proves the 2 rounds won by the match winner (2-0 or 2-1). To make proving tractable:
 
 1. **Fixed-point arithmetic** — i32 with 8 fractional bits (256 = 1.0) eliminates f64 soft-float in the zkVM
 2. **Zero-copy mutation** — `step_mut(&mut State)` avoids copying the game state every tick
 3. **Raw byte I/O** — `env::read_slice` / `env::commit_slice` bypasses serde (97% faster deserialization)
-4. **Chunked composition** — 10 chunks of 360 ticks proved independently, composed via `env::verify()` (zero execution cycles)
+4. **Multi-round encoding** — `[round_count][seed][round1_ticks...][round2_ticks...]` — both rounds share one seed
 
-| Optimization | Cycles | Reduction |
+| Optimization | Cycles/round | Reduction |
 |---|---|---|
 | Original (f64) | 52.4M | — |
 | Fixed-point | 11.5M | 4.6x |
 | In-place mutation | 8.5M | 1.4x |
 | Raw byte I/O | 5.2M | 1.6x |
-| **Total** | **5.2M** | **10x** |
+| SHA-256 precompile | **234K** | **22x** |
+| **Total** | **234K** | **224x** |
 
-### On-Chain Contracts (Testnet)
+### On-Chain Contracts (Stellar Testnet)
 
 | Contract | Address |
 |---|---|
@@ -63,55 +119,43 @@ The game sim runs at 60Hz for 60 seconds (3600 ticks). To make proving tractable
 
 The game contract calls `start_game()` and `end_game()` on the Stellar Game Hub. Settlement verifies the Groth16 proof via the Nethermind RISC Zero verifier using Soroban's native BN254 pairing (Protocol 25).
 
-## Setup
+## Environment Variables
 
-### Prerequisites
-
-- [Bun](https://bun.sh) (runtime for server + tests)
-- [pnpm](https://pnpm.io) (package manager)
-- [Rust](https://rustup.rs) (stable + nightly)
-- [RISC Zero toolchain](https://dev.risczero.com/api/zkvm/install) (`rzup install`)
-- [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/install-cli) (`cargo install stellar-cli`)
-
-### Install & Run
+Copy the example env file and fill in your keys:
 
 ```bash
-# Install dependencies
-pnpm install
-
-# Run the game client (localhost:5173)
-pnpm dev:client
-
-# Run the game server (localhost:3000)
-pnpm dev:server
-
-# Run TypeScript sim tests (54 tests)
-bun test packages/sim
-
-# Run Rust prover tests (47 tests)
-cd services/prover && cargo test -p chickenz-core
+cp .env.example .env
 ```
 
-### Build & Deploy
+| Variable | Required For | Description |
+|---|---|---|
+| `PORT` | Server | Server port (default: `3000`) |
+| `BOUNDLESS_RPC_URL` | Boundless proving | Ethereum Sepolia RPC for Boundless marketplace |
+| `BOUNDLESS_PRIVATE_KEY` | Boundless proving | Ethereum Sepolia wallet private key (0x-prefixed) |
+| `PINATA_JWT` | Boundless proving | Pinata JWT for IPFS uploads (ELF + input storage) |
+| `STELLAR_ADMIN_SECRET` | On-chain settlement | Stellar secret key for `start_match` / `settle_match` |
+| `SOROBAN_RPC_URL` | On-chain settlement | Soroban RPC endpoint (default: testnet) |
+| `WORKER_API_KEY` | Proof worker | API key for authenticating remote proof workers |
+
+> **Note**: For local development, no environment variables are needed. The game runs fully without ZK proving or blockchain integration. Env vars are only required for ranked match proving and on-chain settlement.
+
+## Building the ZK Prover
 
 ```bash
-# Build the ZK prover
+# Build the prover host binary (requires RISC Zero toolchain)
 cd services/prover && cargo build --release -p chickenz-host
 
-# Generate a proof (dev mode — fake proof for testing)
-RISC0_DEV_MODE=1 ./target/release/chickenz-host transcript.json --chunked --local
+# Generate a proof in dev mode (fake proof for testing, instant)
+RISC0_DEV_MODE=1 ./scripts/prove.sh transcript.json --local
 
-# Generate a real STARK proof (slow, needs ~16GB RAM)
-./target/release/chickenz-host transcript.json --chunked --local
-
-# Generate Groth16 proof via Bonsai (requires API key)
-BONSAI_API_KEY=<key> BONSAI_API_URL=<url> ./target/release/chickenz-host transcript.json --chunked
+# Generate a real Groth16 proof via Boundless
+./scripts/prove.sh transcript.json
 ```
 
-### Deploy Contracts
+## Deploy Contracts
 
 ```bash
-# Build the game contract
+# Build the game contract WASM
 cd contracts/chickenz && stellar contract build
 
 # Deploy to testnet
@@ -128,66 +172,78 @@ stellar contract invoke --id <CONTRACT_ID> --source default --network testnet \
   --image_id <IMAGE_ID_HEX>
 ```
 
-### Deploy Server (Fly.io)
+## Deploy Server
 
 ```bash
 # Build client for production
-pnpm --filter @chickenz/client build
+pnpm build
 
-# Deploy to Fly.io
-fly deploy
+# Deploy to server (builds client, uploads, restarts)
+./scripts/deploy.sh
 ```
-
-### Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `RISC0_DEV_MODE` | No | Set to `1` for fake proofs during development |
-| `BONSAI_API_KEY` | For Boundless | API key for the Bonsai proving service |
-| `BONSAI_API_URL` | For Boundless | URL for the Bonsai proving service |
-| `PORT` | No | Server port (default: 3000) |
 
 ## Gameplay
 
-- **P1**: WASD to move, Space to shoot, mouse to aim
-- **P2**: Arrow keys to move, Shift to shoot, mouse to aim
-- 3 lives per player, 100 HP, weapon damage varies by type
+- **Movement**: WASD or Arrow keys
+- **Shoot**: Space or Left Shift
+- **Aim**: Mouse cursor
+- Best of 3 rounds, 1 life per round, 100 HP
 - 5 weapons: Pistol (default), Shotgun, Rocket, Sniper, SMG
-- Sudden death at 50s: arena walls close inward
-- Winner: last player standing, or most lives/health at time-up
+- Sudden death at 20s: arena walls close inward
+- Round winner: last player standing, or most health at time-up
 
 ### Online Features
 
-- Quick Play matchmaking or named rooms with optional passwords
-- 5-letter join codes for private rooms
+- Quick Play matchmaking (casual or ranked) with bot backfill
+- Named rooms with 5-letter join codes and private room support
+- Home/away character preferences
 - ELO ranking and leaderboard
-- Match history with replay viewer
+- Match history with full replay viewer
+- Tournament mode with brackets
 - Proof status tracking (pending → proving → verified → settled)
 
 ## Match Settlement Flow
 
 1. **Connect** Freighter/Lobstr wallet in the browser
-2. **New Match** — registers on the Game Hub via `start_match()`
-3. **Play** — 60-second online match, server records transcript
-4. **Prove** — run the RISC Zero prover on the transcript
-5. **Settle** — upload proof artifacts, calls `settle_match()` on-chain
+2. **Match Start** — server registers match on Game Hub via `start_match(seed_commit)`
+3. **Play** — best-of-3 rounds online, server records per-round transcripts
+4. **Prove** — RISC Zero prover replays both winning rounds in zkVM → Groth16 proof
+5. **Settle** — `settle_match(seal, journal)` verifies proof on-chain
 6. **Verified** — Game Hub receives `end_game(winner)` with cryptographic proof
 
 ## Tech Stack
 
-- **Game**: TypeScript, Phaser 3, deterministic fixed-timestep sim
+- **Game**: TypeScript, Phaser 3, Rust WASM (single source of truth)
 - **Server**: Bun, WebSocket, server-authoritative netcode
-- **ZK**: RISC Zero zkVM, Groth16 compression, chunked proof composition
+- **ZK**: RISC Zero zkVM, Groth16 compression, multi-round proof composition
 - **Blockchain**: Stellar Soroban (Testnet), Freighter wallet, Game Hub integration
 - **Verifier**: Nethermind stellar-risc0-verifier (BN254 native pairing)
+
+## ZK Proof Statement
+
+The Groth16 proof cryptographically guarantees:
+
+1. **Fair randomness** — all rounds used the same seed, matching the `seed_commit` on-chain (SHA-256)
+2. **Transcript integrity** — per-round input hashes match `transcript_hash` (SHA-256 chain)
+3. **Correct replay** — the deterministic Rust sim (fixed-point i32, identical to WASM and RISC-V) replays both winning rounds from the committed seed and inputs, producing the claimed outcome
+4. **Consistent winner** — the same player won both proven rounds
+
+The 76-byte journal committed to the zkVM contains: `winner(i32) + round_wins([u32;2]) + transcript_hash([u8;32]) + seed_commit([u8;32])`. The on-chain verifier checks `verify(seal, image_id, sha256(journal))`.
+
+## Known Limitations
+
+- **Admin-gated settlement**: Only the server admin can call `start_match()` / `settle_match()` on-chain. Player-initiated settlement is planned.
+- **Server-controlled seed**: The match seed is generated server-side and committed via SHA-256. A commit-reveal scheme for trustless seed generation is future work.
+- **Fixed map for ranked**: The ZK prover uses a hardcoded arena map. Ranked matches are restricted to this map; casual matches rotate freely.
+- **Transcript hash not stored on-chain**: The `transcript_hash` is embedded in the ZK proof journal and verified by the Groth16 proof (via `image_id` pinning), but the contract does not store it separately. Off-chain auditors can verify transcripts by recomputing the hash against the journal value.
 
 ## Documentation
 
 | File | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Component layout, authority model, data flow |
-| [SIM_SPEC.md](SIM_SPEC.md) | GameState/PlayerState structures, transition function, determinism |
-| [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) | RISC Zero pipeline, journal layout, settlement flow |
+| [SIM_SPEC.md](SIM_SPEC.md) | Game state, transition function, determinism constraints |
+| [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) | Multi-round proof pipeline, journal layout, settlement flow |
 | [MULTIPLAYER.md](MULTIPLAYER.md) | Netcode, prediction, room lifecycle |
 | [PROTOCOL.md](PROTOCOL.md) | WebSocket message types, missing-input rule |
 | [TRANSCRIPT.md](TRANSCRIPT.md) | Commitment chain, transcript integrity |

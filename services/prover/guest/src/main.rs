@@ -5,8 +5,9 @@ risc0_zkvm::guest::entry!(main);
 use chickenz_core::fp;
 use chickenz_core::ProverOutput;
 
-/// Max raw input: 8 (header) + 6 * 3600 (ticks) = 21608 bytes = 5402 u32 words
-const MAX_INPUT_WORDS: usize = 5402;
+/// Max raw input: 8 (header) + 2 rounds × (4 + 6 * 1800) = 21616 bytes ≈ 5404 u32 words
+/// Buffer sized conservatively at 6000 for headroom.
+const MAX_INPUT_WORDS: usize = 6000;
 
 fn main() {
     // Read raw bytes into fixed-size buffer — no heap allocation
@@ -20,8 +21,8 @@ fn main() {
     let raw_bytes: &[u8] = bytemuck::cast_slice(&raw_words[..word_len]);
     let raw_bytes = &raw_bytes[..byte_len];
 
-    // Single-pass: parse inputs → hash → step sim (zero extra allocations)
-    let result = fp::run_streaming(raw_bytes);
+    // Multi-round: replay both winning rounds, verify same winner, combine hashes
+    let result = fp::run_streaming_multi(raw_bytes);
 
     let output = ProverOutput {
         winner: result.state.winner,

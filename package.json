@@ -4,9 +4,11 @@
   "scripts": {
     "dev:client": "pnpm --filter @chickenz/client dev",
     "dev:server": "pnpm --filter @chickenz/server dev",
-    "build": "pnpm --filter @chickenz/client build",
+    "build": "pnpm build:wasm && pnpm --filter @chickenz/client build",
+    "start": "bun services/server/src/index.ts",
     "test": "bun test packages/sim",
-    "typecheck": "tsc -b packages/sim apps/client"
+    "typecheck": "tsc -b packages/sim apps/client",
+    "build:wasm": "cd services/prover/wasm && wasm-pack build --target web"
   },
   "devDependencies": {
     "sharp": "^0.34.5",

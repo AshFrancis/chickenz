@@ -1507,6 +1507,130 @@ pub fn run_streaming(data: &[u8]) -> StreamingResult {
     }
 }
 
+// -- Multi-round streaming sim (proves both winning rounds) --------------------
+
+/// Replay one round from raw bytes starting at `offset`.
+/// Format at offset: [tick_count: 4 LE] [ticks × 6 bytes]
+/// Returns: (final state, transcript_hash, new_offset past this round's data)
+pub fn replay_round(data: &[u8], offset: usize, seed: u32) -> (State, [u8; 32], usize) {
+    let tick_count = u32::from_le_bytes([
+        data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+    ]) as usize;
+
+    let map = arena_map();
+    let mut state = create_initial_state(seed, &map);
+    let mut hasher = Sha256::new();
+    let round_end = offset + 4 + tick_count * 6;
+
+    let mut pos = offset + 4;
+    for _ in 0..tick_count {
+        let tick_bytes = &data[pos..pos + 6];
+        let inputs = [
+            FpInput {
+                buttons: tick_bytes[0],
+                aim_x: tick_bytes[1] as i8,
+                aim_y: tick_bytes[2] as i8,
+            },
+            FpInput {
+                buttons: tick_bytes[3],
+                aim_x: tick_bytes[4] as i8,
+                aim_y: tick_bytes[5] as i8,
+            },
+        ];
+
+        hasher.update(tick_bytes);
+        step_mut(&mut state, &inputs, &map);
+        if state.match_over {
+            // Hash remaining ticks for transcript integrity
+            pos += 6;
+            while pos < round_end {
+                hasher.update(&data[pos..pos + 6]);
+                pos += 6;
+            }
+            let transcript_hash: [u8; 32] = hasher.finalize().into();
+            return (state, transcript_hash, round_end);
+        }
+
+        pos += 6;
+    }
+
+    let transcript_hash: [u8; 32] = hasher.finalize().into();
+    (state, transcript_hash, round_end)
+}
+
+/// Run multi-round proof verification (proves both winning rounds of a best-of-3).
+/// Format: [round_count: 4 LE] [seed: 4 LE] per round: [tick_count: 4 LE] [ticks × 6 bytes]
+pub fn run_streaming_multi(data: &[u8]) -> StreamingResult {
+    let round_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    assert_eq!(round_count, 2, "Multi-round proof must contain exactly 2 rounds");
+    let seed = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+
+    let mut round_wins = [0u32; 2];
+    let mut combined_hasher = Sha256::new();
+    let mut offset = 8;
+
+    for _ in 0..round_count {
+        let (state, round_hash, new_offset) = replay_round(data, offset, seed);
+        offset = new_offset;
+
+        // Record round winner
+        if state.winner == 0 {
+            round_wins[0] += 1;
+        } else if state.winner == 1 {
+            round_wins[1] += 1;
+        }
+
+        // Chain round hashes into combined hash
+        combined_hasher.update(round_hash);
+    }
+
+    // Determine match winner: exactly one player must have won both rounds
+    let match_winner = if round_wins[0] == 2 && round_wins[1] == 0 {
+        0
+    } else if round_wins[1] == 2 && round_wins[0] == 0 {
+        1
+    } else {
+        panic!("Invalid round wins {:?}: same player must win both rounds", round_wins)
+    };
+
+    let transcript_hash: [u8; 32] = combined_hasher.finalize().into();
+    let seed_commit = hash_seed(seed);
+
+    // Build synthetic final state with match-level results
+    let map = arena_map();
+    let mut final_state = create_initial_state(seed, &map);
+    final_state.winner = match_winner;
+    final_state.score = round_wins;
+    final_state.match_over = true;
+
+    StreamingResult {
+        state: final_state,
+        transcript_hash,
+        seed_commit,
+    }
+}
+
+/// Encode multi-round raw bytes for the guest.
+/// Format: [round_count: 4 LE] [seed: 4 LE] per round: [tick_count: 4 LE] [ticks × 6 bytes]
+pub fn encode_raw_multi_round(seed: u32, rounds: &[Vec<[FpInput; 2]>]) -> Vec<u8> {
+    let total_ticks: usize = rounds.iter().map(|r| r.len()).sum();
+    let mut buf = Vec::with_capacity(8 + rounds.len() * 4 + total_ticks * 6);
+    buf.extend_from_slice(&(rounds.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&seed.to_le_bytes());
+    for round in rounds {
+        buf.extend_from_slice(&(round.len() as u32).to_le_bytes());
+        for tick in round {
+            buf.push(tick[0].buttons);
+            buf.push(tick[0].aim_x as u8);
+            buf.push(tick[0].aim_y as u8);
+            buf.push(tick[1].buttons);
+            buf.push(tick[1].aim_x as u8);
+            buf.push(tick[1].aim_y as u8);
+        }
+    }
+    buf
+}
+
 // -- State serialization (for chunked proving) --------------------------------
 
 /// Deterministic binary encoding of State (for hashing + chunk transfer).
@@ -2067,6 +2191,90 @@ mod tests {
         let (_, orig_transcript) = decode_raw_input(&raw);
         let orig_hash = hash_transcript(&orig_transcript);
         assert_eq!(streaming.transcript_hash, orig_hash);
+    }
+
+    #[test]
+    fn multi_round_proof_verifies_winner() {
+        // Create two rounds of idle inputs — both will end with same winner (time-up)
+        let seed = 42u32;
+        let tick_count = 1800u32;
+
+        // Build two identical round transcripts as FpInput vectors
+        let mut round_transcript = Vec::with_capacity(tick_count as usize);
+        for _ in 0..tick_count {
+            round_transcript.push([NULL_INPUT; 2]);
+        }
+
+        // Encode as multi-round raw bytes
+        let raw = encode_raw_multi_round(seed, &[round_transcript.clone(), round_transcript.clone()]);
+
+        // Verify header
+        assert_eq!(
+            u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+            2,
+            "round_count should be 2"
+        );
+        assert_eq!(
+            u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]),
+            seed,
+            "seed should match"
+        );
+
+        // Run multi-round streaming
+        let result = run_streaming_multi(&raw);
+
+        // Both idle rounds should produce same winner (time-up → player 0 by default)
+        assert!(result.state.match_over);
+        assert_eq!(result.state.winner, 0);
+        assert_eq!(result.state.score, [2, 0]); // winner won both rounds
+
+        // Verify transcript hash is combination of individual round hashes
+        let single_raw = encode_raw_input(&FpProverInput {
+            seed,
+            transcript: round_transcript.clone(),
+        });
+        let single_result = run_streaming(&single_raw);
+        let mut combined_hasher = Sha256::new();
+        combined_hasher.update(single_result.transcript_hash);
+        combined_hasher.update(single_result.transcript_hash); // same round twice
+        let expected_hash: [u8; 32] = combined_hasher.finalize().into();
+        assert_eq!(result.transcript_hash, expected_hash);
+
+        // Verify seed commit matches single-round
+        assert_eq!(result.seed_commit, single_result.seed_commit);
+    }
+
+    #[test]
+    fn multi_round_encode_decode_roundtrip() {
+        // Build two rounds with different inputs
+        let seed = 123u32;
+        let round1: Vec<[FpInput; 2]> = (0..100)
+            .map(|t| {
+                [
+                    FpInput { buttons: if t % 2 == 0 { button::RIGHT } else { 0 }, aim_x: 1, aim_y: 0 },
+                    NULL_INPUT,
+                ]
+            })
+            .collect();
+        let round2: Vec<[FpInput; 2]> = (0..200)
+            .map(|t| {
+                [
+                    NULL_INPUT,
+                    FpInput { buttons: if t % 3 == 0 { button::LEFT } else { 0 }, aim_x: -1, aim_y: 0 },
+                ]
+            })
+            .collect();
+
+        let raw = encode_raw_multi_round(seed, &[round1.clone(), round2.clone()]);
+
+        // Verify we can parse it back
+        let round_count = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let parsed_seed = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+        assert_eq!(round_count, 2);
+        assert_eq!(parsed_seed, seed);
+
+        // Verify total size: 8 + 2 * 4 + (100 + 200) * 6 = 8 + 8 + 1800 = 1816
+        assert_eq!(raw.len(), 8 + 2 * 4 + (100 + 200) * 6);
     }
 
     #[test]

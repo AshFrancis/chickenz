@@ -8,10 +8,10 @@ The ZK proof is the core mechanic: it cryptographically proves that a game was p
 
 ## What the Proof Verifies
 
-1. **Fair randomness** — seed matches the committed `seed_commit` (SHA-256)
-2. **Transcript integrity** — input transcript matches `transcript_hash` (SHA-256)
-3. **Correct replay** — deterministic sim with seed + inputs produces the claimed final state
-4. **Correct winner** — winner derived from final state (elimination or score comparison)
+1. **Fair randomness** — all rounds share the same seed, matching the committed `seed_commit` (SHA-256)
+2. **Transcript integrity** — per-round input transcripts match `transcript_hash` (SHA-256 chain of round hashes)
+3. **Correct replay** — deterministic sim replays both winning rounds with seed + inputs, produces correct final state per round
+4. **Consistent winner** — the same player won both rounds, confirming them as the match winner
 
 ---
 
@@ -21,14 +21,16 @@ The guest program commits a fixed-size journal to the zkVM:
 
 ```
 Offset  Size   Field            Encoding
-0       4      winner           i32 (little-endian): 0 or 1
-4       4      score_p1         u32 (little-endian): player 0 kills
-8       4      score_p2         u32 (little-endian): player 1 kills
-12      32     transcript_hash  [u8; 32]: SHA-256 of input transcript
+0       4      winner           i32 (little-endian): 0 or 1 (match winner)
+4       4      scores[0]        u32 (little-endian): player 0 round wins (always 2 or 0)
+8       4      scores[1]        u32 (little-endian): player 1 round wins (always 2 or 0)
+12      32     transcript_hash  [u8; 32]: SHA-256(round1_hash || round2_hash)
 44      32     seed_commit      [u8; 32]: SHA-256 of match seed
 ---
 Total: 76 bytes (19 u32 words)
 ```
+
+The `transcript_hash` is a chain: `SHA-256(hash_of_round1_ticks || hash_of_round2_ticks)`, where each round hash covers all tick bytes for that round.
 
 On-chain, the verifier receives `SHA-256(journal)` as a `BytesN<32>`.
 
@@ -36,19 +38,29 @@ On-chain, the verifier receives `SHA-256(journal)` as a `BytesN<32>`.
 
 ## Proving Pipeline
 
-### Monolithic Mode (5.2M cycles)
+### Multi-Round Monolithic Mode (~468K cycles total)
 
-Single guest program replays all 3600 ticks:
+Single guest program replays both winning rounds of a best-of-3 match:
 
 ```
-Input:  seed (u32) + transcript (3600 × 2 × PlayerInput)
-Guest:  init_state(seed) → step_mut() × 3600 → commit journal
+Encoding: [round_count: 4 LE] [seed: 4 LE] per round: [tick_count: 4 LE] [ticks × 6 bytes]
+
+Guest:
+  1. Read round_count (2) and seed
+  2. For each round:
+     - Create fresh state from seed
+     - Stream tick bytes → hash + step_mut() per tick
+     - Record round winner and transcript hash
+  3. Verify same player won both rounds
+  4. Combine hashes: SHA-256(round1_hash || round2_hash)
+  5. Commit journal: winner + round_wins + combined_hash + seed_commit
+
 Output: Groth16 seal (260 bytes) + journal (76 bytes)
 ```
 
-### Chunked Mode (6.8M total cycles)
+### Chunked Mode (single-round only, experimental)
 
-10 chunks of 360 ticks, composed via proof recursion:
+10 chunks of 360 ticks per round, composed via proof recursion. Does not support multi-round proofs — use monolithic mode for match settlement.
 
 ```
 Chunk Guest (×10):
@@ -67,33 +79,36 @@ Match Composer:
 
 ## Optimizations
 
-| Technique | Cycles | Speedup |
+| Technique | Cycles/round | Speedup |
 |---|---|---|
 | Original (f64 soft-float) | 52.4M | — |
 | Fixed-point i32 (8 frac bits) | 11.5M | 4.6x |
 | In-place mutation (`step_mut`) | 8.5M | 1.4x |
 | Raw byte I/O (no serde) | 5.2M | 1.6x |
-| **Total reduction** | **5.2M** | **10x** |
+| SHA-256 precompile (RISC Zero fork) | **234K** | **22x** |
+| **Total reduction** | **234K** | **224x** |
 
 Key decisions:
 - `i32` with 8 fractional bits (256 = 1.0) — eliminates f64 soft-float overhead in RISC-V
 - `step_mut(&mut State)` — zero-copy, avoids cloning 500+ byte state per tick
 - `env::read_slice` / `env::commit_slice` — raw bytes, no serde framework
+- SHA-256 accelerator precompile via RISC Zero's Rust crypto fork — hashing is nearly free
 
 ---
 
 ## Settlement Flow
 
 ```
-1. Match ends → server stores transcript
-2. Client calls start_match() on Chickenz contract
-   → Contract calls Game Hub start_game()
-3. Prover replays transcript in RISC Zero zkVM
+1. Match starts → server calls start_match(session_id, player1, player2, seed_commit) on Chickenz contract
+   → Contract calls Game Hub start_game() before gameplay begins
+2. Players play best-of-3 rounds → server records per-round transcripts
+3. Match ends → server extracts both winning rounds' transcripts
+4. Prover replays both winning rounds in RISC Zero zkVM
    → Produces Groth16 seal (260 bytes) + journal (76 bytes)
-4. Client calls settle_match(seal, journal) on Chickenz contract
+5. Server calls settle_match(session_id, seal, journal) on Chickenz contract
    → Contract calls Groth16 verifier: verify(seal, image_id, sha256(journal))
-   → Contract decodes journal: winner, scores, transcript_hash, seed_commit
-   → Contract validates seed_commit matches stored value
+   → Contract decodes journal: winner, round_wins, transcript_hash, seed_commit
+   → Contract validates seed_commit matches value committed at match start
    → Contract calls Game Hub end_game(winner)
 ```
 
@@ -102,21 +117,21 @@ Key decisions:
 ## Soroban Contract Interface
 
 ```rust
-// Register a new match on the Game Hub
+// Register a new match on the Game Hub (called by server before gameplay)
 fn start_match(
     env: Env,
-    match_id: BytesN<32>,
+    session_id: u32,
     player1: Address,
     player2: Address,
-    seed_commit: BytesN<32>,
+    seed_commit: BytesN<32>,   // SHA-256 of match seed
 ) -> Result<(), Error>;
 
-// Verify proof and settle on Game Hub
+// Verify proof and settle on Game Hub (called by server after proof verified)
 fn settle_match(
     env: Env,
-    match_id: BytesN<32>,
-    seal: Bytes,          // 260 bytes: 4-byte selector + 256-byte Groth16 proof
-    journal: Bytes,       // 76 bytes: winner + scores + hashes
+    session_id: u32,
+    seal: Bytes,              // 260 bytes: 4-byte selector + 256-byte Groth16 proof
+    journal: Bytes,           // 76 bytes: winner + round_wins + hashes
 ) -> Result<(), Error>;
 ```
 
@@ -135,6 +150,18 @@ Match-guest image ID: `c48f7169630d597526348ba1f9375186bfd1e821b52a6ec75957aabe1
 ---
 
 ## Trust Model
+
+**What the contract verifies on-chain:**
+- **Groth16 proof validity** — `verify(seal, image_id, sha256(journal))` ensures the proof was generated by the pinned guest program
+- **Seed commitment** — `seed_commit` in the journal must match the value committed at `start_match()`, proving the same randomness was used
+- **Winner validity** — decoded winner must be 0 or 1
+
+**What the ZK proof guarantees (via the guest program pinned by `image_id`):**
+- **Transcript integrity** — `transcript_hash` in the journal is computed by the guest from the raw tick inputs; any tampering would change the hash and thus the journal digest, invalidating the proof
+- **Correct replay** — the deterministic sim was re-executed from the committed seed with the exact transcript
+- **Consistent winner** — the same player won both proven rounds
+
+**Why `transcript_hash` is not checked separately on-chain:** The on-chain contract does not independently store or verify `transcript_hash` because it is already embedded in the journal and covered by the Groth16 proof. The `image_id` pins the exact guest code, which guarantees the hash was computed honestly. Storing the transcript hash on-chain would add gas cost without increasing security, since the proof already covers it. However, `transcript_hash` is available in the journal for off-chain auditing — anyone can download a match transcript, recompute the hash, and verify it matches the journal value.
 
 **Hackathon (current):**
 - Server runs authoritative sim, records transcript

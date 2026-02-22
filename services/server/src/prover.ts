@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { writeFile, readFile, unlink } from "fs/promises";
+import { writeFile, readFile, unlink, mkdir, rmdir } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 const PROVER_BINARY = process.env.PROVER_BINARY || resolve(import.meta.dir, "../../prover/target/release/chickenz-host");
@@ -9,6 +9,7 @@ export interface ProofArtifacts {
   seal: string;    // hex-encoded
   journal: string; // hex-encoded
   imageId: string; // hex-encoded
+  boundlessRequestId?: string; // Boundless marketplace request ID (hex)
 }
 
 export interface ProofJob {
@@ -105,15 +106,18 @@ export async function proveBoundless(
   matchId: string,
   transcript: object,
 ): Promise<ProofArtifacts | null> {
-  const inputPath = join(tmpdir(), `chickenz-prove-${matchId}.json`);
+  const workDir = join(tmpdir(), `chickenz-prove-${matchId}`);
+  const inputPath = join(workDir, "input.json");
+  const outputPath = join(workDir, "proof_artifacts.json");
 
   try {
+    await mkdir(workDir, { recursive: true });
     await writeFile(inputPath, JSON.stringify(transcript));
     console.log(`[prover] Starting Boundless proof for ${matchId}...`);
 
     const result = await new Promise<number>((resolve, reject) => {
       const proc = spawn(PROVER_BINARY, ["--boundless", inputPath], {
-        cwd: join(tmpdir()),
+        cwd: workDir,
         env: {
           ...process.env,
           RPC_URL: process.env.BOUNDLESS_RPC_URL,
@@ -143,8 +147,15 @@ export async function proveBoundless(
 
     if (result !== 0) return null;
 
-    const artifactsRaw = await readFile(join(tmpdir(), "proof_artifacts.json"), "utf-8");
+    const artifactsRaw = await readFile(outputPath, "utf-8");
     const artifacts = JSON.parse(artifactsRaw) as ProofArtifacts;
+
+    // Parse Boundless request ID from stderr (host prints "Request ID: {hex}")
+    const reqIdMatch = stderr.match(/Request ID:\s*([0-9a-fA-Fx]+)/);
+    if (reqIdMatch) {
+      artifacts.boundlessRequestId = reqIdMatch[1]!;
+    }
+
     console.log(`[prover] Boundless proof generated for ${matchId}`);
     return artifacts;
   } catch (err) {
@@ -152,7 +163,8 @@ export async function proveBoundless(
     return null;
   } finally {
     try { await unlink(inputPath); } catch {}
-    try { await unlink(join(tmpdir(), "proof_artifacts.json")); } catch {}
+    try { await unlink(outputPath); } catch {}
+    try { await rmdir(workDir); } catch {}
   }
 }
 
@@ -176,6 +188,15 @@ export function proveMatch(
     console.log(`[prover] ${matchId} proved by ${source}`);
     onResult(artifacts, source);
   };
+
+  // Safety timeout: if neither prover settles within 10 minutes, report failure
+  setTimeout(() => {
+    if (!settled) {
+      settled = true;
+      console.log(`[prover] ${matchId} timed out after 10 minutes`);
+      onResult(null);
+    }
+  }, 10 * 60 * 1000);
 
   // Always queue for worker (gaming PC polls these)
   queueProof(matchId, transcript, settleOnce("worker"));

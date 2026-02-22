@@ -2,7 +2,7 @@ use std::io::Read;
 use std::time::Instant;
 
 use chickenz_core::fp::{self, FpInput, FpProverInput, CHUNK_PROOF_WORDS};
-use chickenz_core::{ProverInput, ProverOutput};
+use chickenz_core::{MultiRoundProverInput, ProverInput, ProverOutput};
 
 use chickenz_methods::CHICKENZ_GUEST_ELF;
 use chickenz_methods::CHICKENZ_GUEST_ID;
@@ -13,10 +13,16 @@ use chickenz_methods::CHICKENZ_MATCH_GUEST_ID;
 
 const CHUNK_SIZE: usize = 360; // ticks per chunk (6 seconds)
 
-fn load_input() -> ProverInput {
+/// Loaded input: either single-round (legacy) or multi-round.
+enum LoadedInput {
+    Single(ProverInput),
+    Multi(MultiRoundProverInput),
+}
+
+fn load_json() -> String {
     let args: Vec<String> = std::env::args().collect();
 
-    let json_str = if args.len() > 1 && !args[1].starts_with("--") {
+    if args.len() > 1 && !args[1].starts_with("--") {
         std::fs::read_to_string(&args[1]).expect("Failed to read transcript file")
     } else if args.len() > 2 && !args[2].starts_with("--") {
         std::fs::read_to_string(&args[2]).expect("Failed to read transcript file")
@@ -26,32 +32,44 @@ fn load_input() -> ProverInput {
             .read_to_string(&mut buf)
             .expect("Failed to read from stdin");
         buf
-    };
+    }
+}
 
-    serde_json::from_str(&json_str).expect("Failed to parse ProverInput JSON")
+fn load_input(json_str: &str) -> LoadedInput {
+    // Try multi-round first (has "rounds" key), fall back to single-round
+    if let Ok(multi) = serde_json::from_str::<MultiRoundProverInput>(json_str) {
+        LoadedInput::Multi(multi)
+    } else {
+        let single: ProverInput = serde_json::from_str(json_str)
+            .expect("Failed to parse input JSON (tried both multi-round and single-round formats)");
+        LoadedInput::Single(single)
+    }
+}
+
+fn to_fp_round(transcript: &[[ chickenz_core::PlayerInput; 2]]) -> Vec<[FpInput; 2]> {
+    transcript
+        .iter()
+        .map(|tick| {
+            [
+                FpInput {
+                    buttons: tick[0].buttons,
+                    aim_x: tick[0].aim_x as i8,
+                    aim_y: tick[0].aim_y as i8,
+                },
+                FpInput {
+                    buttons: tick[1].buttons,
+                    aim_x: tick[1].aim_x as i8,
+                    aim_y: tick[1].aim_y as i8,
+                },
+            ]
+        })
+        .collect()
 }
 
 fn to_fp_input(input: &ProverInput) -> FpProverInput {
     FpProverInput {
         seed: input.config.seed,
-        transcript: input
-            .transcript
-            .iter()
-            .map(|tick| {
-                [
-                    FpInput {
-                        buttons: tick[0].buttons,
-                        aim_x: tick[0].aim_x as i8,
-                        aim_y: tick[0].aim_y as i8,
-                    },
-                    FpInput {
-                        buttons: tick[1].buttons,
-                        aim_x: tick[1].aim_x as i8,
-                        aim_y: tick[1].aim_y as i8,
-                    },
-                ]
-            })
-            .collect(),
+        transcript: to_fp_round(&input.transcript),
     }
 }
 
@@ -85,9 +103,9 @@ fn encode_chunk_inputs(transcript: &[[FpInput; 2]], start: usize, count: usize) 
 // Monolithic proving (original single-guest approach)
 // ============================================================================
 
-fn run_monolithic(fp_input: &FpProverInput, use_groth16: bool) {
-    let raw_bytes = fp::encode_raw_input(fp_input);
-    eprintln!("Converted to raw bytes: {} bytes", raw_bytes.len());
+fn run_monolithic_multi(seed: u32, rounds: &[Vec<[FpInput; 2]>], use_groth16: bool) {
+    let raw_bytes = fp::encode_raw_multi_round(seed, rounds);
+    eprintln!("Converted to raw bytes: {} bytes ({} rounds)", raw_bytes.len(), rounds.len());
 
     let mode = if use_groth16 { "Groth16" } else { "local STARK" };
     eprintln!("Starting monolithic proof generation ({mode})...");
@@ -291,14 +309,14 @@ fn run_chunked(fp_input: &FpProverInput, use_groth16: bool) {
 // ============================================================================
 
 #[cfg(feature = "boundless")]
-async fn run_boundless(fp_input: &FpProverInput) {
+async fn run_boundless_multi(seed: u32, rounds: &[Vec<[FpInput; 2]>]) {
     use std::time::Duration;
     use boundless_market::storage::{StorageUploaderConfig, StorageUploaderType};
     use boundless_market::contracts::FulfillmentData;
     use boundless_market::Client;
 
-    // 1. Encode input as raw bytes (same encoding as monolithic)
-    let raw_bytes = fp::encode_raw_input(fp_input);
+    // 1. Encode input as raw bytes (multi-round encoding)
+    let raw_bytes = fp::encode_raw_multi_round(seed, rounds);
     let byte_len = raw_bytes.len() as u32;
     let words = bytes_to_words(&raw_bytes);
 
@@ -483,20 +501,37 @@ fn main() {
     let use_boundless = args.iter().any(|a| a == "--boundless");
 
     eprintln!("Loading transcript...");
-    let input = load_input();
-    eprintln!(
-        "Transcript loaded: {} ticks, seed={}",
-        input.transcript.len(),
-        input.config.seed
-    );
+    let json_str = load_json();
+    let loaded = load_input(&json_str);
 
-    let fp_input = to_fp_input(&input);
+    // Convert to seed + rounds (multi-round format)
+    let (seed, rounds) = match &loaded {
+        LoadedInput::Multi(multi) => {
+            let rounds: Vec<Vec<[FpInput; 2]>> = multi.rounds.iter()
+                .map(|r| to_fp_round(r))
+                .collect();
+            let total_ticks: usize = rounds.iter().map(|r| r.len()).sum();
+            eprintln!(
+                "Multi-round transcript loaded: {} rounds, {} total ticks, seed={}",
+                rounds.len(), total_ticks, multi.config.seed
+            );
+            (multi.config.seed, rounds)
+        }
+        LoadedInput::Single(single) => {
+            eprintln!(
+                "Single-round transcript loaded: {} ticks, seed={} (wrapping as 1 round)",
+                single.transcript.len(), single.config.seed
+            );
+            let round = to_fp_round(&single.transcript);
+            (single.config.seed, vec![round])
+        }
+    };
 
     if use_boundless {
         #[cfg(feature = "boundless")]
         {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(run_boundless(&fp_input));
+            rt.block_on(run_boundless_multi(seed, &rounds));
         }
         #[cfg(not(feature = "boundless"))]
         {
@@ -505,8 +540,18 @@ fn main() {
             std::process::exit(1);
         }
     } else if use_chunked {
-        run_chunked(&fp_input, use_groth16);
+        // Chunked proving only supports single-round
+        match &loaded {
+            LoadedInput::Single(single) => {
+                let fp_input = to_fp_input(single);
+                run_chunked(&fp_input, use_groth16);
+            }
+            LoadedInput::Multi(_) => {
+                eprintln!("ERROR: Chunked proving does not support multi-round input.");
+                std::process::exit(1);
+            }
+        }
     } else {
-        run_monolithic(&fp_input, use_groth16);
+        run_monolithic_multi(seed, &rounds, use_groth16);
     }
 }

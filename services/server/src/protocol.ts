@@ -56,6 +56,10 @@ export interface JoinTournamentCodeMessage {
   code: string;
 }
 
+export interface LeaveMessage {
+  type: "leave";
+}
+
 export type ClientMessage =
   | QuickplayMessage
   | CreateRoomMessage
@@ -66,7 +70,8 @@ export type ClientMessage =
   | SetUsernameMessage
   | SetWalletMessage
   | CreateTournamentMessage
-  | JoinTournamentCodeMessage;
+  | JoinTournamentCodeMessage
+  | LeaveMessage;
 
 // ── Server → Client ────────────────────────────────────────
 
@@ -295,7 +300,10 @@ export interface SerializedWeaponPickup {
 // ── Helpers ────────────────────────────────────────────────
 
 export function inputFromMessage(msg: InputMessage): PlayerInput {
-  return { buttons: msg.buttons, aimX: msg.aimX, aimY: msg.aimY };
+  const buttons = (Number.isFinite(msg.buttons) ? msg.buttons : 0) & 0xFF;
+  const aimX = msg.aimX === 1 ? 1 : msg.aimX === -1 ? -1 : 0;
+  const aimY = msg.aimY === 1 ? 1 : msg.aimY === -1 ? -1 : 0;
+  return { buttons, aimX, aimY };
 }
 
 const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // no I or O to avoid confusion
