@@ -714,6 +714,7 @@ export class GameScene extends Phaser.Scene {
     this.prevState = this.warmupState;
     this.config = this.warmupConfig;
     this.localPlayerId = 0;
+    this.resetRagdolls();
     this.playing = false; // not a real match
     this.prediction = null;
     hideAnnounce();
@@ -755,6 +756,7 @@ export class GameScene extends Phaser.Scene {
   stopWarmup() {
     this.warmupMode = false;
     this.warmupState = null;
+    this.resetRagdolls();
     if (this.warmupWasm) {
       try {
         this.warmupWasm.free();
@@ -961,6 +963,25 @@ export class GameScene extends Phaser.Scene {
     showAnnounce(`Round ${round + 1} - ${winnerName} wins!\n${roundWins[0]} - ${roundWins[1]}`);
   }
 
+  /** Reset ragdoll state and sprite properties for both players. */
+  private resetRagdolls() {
+    for (let i = 0; i < this.deathRagdoll.length; i++) {
+      const r = this.deathRagdoll[i]!;
+      r.active = false;
+      r.settled = false;
+      r.rotation = 0;
+      r.angularVel = 0;
+      r.bounces = 0;
+      r.wasAlive = true;
+      const sprite = this.playerSprites[i];
+      if (sprite) {
+        sprite.setRotation(0);
+        sprite.setOrigin(0.5, 0.5);
+        sprite.setAlpha(1);
+      }
+    }
+  }
+
   private initRound(seed: number, mapIndex: number) {
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0] ?? ARENA;
     const mapJson = JSON.stringify(map);
@@ -1017,14 +1038,7 @@ export class GameScene extends Phaser.Scene {
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.lastServerTick = 0;
-    for (const r of this.deathRagdoll) {
-      r.active = false;
-      r.settled = false;
-      r.rotation = 0;
-      r.angularVel = 0;
-      r.bounces = 0;
-      r.wasAlive = true;
-    }
+    this.resetRagdolls();
   }
 
   /** Create tile sprites for all platforms in the map using 9-slice terrain tiles. */
@@ -1194,14 +1208,7 @@ export class GameScene extends Phaser.Scene {
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
-    for (const r of this.deathRagdoll) {
-      r.active = false;
-      r.settled = false;
-      r.rotation = 0;
-      r.angularVel = 0;
-      r.bounces = 0;
-      r.wasAlive = true;
-    }
+    this.resetRagdolls();
     this.replayInfoText.setVisible(true);
 
     // Remove previous replay listeners to prevent stacking
@@ -1273,14 +1280,7 @@ export class GameScene extends Phaser.Scene {
     hideAnnounce();
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
-    for (const r of this.deathRagdoll) {
-      r.active = false;
-      r.settled = false;
-      r.rotation = 0;
-      r.angularVel = 0;
-      r.bounces = 0;
-      r.wasAlive = true;
-    }
+    this.resetRagdolls();
   }
 
   private exitReplay() {
@@ -1289,6 +1289,7 @@ export class GameScene extends Phaser.Scene {
     this.replayRounds = [];
     this.replayRoundTransitionTimer = 0;
     this.replayInfoText.setVisible(false);
+    this.resetRagdolls();
     if (this.replayWasm) {
       try {
         this.replayWasm.free();
@@ -1329,6 +1330,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingServerButtons = undefined;
     this.lastServerTick = 0;
     this.explosions = [];
+    this.resetRagdolls();
   }
 
   // ── Spectator Mode (Tournament) ───────────────────────────────────────────
