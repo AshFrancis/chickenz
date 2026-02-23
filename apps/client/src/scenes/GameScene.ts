@@ -256,15 +256,9 @@ export class GameScene extends Phaser.Scene {
     angularVel: number;
     bounces: number;
     wasAlive: boolean; // track alive→dead transition
-    // Last alive frame snapshot — used as ragdoll start position
-    lastAliveX: number;
-    lastAliveY: number;
-    lastAliveVx: number;
-    lastAliveVy: number;
-    lastAliveFacing: number; // 0 = right, 1 = left
   }[] = [
-    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true, lastAliveX: 0, lastAliveY: 0, lastAliveVx: 0, lastAliveVy: 0, lastAliveFacing: 0 },
-    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true, lastAliveX: 0, lastAliveY: 0, lastAliveVx: 0, lastAliveVy: 0, lastAliveFacing: 0 },
+    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
+    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
   ];
 
   // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
@@ -1941,18 +1935,16 @@ export class GameScene extends Phaser.Scene {
         // Detect fresh death (was alive last frame, now dead)
         if (ragdoll.wasAlive && !ragdoll.active && !ragdoll.settled) {
           ragdoll.active = true;
-          // Use last-alive snapshot — sim may move dead players (zone clamping) so current pos is wrong
-          ragdoll.x = ragdoll.lastAliveX;
-          ragdoll.y = ragdoll.lastAliveY;
+          ragdoll.x = drawX;
+          ragdoll.y = drawY;
           // Preserve momentum — exaggerate for comedy
-          const svx = ragdoll.lastAliveVx;
-          ragdoll.vx = svx * 1.5;
-          ragdoll.vy = Math.min(ragdoll.lastAliveVy, -2) * 1.2 - 3; // always pop up a bit
+          ragdoll.vx = (cp.vx ?? 0) * 1.5;
+          ragdoll.vy = Math.min(cp.vy ?? 0, -2) * 1.2 - 3; // always pop up a bit
           // Spin direction: if moving, topple in movement direction; if still, fall backward (away from facing)
-          if (Math.abs(svx) > 0.5) {
-            ragdoll.angularVel = svx > 0 ? 6 : -6;
+          if (Math.abs(cp.vx ?? 0) > 0.5) {
+            ragdoll.angularVel = (cp.vx ?? 0) > 0 ? 6 : -6;
           } else {
-            ragdoll.angularVel = ragdoll.lastAliveFacing === Facing.Right ? -5 : 5; // fall backward
+            ragdoll.angularVel = cp.facing === Facing.Right ? -5 : 5; // fall backward
           }
           ragdoll.rotation = 0;
           ragdoll.bounces = 0;
@@ -2015,14 +2007,12 @@ export class GameScene extends Phaser.Scene {
             }
           }
 
-          // Wall collision: clamp to arena bounds
-          const arenaL = curr.arenaLeft ?? 0;
-          const arenaR = curr.arenaRight ?? currentMap.width;
-          if (ragdoll.x < arenaL) {
-            ragdoll.x = arenaL;
+          // Wall collision: clamp to MAP bounds (not arena/zone — corpses ignore the red zone)
+          if (ragdoll.x < 0) {
+            ragdoll.x = 0;
             ragdoll.vx = Math.abs(ragdoll.vx) * 0.4;
-          } else if (ragdoll.x + PLAYER_WIDTH > arenaR) {
-            ragdoll.x = arenaR - PLAYER_WIDTH;
+          } else if (ragdoll.x + PLAYER_WIDTH > currentMap.width) {
+            ragdoll.x = currentMap.width - PLAYER_WIDTH;
             ragdoll.vx = -Math.abs(ragdoll.vx) * 0.4;
           }
 
@@ -2086,12 +2076,6 @@ export class GameScene extends Phaser.Scene {
           // Otherwise: prediction flicker — don't touch ragdoll, don't set wasAlive
         } else {
           ragdoll.wasAlive = true;
-          // Snapshot current visual position — used as ragdoll start when player dies
-          ragdoll.lastAliveX = drawX;
-          ragdoll.lastAliveY = drawY;
-          ragdoll.lastAliveVx = cp.vx ?? 0;
-          ragdoll.lastAliveVy = cp.vy ?? 0;
-          ragdoll.lastAliveFacing = cp.facing;
         }
       }
 
