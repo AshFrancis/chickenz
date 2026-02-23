@@ -8,8 +8,6 @@ import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMat
 import { normalize, resolve } from "path";
 
 const PORT = Number(process.env.PORT) || 3000;
-const BOT_JOIN_DELAY_MS = 16_000; // delay before bot auto-joins casual room
-
 // ── Startup env validation ─────────────────────────────────
 {
   const features: string[] = [];
@@ -766,15 +764,7 @@ const server = Bun.serve<SocketData>({
           lobbySockets.delete(ws);
           broadcastLobby();
 
-          // Auto-add bot if no human joins (casual only)
-          if (mode === "casual") {
-            setTimeout(() => {
-              if (room.isWaiting() && room.playerCount === 1) {
-                room.addBot();
-                broadcastLobby();
-              }
-            }, BOT_JOIN_DELAY_MS);
-          }
+          // Bot auto-join removed — player can request bot via "add_bot" message
         }
         return;
       }
@@ -830,6 +820,18 @@ const server = Bun.serve<SocketData>({
         }
         ws.data.tournamentId = found.id;
         lobbySockets.delete(ws);
+        return;
+      }
+
+      // ── Add bot to room ────────────────────────────────────
+      if (msg.type === "add_bot") {
+        const roomId = ws.data.roomId;
+        if (!roomId) return;
+        const room = rooms.get(roomId);
+        if (room && room.isWaiting() && room.playerCount === 1) {
+          room.addBot();
+          broadcastLobby();
+        }
         return;
       }
 

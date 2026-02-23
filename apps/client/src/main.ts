@@ -749,6 +749,10 @@ document.getElementById("btn-warmup-back")!.addEventListener("click", () => {
   openLobby();
 });
 
+document.getElementById("btn-add-bot")!.addEventListener("click", () => {
+  networkManager?.send({ type: "add_bot" });
+});
+
 document.getElementById("btn-tournament-back")!.addEventListener("click", () => {
   networkManager?.sendLeave();
   hideAllTournamentOverlays();
