@@ -1689,11 +1689,13 @@ export class GameScene extends Phaser.Scene {
         if (teleported) {
           ls.x = cp.x; ls.y = cp.y;
         } else {
-          // Advance by velocity, then strongly pull toward predicted position
+          // Advance by velocity, then pull toward predicted position
           ls.x += (cp.vx ?? 0) * (dt / TICK_DT_MS);
           ls.y += (cp.vy ?? 0) * (dt / TICK_DT_MS);
           ls.x = ls.x + (cp.x - ls.x) * 0.5;
-          ls.y = ls.y + (cp.y - ls.y) * 0.5;
+          // Smooth Y more gently when airborne to absorb reconciliation snaps
+          const yLerp = cp.grounded ? 0.6 : 0.25;
+          ls.y = ls.y + (cp.y - ls.y) * yLerp;
         }
         if (cp.grounded) ls.y = cp.y;
         drawX = Math.round(ls.x);
