@@ -230,8 +230,16 @@ function truncateAddress(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+let verifyInProgress: string | null = null; // prevent duplicate verify popups
+let lastVerifiedAddr: string | null = null;
+
 async function verifyWallet(addr: string): Promise<boolean> {
   if (!networkManager) return false;
+  // Already verified this address
+  if (lastVerifiedAddr === addr) return true;
+  // Already verifying this address
+  if (verifyInProgress === addr) return false;
+  verifyInProgress = addr;
   const origin = networkManager.httpOrigin;
   try {
     // 1. Get challenge
@@ -239,21 +247,25 @@ async function verifyWallet(addr: string): Promise<boolean> {
     const { challenge } = await challengeRes.json();
     if (!challenge) return false;
 
-    // 2. Sign with Freighter
-    const signature = await signChallenge(challenge);
+    // 2. Sign with Freighter — include a human-readable message
+    const message = `Chickenz wallet verification\n\nThis signature proves you own this wallet for ranked play. No transaction will be made.\n\nChallenge: ${challenge}`;
+    const signature = await signChallenge(message);
     if (!signature) return false;
 
     // 3. Verify on server
     const verifyRes = await fetch(`${origin}/api/wallet/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: addr, challenge, signature }),
+      body: JSON.stringify({ address: addr, challenge: message, signature }),
     });
     const { verified } = await verifyRes.json();
+    if (verified) lastVerifiedAddr = addr;
     return !!verified;
   } catch (err) {
     console.error("[wallet] Verification failed:", err);
     return false;
+  } finally {
+    verifyInProgress = null;
   }
 }
 

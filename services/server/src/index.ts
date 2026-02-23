@@ -446,11 +446,14 @@ const server = Bun.serve<SocketData>({
         if (!/^G[A-Z2-7]{55}$/.test(body.address)) {
           return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
         }
-        if (!body.challenge.startsWith("chickenz-auth:")) {
+        // Extract the original challenge token from the signed message
+        const challengeMatch = body.challenge.match(/chickenz-auth:[^:\s]+:\d+/);
+        if (!challengeMatch) {
           return Response.json({ error: "Invalid challenge" }, { status: 400, headers: corsHeaders });
         }
+        const challengeToken = challengeMatch[0]!;
         // Validate challenge freshness (5 min window)
-        const parts = body.challenge.split(":");
+        const parts = challengeToken.split(":");
         const challengeTs = parseInt(parts[2] ?? "0", 10);
         if (isNaN(challengeTs) || Date.now() - challengeTs > 5 * 60 * 1000) {
           return Response.json({ error: "Challenge expired" }, { status: 400, headers: corsHeaders });
