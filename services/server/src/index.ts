@@ -763,7 +763,7 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/(.+)$/)) {
       const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
       try {
-        const body = (await req.json()) as { seal: string; journal: string; imageId: string; boundlessRequestId?: string };
+        const body = (await req.json()) as { seal: string; journal: string; imageId: string; boundlessRequestId?: string; boundlessTxHash?: string };
         // 1E: Validate proof artifacts are valid hex with correct lengths
         // Seal: 260 bytes (520 hex) with selector, or 256 bytes (512 hex) without
         if (
@@ -774,9 +774,12 @@ const server = Bun.serve<SocketData>({
         ) {
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
-        // Save Boundless request ID if provided by worker
+        // Save Boundless request ID and tx hash if provided by worker
         if (body.boundlessRequestId && typeof body.boundlessRequestId === "string") {
           updateBoundlessRequestId(matchId, body.boundlessRequestId);
+        }
+        if (body.boundlessTxHash && typeof body.boundlessTxHash === "string") {
+          updateBoundlessTxHash(matchId, body.boundlessTxHash);
         }
         const job = submitJobResult(matchId, body);
         if (!job) {
