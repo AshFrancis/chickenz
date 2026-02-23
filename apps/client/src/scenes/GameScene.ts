@@ -1617,7 +1617,7 @@ export class GameScene extends Phaser.Scene {
       // Adaptive prediction lead based on RTT
       // One-way latency in ticks + 1 tick buffer, clamped to [2, 12]
       const rttMs = this.networkRtt;
-      const PRED_LEAD = Math.max(2, Math.min(12, Math.ceil(rttMs / (2 * TICK_DT_MS)) + 1));
+      const PRED_LEAD = Math.max(2, Math.min(8, Math.ceil(rttMs / (2 * TICK_DT_MS)) + 1));
       if (this.lastServerTick > 0) {
         const targetTick = this.lastServerTick + PRED_LEAD;
         let extraTicks = 0;
@@ -1857,23 +1857,21 @@ export class GameScene extends Phaser.Scene {
           ls.velY = 0;
           ls.initialized = true;
         }
-        const errMag = Math.max(Math.abs(ls.x - cp.x), Math.abs(ls.y - cp.y));
-        const teleported = errMag > 200;
-        if (teleported) {
+        const dx = cp.x - ls.x;
+        const dy = cp.y - ls.y;
+        const errMag = Math.max(Math.abs(dx), Math.abs(dy));
+        if (errMag > 200) {
           ls.x = cp.x;
           ls.y = cp.y;
           this.diagTeleports++;
         } else {
-          // Variable blend: tight for small errors (<10px), gradual for large errors
-          // Small error: 0.6 → moves 60%/frame (snappy, responsive)
-          // Large error (60px+): 0.08 → moves 8%/frame (spreads over ~20 frames, no visible snap)
-          const blend = errMag < 10 ? 0.6 : Math.max(0.08, 0.6 - errMag * 0.006);
-          ls.x = smoothLerp(ls.x, cp.x, blend, dt);
-          if (cp.grounded) {
-            ls.y = cp.y;
-          } else {
-            ls.y = smoothLerp(ls.y, cp.y, blend, dt);
-          }
+          // Capped linear correction: move toward predicted position at bounded rate.
+          // 20px per tick-time per axis — fast enough to converge in <150ms even for
+          // 90px errors, but never produces a jarring single-frame jump.
+          // Eliminates the grounded Y snap that caused huge maxJump when landing with offset.
+          const maxCorr = 20 * (dt / TICK_DT_MS);
+          ls.x += Math.abs(dx) <= maxCorr ? dx : Math.sign(dx) * maxCorr;
+          ls.y += Math.abs(dy) <= maxCorr ? dy : Math.sign(dy) * maxCorr;
         }
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);
