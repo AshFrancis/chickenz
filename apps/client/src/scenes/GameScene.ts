@@ -972,7 +972,7 @@ export class GameScene extends Phaser.Scene {
       r.rotation = 0;
       r.angularVel = 0;
       r.bounces = 0;
-      r.wasAlive = true;
+      r.wasAlive = false; // false: don't re-trigger ragdoll if player is still dead in currState
       const sprite = this.playerSprites[i];
       if (sprite) {
         sprite.setRotation(0);

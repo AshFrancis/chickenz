@@ -117,12 +117,18 @@ function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArt
   const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
   settleMatchOnChain(sessionId, sealBytes, journalBytes)
     .then((hash) => {
-      updateProofStatus(matchId, "settled");
-      if (hash) updateSettleTxHash(matchId, hash);
+      if (hash) {
+        updateProofStatus(matchId, "settled");
+        updateSettleTxHash(matchId, hash);
+        console.log(`[stellar] Auto-settled ${matchId}: ${hash}`);
+      } else {
+        console.error(`[stellar] Auto-settle returned no tx hash for ${matchId}`);
+        // Leave as "verified" so manual settle can retry
+      }
     })
     .catch((err) => {
       console.error("Auto-settle failed:", err);
-      updateProofStatus(matchId, "verified"); // revert to verified so manual settle can retry
+      // Leave as "verified" so manual settle can retry
     });
 }
 
