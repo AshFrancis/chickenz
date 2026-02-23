@@ -62,7 +62,7 @@ fi
 
 if [ "$MODE" = "server" ] || [ "$MODE" = "both" ] || [ "$MODE" = "prover" ]; then
   log "Building prover binary on server..."
-  ssh $SSH_OPTS "$SERVER" "source ~/.cargo/env && cd $REMOTE_DIR/services/prover && cargo build -p chickenz-host --release 2>&1 | tail -5"
+  ssh $SSH_OPTS "$SERVER" "source ~/.cargo/env && cd $REMOTE_DIR/services/prover && cargo build -p chickenz-host --release --features boundless 2>&1 | tail -5"
   log "Prover binary built."
 fi
 
