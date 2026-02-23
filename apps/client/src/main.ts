@@ -1238,25 +1238,32 @@ function explorerContractUrl(addr: string): string {
   return `https://stellar.expert/explorer/testnet/contract/${encodeURIComponent(addr)}`;
 }
 
+const GUEST_IMAGE_ID = "8dd539f16c344186c2a93bb3c40f37b911ed182dbad86ff9517b3619c18b572b";
+
 function renderDataAvailability(m: MatchRecord): string {
   const rows: string[] = [];
   if (m.transcriptCid) {
     const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${m.transcriptCid}`;
     rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Transcript</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">IPFS: ${escapeHtml(m.transcriptCid.slice(0, 12))}...</a></span></div>`,
+      `<div class="dpg-row"><span class="dpg-label">Input (IPFS)</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">${escapeHtml(m.transcriptCid.slice(0, 16))}...</a></span></div>`,
     );
   }
+  // Program image ID (the zkVM guest binary hash)
+  rows.push(
+    `<div class="dpg-row"><span class="dpg-label">Program ID</span><span class="dpg-value" title="${GUEST_IMAGE_ID}">${GUEST_IMAGE_ID.slice(0, 16)}...</span></div>`,
+  );
   if (m.boundlessTxHash) {
     const etherscanUrl = `https://sepolia.etherscan.io/tx/${encodeURIComponent(m.boundlessTxHash)}`;
     rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Boundless TX</span><span class="dpg-value"><a href="${etherscanUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessTxHash.slice(0, 16))}...</a></span></div>`,
+      `<div class="dpg-row"><span class="dpg-label">Proof Request TX</span><span class="dpg-value"><a href="${etherscanUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessTxHash.slice(0, 16))}...</a></span></div>`,
     );
-  } else if (m.boundlessRequestId) {
+  }
+  if (m.boundlessRequestId) {
     rows.push(
       `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</span></div>`,
     );
   }
-  if (rows.length === 0) return "";
+  if (rows.length <= 1) return ""; // only program ID, no proof data
   return `
     <div class="detail-section">
       <h3>Data Availability</h3>
