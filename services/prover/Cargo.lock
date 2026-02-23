@@ -2058,16 +2058,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "chickenz-chunk-guest"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "chickenz-core",
- "risc0-zkvm",
- "sha2 0.10.9 (git+https://github.com/risc0/RustCrypto-hashes?tag=sha2-v0.10.9-risczero.0)",
-]
-
-[[package]]
 name = "chickenz-core"
 version = "0.1.0"
 dependencies = [
@@ -2100,15 +2090,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
-]
-
-[[package]]
-name = "chickenz-match-guest"
-version = "0.1.0"
-dependencies = [
- "chickenz-core",
- "risc0-zkvm",
- "sha2 0.10.9 (git+https://github.com/risc0/RustCrypto-hashes?tag=sha2-v0.10.9-risczero.0)",
 ]
 
 [[package]]

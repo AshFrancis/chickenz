@@ -1,8 +1,14 @@
 import { defineConfig } from "vite";
 import { execSync } from "child_process";
 
-const commitHash = execSync("git rev-parse --short HEAD").toString().trim();
-const commitDate = execSync("git log -1 --format=%ci").toString().trim().slice(0, 16);
+let commitHash = "unknown";
+let commitDate = "";
+try {
+  commitHash = execSync("git rev-parse --short HEAD").toString().trim();
+  commitDate = execSync("git log -1 --format=%ci").toString().trim().slice(0, 16);
+} catch {
+  // git not available (Docker, CI artifacts, tarballs)
+}
 
 export default defineConfig({
   define: {

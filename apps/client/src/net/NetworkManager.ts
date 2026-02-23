@@ -1,114 +1,66 @@
 import type { PlayerInput } from "@chickenz/sim";
+import type {
+  ServerMessage,
+  StateMessage,
+  SpectateStateMessage,
+  RoomInfo,
+  GameMode,
+  TournamentBracket,
+  TournamentLobbyMessage,
+  TournamentMatchStartMessage,
+  TournamentMatchEndMessage,
+  TournamentEndMessage,
+} from "../../../../services/server/src/protocol";
 
-export type GameMode = "casual" | "ranked";
-
-export interface RoomInfo {
-  id: string;
-  name: string;
-  status: "waiting" | "playing" | "ended";
-  players: number;
-  joinCode: string;
-  isPrivate: boolean;
-  mode: GameMode;
-}
-
-// Wire types for JSON messages from the server
-interface RawPlayerState {
-  id: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  facing: number;
-  health: number;
-  lives: number;
-  shootCooldown: number;
-  grounded: boolean;
-  stateFlags: number;
-  respawnTimer: number;
-  weapon?: number | null;
-  ammo?: number;
-  jumpsLeft?: number;
-  wallSliding?: boolean;
-  wallDir?: number;
-  stompedBy?: number | null;
-  stompingOn?: number | null;
-  stompShakeProgress?: number;
-}
-
-interface RawProjectile {
-  id: number;
-  ownerId: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  lifetime: number;
-  weapon?: number;
-}
-
-interface RawWeaponPickup {
-  id: number;
-  x: number;
-  y: number;
-  weapon: number;
-  respawnTimer: number;
-}
-
-interface ServerMessage {
-  type: string;
-  rooms?: RoomInfo[];
-  roomId?: string;
-  roomName?: string;
-  joinCode?: string;
-  playerId?: number;
-  seed?: number;
-  usernames?: [string, string];
-  winner?: number;
-  scores?: [number, number];
-  roundWins?: [number, number];
-  message?: string;
-  mapIndex?: number;
-  totalRounds?: number;
-  round?: number;
-  mode?: GameMode;
-  characters?: [number, number];
-  // State fields (inlined when type === "state")
-  tick?: number;
-  players?: RawPlayerState[];
-  projectiles?: RawProjectile[];
-  weaponPickups?: RawWeaponPickup[];
-  rngState?: number;
-  nextProjectileId?: number;
-  arenaLeft?: number;
-  arenaRight?: number;
-  matchOver?: boolean;
-  deathLingerTimer?: number;
-  lastButtons?: [number, number];
-}
-
-export interface TournamentBracket {
-  matches: { matchIndex: number; matchLabel: string; winnerSlot: number; loserSlot: number }[];
-  playerNames: string[];
-}
+export type { RoomInfo, GameMode, TournamentBracket };
 
 export interface NetworkCallbacks {
   onWaiting: (roomId: string, roomName: string, joinCode: string) => void;
-  onMatched: (playerId: number, seed: number, roomId: string, usernames: [string, string], mapIndex: number, totalRounds: number, mode: GameMode, characters: [number, number]) => void;
-  onState: (state: any, lastButtons?: [number, number]) => void;
+  onMatched: (
+    playerId: number,
+    seed: number,
+    roomId: string,
+    usernames: [string, string],
+    mapIndex: number,
+    totalRounds: number,
+    mode: GameMode,
+    characters: [number, number],
+  ) => void;
+  onState: (state: StateMessage, lastButtons?: [number, number]) => void;
   onRoundEnd: (round: number, winner: number, roundWins: [number, number]) => void;
   onRoundStart: (round: number, seed: number, mapIndex: number) => void;
-  onEnded: (winner: number, scores: [number, number], roundWins: [number, number], roomId: string, mode: GameMode) => void;
+  onEnded: (
+    winner: number,
+    scores: [number, number],
+    roundWins: [number, number],
+    roomId: string,
+    mode: GameMode,
+  ) => void;
   onLobby: (rooms: RoomInfo[]) => void;
   onError: (message: string) => void;
   onDisconnect: () => void;
   // Tournament callbacks
   onTournamentLobby?: (tournamentId: string, joinCode: string, players: string[], status: string) => void;
-  onTournamentMatchStart?: (matchLabel: string, matchIndex: number, role: "fighter" | "spectator", playerId: number | undefined, seed: number, usernames: [string, string], mapIndex: number, totalRounds: number, characters: [number, number]) => void;
-  onSpectateState?: (state: any, lastButtons?: [number, number]) => void;
+  onTournamentMatchStart?: (
+    matchLabel: string,
+    matchIndex: number,
+    role: "fighter" | "spectator",
+    playerId: number | undefined,
+    seed: number,
+    usernames: [string, string],
+    mapIndex: number,
+    totalRounds: number,
+    characters: [number, number],
+  ) => void;
+  onSpectateState?: (state: SpectateStateMessage, lastButtons?: [number, number]) => void;
   onSpectateRoundEnd?: (round: number, winner: number, roundWins: [number, number]) => void;
   onSpectateRoundStart?: (round: number, seed: number, mapIndex: number) => void;
-  onTournamentMatchEnd?: (matchIndex: number, matchLabel: string, winnerName: string, bracket: TournamentBracket) => void;
+  onTournamentMatchEnd?: (
+    matchIndex: number,
+    matchLabel: string,
+    winnerName: string,
+    bracket: TournamentBracket,
+  ) => void;
   onTournamentEnd?: (standings: string[], bracket: TournamentBracket) => void;
 }
 
@@ -119,14 +71,26 @@ export class NetworkManager {
   private lastSentButtons = -1;
   private lastSentAimX = -999;
   private lastSentAimY = -999;
+  private _url = "";
+  private _reconnectAttempts = 0;
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _intentionalClose = false;
 
   constructor(callbacks: NetworkCallbacks) {
     this.callbacks = callbacks;
   }
 
   connect(url: string) {
+    this._intentionalClose = true; // suppress reconnect for the old socket
     this.disconnect();
+    this._url = url;
+    this._reconnectAttempts = 0;
+    this._intentionalClose = false;
     this.serverOrigin = url.replace(/^ws/, "http").replace(/\/ws$/, "");
+    this._doConnect(url);
+  }
+
+  private _doConnect(url: string) {
     this.ws = new WebSocket(url);
 
     this.ws.onmessage = (event) => {
@@ -139,74 +103,90 @@ export class NetworkManager {
 
       switch (msg.type) {
         case "lobby":
-          this.callbacks.onLobby(msg.rooms!);
+          this.callbacks.onLobby(msg.rooms);
           break;
         case "waiting":
-          this.callbacks.onWaiting(msg.roomId!, msg.roomName!, msg.joinCode ?? "");
+          this.callbacks.onWaiting(msg.roomId, msg.roomName, msg.joinCode);
           break;
         case "matched":
           this.callbacks.onMatched(
-            msg.playerId!, msg.seed!, msg.roomId!,
-            msg.usernames ?? ["", ""],
-            msg.mapIndex ?? 0,
-            msg.totalRounds ?? 3,
-            msg.mode ?? "casual",
-            msg.characters ?? [0, 1],
+            msg.playerId,
+            msg.seed,
+            msg.roomId,
+            msg.usernames,
+            msg.mapIndex,
+            msg.totalRounds,
+            msg.mode,
+            msg.characters,
           );
           break;
         case "state":
           this.callbacks.onState(msg, msg.lastButtons);
           break;
         case "round_end":
-          this.callbacks.onRoundEnd(msg.round!, msg.winner!, msg.roundWins ?? [0, 0]);
+          this.callbacks.onRoundEnd(msg.round, msg.winner, msg.roundWins);
           break;
         case "round_start":
-          this.callbacks.onRoundStart(msg.round!, msg.seed!, msg.mapIndex ?? 0);
+          this.callbacks.onRoundStart(msg.round, msg.seed, msg.mapIndex);
           break;
         case "ended":
-          this.callbacks.onEnded(msg.winner!, msg.scores!, msg.roundWins ?? [0, 0], msg.roomId!, msg.mode ?? "casual");
+          this.callbacks.onEnded(msg.winner, msg.scores, msg.roundWins, msg.roomId, msg.mode);
           break;
         case "error":
-          this.callbacks.onError(msg.message!);
+          this.callbacks.onError(msg.message);
           break;
-        case "tournament_lobby":
-          this.callbacks.onTournamentLobby?.(
-            (msg as any).tournamentId, (msg as any).joinCode,
-            (msg as any).players, (msg as any).status,
-          );
+        case "tournament_lobby": {
+          const tl = msg as TournamentLobbyMessage;
+          this.callbacks.onTournamentLobby?.(tl.tournamentId, tl.joinCode, tl.players, tl.status);
           break;
-        case "tournament_match_start":
+        }
+        case "tournament_match_start": {
+          const tms = msg as TournamentMatchStartMessage;
           this.callbacks.onTournamentMatchStart?.(
-            (msg as any).matchLabel, (msg as any).matchIndex,
-            (msg as any).role, (msg as any).playerId,
-            (msg as any).seed, (msg as any).usernames ?? ["", ""],
-            (msg as any).mapIndex ?? 0, (msg as any).totalRounds ?? 3,
-            (msg as any).characters ?? [0, 1],
+            tms.matchLabel,
+            tms.matchIndex,
+            tms.role,
+            tms.playerId,
+            tms.seed,
+            tms.usernames,
+            tms.mapIndex,
+            tms.totalRounds,
+            tms.characters,
           );
           break;
-        case "spectate_state":
-          this.callbacks.onSpectateState?.(msg, msg.lastButtons);
+        }
+        case "spectate_state": {
+          const ss = msg as SpectateStateMessage;
+          this.callbacks.onSpectateState?.(ss, ss.lastButtons);
           break;
+        }
         case "spectate_round_end":
-          this.callbacks.onSpectateRoundEnd?.(msg.round!, msg.winner!, msg.roundWins ?? [0, 0]);
+          this.callbacks.onSpectateRoundEnd?.(msg.round, msg.winner, msg.roundWins);
           break;
         case "spectate_round_start":
-          this.callbacks.onSpectateRoundStart?.(msg.round!, msg.seed!, msg.mapIndex ?? 0);
+          this.callbacks.onSpectateRoundStart?.(msg.round, msg.seed, msg.mapIndex);
           break;
-        case "tournament_match_end":
-          this.callbacks.onTournamentMatchEnd?.(
-            (msg as any).matchIndex, (msg as any).matchLabel,
-            (msg as any).winnerName, (msg as any).bracket,
-          );
+        case "tournament_match_end": {
+          const tme = msg as TournamentMatchEndMessage;
+          this.callbacks.onTournamentMatchEnd?.(tme.matchIndex, tme.matchLabel, tme.winnerName, tme.bracket);
           break;
-        case "tournament_end":
-          this.callbacks.onTournamentEnd?.((msg as any).standings, (msg as any).bracket);
+        }
+        case "tournament_end": {
+          const te = msg as TournamentEndMessage;
+          this.callbacks.onTournamentEnd?.(te.standings, te.bracket);
           break;
+        }
       }
     };
 
+    this.ws.onopen = () => {
+      this._reconnectAttempts = 0;
+    };
+
     this.ws.onclose = () => {
+      if (this._intentionalClose) return;
       this.callbacks.onDisconnect();
+      this._tryReconnect();
     };
 
     this.ws.onerror = () => {
@@ -255,9 +235,7 @@ export class NetworkManager {
 
   sendInput(input: PlayerInput, tick?: number) {
     const inputChanged =
-      input.buttons !== this.lastSentButtons ||
-      input.aimX !== this.lastSentAimX ||
-      input.aimY !== this.lastSentAimY;
+      input.buttons !== this.lastSentButtons || input.aimX !== this.lastSentAimX || input.aimY !== this.lastSentAimY;
     if (!inputChanged) return;
 
     this.lastSentButtons = input.buttons;
@@ -289,11 +267,32 @@ export class NetworkManager {
   }
 
   disconnect() {
+    this._intentionalClose = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
     }
+  }
+
+  sendAddBot() {
+    this.send({ type: "add_bot" });
+  }
+
+  private _tryReconnect() {
+    const MAX_ATTEMPTS = 5;
+    if (this._reconnectAttempts >= MAX_ATTEMPTS || !this._url) return;
+    this._reconnectAttempts++;
+    const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts - 1), 8000);
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (this._intentionalClose) return;
+      this._doConnect(this._url);
+    }, delay);
   }
 
   private send(msg: object) {
@@ -302,4 +301,3 @@ export class NetworkManager {
     }
   }
 }
-

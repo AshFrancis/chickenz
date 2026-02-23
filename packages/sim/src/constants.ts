@@ -107,14 +107,14 @@ export const WEAPON_STATS: Record<WeaponType, WeaponStats> = {
 };
 
 // Stomp mechanic
-export const STOMP_DAMAGE_INTERVAL = 2;    // deal damage every N ticks (2 = half speed)
-export const STOMP_DAMAGE_PER_HIT = 1;     // HP per damage tick (~3.3s to kill from 100)
-export const STOMP_SHAKE_PER_PRESS = 17;   // each correct alternating L/R press
-export const STOMP_SHAKE_THRESHOLD = 100;  // shake progress needed to break free (3L+3R = 102)
-export const STOMP_SHAKE_DECAY = 1;        // decay per tick if not mashing
-export const STOMP_AUTO_RUN_MIN = 20;      // min ticks before direction change
-export const STOMP_AUTO_RUN_MAX = 60;      // max ticks before direction change
-export const STOMP_COOLDOWN_TICKS = 90;    // 1.5s immunity after being shaken off
+export const STOMP_DAMAGE_INTERVAL = 2; // deal damage every N ticks (2 = half speed)
+export const STOMP_DAMAGE_PER_HIT = 1; // HP per damage tick (~3.3s to kill from 100)
+export const STOMP_SHAKE_PER_PRESS = 17; // each correct alternating L/R press
+export const STOMP_SHAKE_THRESHOLD = 100; // shake progress needed to break free (3L+3R = 102)
+export const STOMP_SHAKE_DECAY = 1; // decay per tick if not mashing
+export const STOMP_AUTO_RUN_MIN = 20; // min ticks before direction change
+export const STOMP_AUTO_RUN_MAX = 60; // max ticks before direction change
+export const STOMP_COOLDOWN_TICKS = 90; // 1.5s immunity after being shaken off
 
 // Weapon pickup respawn time
 export const WEAPON_PICKUP_RESPAWN_TICKS = 300; // 5 seconds

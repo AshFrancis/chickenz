@@ -1,21 +1,13 @@
-import {
-  StellarWalletsKit,
-  WalletNetwork,
-  allowAllModules,
-  FREIGHTER_ID,
-} from "@creit.tech/stellar-wallets-kit";
+import { StellarWalletsKit, WalletNetwork, allowAllModules, FREIGHTER_ID } from "@creit.tech/stellar-wallets-kit";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 const TESTNET_RPC = "https://soroban-testnet.stellar.org";
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 
 // Deployed contract addresses (testnet)
-export const CHICKENZ_CONTRACT =
-  "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
-export const GAME_HUB_CONTRACT =
-  "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG";
-export const VERIFIER_CONTRACT =
-  "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH";
+export const CHICKENZ_CONTRACT = "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
+export const GAME_HUB_CONTRACT = "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG";
+export const VERIFIER_CONTRACT = "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH";
 
 let connectedAddress: string | null = null;
 let kit: StellarWalletsKit | null = null;
@@ -40,25 +32,25 @@ export async function connectWallet(): Promise<string | null> {
   if (!kit) return null;
 
   return new Promise((resolve) => {
-    kit!.openModal({
-      onWalletSelected: async (option: { id: string }) => {
-        try {
-          kit!.setWallet(option.id);
-          const { address } = await kit!.getAddress();
-          if (address) {
-            connectedAddress = address;
-            localStorage.removeItem("chickenz-wallet-disconnected");
-            startAddressPolling();
-            window.dispatchEvent(
-              new CustomEvent("walletChanged", { detail: { address } }),
-            );
-            resolve(address);
-          } else {
+    void kit!.openModal({
+      onWalletSelected: (option: { id: string }) => {
+        void (async () => {
+          try {
+            kit!.setWallet(option.id);
+            const { address } = await kit!.getAddress();
+            if (address) {
+              connectedAddress = address;
+              localStorage.removeItem("chickenz-wallet-disconnected");
+              startAddressPolling();
+              window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address } }));
+              resolve(address);
+            } else {
+              resolve(null);
+            }
+          } catch {
             resolve(null);
           }
-        } catch {
-          resolve(null);
-        }
+        })();
       },
     });
   });
@@ -69,27 +61,25 @@ export function disconnectWallet() {
   stopAddressPolling();
   connectedAddress = null;
   localStorage.setItem("chickenz-wallet-disconnected", "1");
-  window.dispatchEvent(
-    new CustomEvent("walletChanged", { detail: { address: null } }),
-  );
+  window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: null } }));
 }
 
 /** Poll Freighter for account switches and dispatch walletChanged if address changes. */
 function startAddressPolling() {
   stopAddressPolling();
-  addressPollTimer = setInterval(async () => {
+  addressPollTimer = setInterval(() => {
     if (!kit || !connectedAddress) return;
-    try {
-      const { address } = await kit.getAddress();
-      if (address && address !== connectedAddress) {
-        connectedAddress = address;
-        window.dispatchEvent(
-          new CustomEvent("walletChanged", { detail: { address } }),
-        );
-      }
-    } catch {
-      // Freighter unavailable or locked — ignore
-    }
+    void kit
+      .getAddress()
+      .then(({ address }) => {
+        if (address && address !== connectedAddress) {
+          connectedAddress = address;
+          window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address } }));
+        }
+      })
+      .catch(() => {
+        // Freighter unavailable or locked — ignore
+      });
   }, 3000);
 }
 
@@ -110,9 +100,7 @@ export async function tryReconnectWallet(): Promise<boolean> {
     if (address) {
       connectedAddress = address;
       startAddressPolling();
-      window.dispatchEvent(
-        new CustomEvent("walletChanged", { detail: { address } }),
-      );
+      window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address } }));
       return true;
     }
   } catch {
@@ -150,20 +138,16 @@ async function callContract(
     throw new Error(`Simulation failed: ${simResult.error}`);
   }
 
-  const prepared = StellarSdk.rpc.assembleTransaction(
-    tx,
-    simResult as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse,
-  ).build();
+  const prepared = StellarSdk.rpc
+    .assembleTransaction(tx, simResult as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse)
+    .build();
 
   const { signedTxXdr } = await kit.signTransaction(prepared.toXDR(), {
     networkPassphrase: TESTNET_PASSPHRASE,
     address: connectedAddress,
   });
 
-  const signed = StellarSdk.TransactionBuilder.fromXDR(
-    signedTxXdr,
-    TESTNET_PASSPHRASE,
-  );
+  const signed = StellarSdk.TransactionBuilder.fromXDR(signedTxXdr, TESTNET_PASSPHRASE);
 
   const sendResult = await server.sendTransaction(signed);
   if (sendResult.status === "ERROR") {
@@ -196,22 +180,21 @@ export async function startMatch(
   ]);
 }
 
-export async function settleMatch(
-  sessionId: number,
-  seal: Uint8Array,
-  journal: Uint8Array,
-): Promise<void> {
-  await callContract("settle_match", [
+export async function settleMatch(sessionId: number, seal: Uint8Array, journal: Uint8Array): Promise<string | null> {
+  const response = await callContract("settle_match", [
     StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
     StellarSdk.nativeToScVal(seal, { type: "bytes" }),
     StellarSdk.nativeToScVal(journal, { type: "bytes" }),
   ]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK response type not statically known
+  return (response as any)?.hash ?? null;
 }
 
 /** Sign a challenge string with the connected wallet (Freighter signMessage). */
 export async function signChallenge(challenge: string): Promise<string | null> {
   if (!kit || !connectedAddress) return null;
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- wallet kit signMessage not in type defs
     const result = await (kit as any).signMessage(challenge, {
       address: connectedAddress,
       networkPassphrase: TESTNET_PASSPHRASE,

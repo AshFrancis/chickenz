@@ -7,12 +7,16 @@ export type GameMode = "casual" | "ranked";
 export interface QuickplayMessage {
   type: "quickplay";
   mode?: GameMode;
+  character?: number;
+  awayCharacter?: number;
 }
 
 export interface CreateRoomMessage {
   type: "create";
   isPrivate?: boolean;
   mode?: GameMode;
+  character?: number;
+  awayCharacter?: number;
 }
 
 export interface SetWalletMessage {
@@ -23,11 +27,15 @@ export interface SetWalletMessage {
 export interface JoinRoomMessage {
   type: "join_room";
   roomId: string;
+  character?: number;
+  awayCharacter?: number;
 }
 
 export interface JoinCodeMessage {
   type: "join_code";
   code: string;
+  character?: number;
+  awayCharacter?: number;
 }
 
 export interface InputMessage {
@@ -60,6 +68,10 @@ export interface LeaveMessage {
   type: "leave";
 }
 
+export interface AddBotMessage {
+  type: "add_bot";
+}
+
 export type ClientMessage =
   | QuickplayMessage
   | CreateRoomMessage
@@ -71,7 +83,8 @@ export type ClientMessage =
   | SetWalletMessage
   | CreateTournamentMessage
   | JoinTournamentCodeMessage
-  | LeaveMessage;
+  | LeaveMessage
+  | AddBotMessage;
 
 // ── Server → Client ────────────────────────────────────────
 
@@ -300,7 +313,7 @@ export interface SerializedWeaponPickup {
 // ── Helpers ────────────────────────────────────────────────
 
 export function inputFromMessage(msg: InputMessage): PlayerInput {
-  const buttons = (Number.isFinite(msg.buttons) ? msg.buttons : 0) & 0xFF;
+  const buttons = (Number.isFinite(msg.buttons) ? msg.buttons : 0) & 0xff;
   const aimX = msg.aimX === 1 ? 1 : msg.aimX === -1 ? -1 : 0;
   const aimY = msg.aimY === 1 ? 1 : msg.aimY === -1 ? -1 : 0;
   return { buttons, aimX, aimY };

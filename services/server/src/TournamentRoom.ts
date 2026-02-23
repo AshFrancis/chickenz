@@ -1,22 +1,24 @@
 import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
 import { generateJoinCode } from "./protocol";
-import type { TournamentBracket, TournamentMatchResult } from "./protocol";
+import type { TournamentBracket, TournamentMatchResult, InputMessage } from "./protocol";
 
 type GameSocket = ServerWebSocket<SocketData>;
 
 const MATCH_LABELS = ["Semi-Final 1", "Semi-Final 2", "Winners Final", "Losers Final"];
 // Match schedule: [slotA, slotB] — indices into this.sockets[]
 // For matches 2 & 3, slots are resolved dynamically from winners/losers
-const SEMI_SLOTS: [number, number][] = [[0, 1], [2, 3]];
+const SEMI_SLOTS: [number, number][] = [
+  [0, 1],
+  [2, 3],
+];
 
-const NUM_CHARACTERS = 4;
 const START_DELAY_MS = 3000;
 const BETWEEN_MATCH_MS = 5000;
 
 export class TournamentRoom {
   readonly id: string;
-  readonly joinCode: string;
+  joinCode: string;
   private _status: "waiting" | "playing" | "ended" = "waiting";
   private sockets: GameSocket[] = [];
   private playerNames: string[] = [];
@@ -32,8 +34,12 @@ export class TournamentRoom {
     this.addPlayer(creator);
   }
 
-  get status() { return this._status; }
-  get playerCount() { return this.sockets.length; }
+  get status() {
+    return this._status;
+  }
+  get playerCount() {
+    return this.sockets.length;
+  }
 
   addPlayer(ws: GameSocket): boolean {
     if (this._status !== "waiting") return false;
@@ -69,8 +75,15 @@ export class TournamentRoom {
     if (slotIndex === -1) return;
 
     if (this._status === "waiting") {
-      this.sockets.splice(slotIndex, 1);
-      this.playerNames.splice(slotIndex, 1);
+      // Use fixed-slot removal to avoid shifting indices that SEMI_SLOTS depends on.
+      // Move last player into vacated slot to keep array compact.
+      const lastIdx = this.sockets.length - 1;
+      if (slotIndex < lastIdx) {
+        this.sockets[slotIndex] = this.sockets[lastIdx]!;
+        this.playerNames[slotIndex] = this.playerNames[lastIdx]!;
+      }
+      this.sockets.pop();
+      this.playerNames.pop();
       this.broadcastLobby();
       return;
     }
@@ -85,14 +98,13 @@ export class TournamentRoom {
         const fighterIdx = fighters.indexOf(slotIndex);
         if (fighterIdx !== -1) {
           // Forfeit: other fighter wins
-          const winnerId = fighterIdx === 0 ? 1 : 0;
           this.activeGameRoom.handleDisconnect(fighterIdx);
         }
       }
     }
   }
 
-  handleInput(ws: GameSocket, msg: any) {
+  handleInput(ws: GameSocket, msg: InputMessage) {
     if (!this.activeGameRoom) return;
     // Only allow fighters (not spectators) to send input
     const fighters = this.getCurrentFighterSlots();
@@ -145,8 +157,8 @@ export class TournamentRoom {
 
     const fighters = this.getCurrentFighterSlots();
     if (!fighters) {
-      // Shouldn't happen, but skip
-      this.startNextMatch();
+      console.error(`[tournament ${this.id}] No fighters for match ${this.currentMatchIndex}, ending tournament`);
+      this.endTournament();
       return;
     }
 
@@ -172,10 +184,7 @@ export class TournamentRoom {
     const wsA = this.sockets[slotA]!;
     const wsB = this.sockets[slotB]!;
 
-    const usernames: [string, string] = [
-      this.playerNames[slotA] || "",
-      this.playerNames[slotB] || "",
-    ];
+    const usernames: [string, string] = [this.playerNames[slotA] || "", this.playerNames[slotB] || ""];
     const matchLabel = MATCH_LABELS[this.currentMatchIndex]!;
 
     // Create a GameRoom for the two fighters
@@ -274,9 +283,9 @@ export class TournamentRoom {
     const m2 = this.bracket[2];
     const m3 = this.bracket[3];
     standings.push(this.playerNames[m2?.winnerSlot ?? 0] || "???"); // 1st
-    standings.push(this.playerNames[m2?.loserSlot ?? 0] || "???");  // 2nd
+    standings.push(this.playerNames[m2?.loserSlot ?? 0] || "???"); // 2nd
     standings.push(this.playerNames[m3?.winnerSlot ?? 0] || "???"); // 3rd
-    standings.push(this.playerNames[m3?.loserSlot ?? 0] || "???");  // 4th
+    standings.push(this.playerNames[m3?.loserSlot ?? 0] || "???"); // 4th
 
     const msg = {
       type: "tournament_end",

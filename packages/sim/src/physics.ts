@@ -1,5 +1,4 @@
 import type { PlayerState, PlayerInput, GameMap } from "./types";
-import type { PlayerId } from "./types";
 import { Button, Facing, PlayerStateFlag } from "./types";
 import {
   PLAYER_SPEED,
@@ -23,11 +22,7 @@ import {
  * Jump is edge-triggered: fires only when Jump is pressed this tick but was
  * NOT pressed in prevInput. This prevents held-jump from continuously firing.
  */
-export function applyPlayerInput(
-  p: PlayerState,
-  input: PlayerInput,
-  prevInput: PlayerInput,
-): PlayerState {
+export function applyPlayerInput(p: PlayerState, input: PlayerInput, prevInput: PlayerInput): PlayerState {
   if (!(p.stateFlags & PlayerStateFlag.Alive)) return p;
 
   // Target velocity from input
@@ -54,7 +49,7 @@ export function applyPlayerInput(
   if (jumpEdge) {
     if (p.wallSliding && jumpsLeft > 0) {
       // Wall jump — push away from wall
-      vx = WALL_JUMP_VX * (-p.wallDir);
+      vx = WALL_JUMP_VX * -p.wallDir;
       vy = WALL_JUMP_VY;
       jumpsLeft--;
     } else if (jumpsLeft > 0) {
@@ -110,10 +105,10 @@ export function moveAndCollide(
       y < plat.y + plat.height
     ) {
       // Determine smallest penetration axis to resolve
-      const overlapLeft = (x + PLAYER_WIDTH) - plat.x;
-      const overlapRight = (plat.x + plat.width) - x;
-      const overlapTop = (y + PLAYER_HEIGHT) - plat.y;
-      const overlapBottom = (plat.y + plat.height) - y;
+      const overlapLeft = x + PLAYER_WIDTH - plat.x;
+      const overlapRight = plat.x + plat.width - x;
+      const overlapTop = y + PLAYER_HEIGHT - plat.y;
+      const overlapBottom = plat.y + plat.height - y;
 
       const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
 

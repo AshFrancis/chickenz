@@ -1,20 +1,10 @@
 import type { PlayerState, Projectile, GameMap } from "./types";
 import { WeaponType, PlayerStateFlag } from "./types";
-import {
-  PROJECTILE_SPEED,
-  PROJECTILE_LIFETIME,
-  PLAYER_WIDTH,
-  PLAYER_HEIGHT,
-} from "./constants";
+import { PROJECTILE_SPEED, PROJECTILE_LIFETIME, PLAYER_WIDTH, PLAYER_HEIGHT } from "./constants";
 import { getProjectileDamage, isRocket, applySplashDamage } from "./weapons";
 
 /** Spawn a projectile from a player's position toward their aim direction (legacy, unarmed fallback). */
-export function spawnProjectile(
-  player: PlayerState,
-  aimX: number,
-  aimY: number,
-  id: number,
-): Projectile {
+export function spawnProjectile(player: PlayerState, aimX: number, aimY: number, id: number): Projectile {
   // Normalize aim vector
   const len = Math.sqrt(aimX * aimX + aimY * aimY);
   let nx: number, ny: number;
@@ -61,14 +51,7 @@ export function isOutOfBounds(
 }
 
 /** AABB point-in-rect: projectile center vs player hitbox. */
-export function aabbOverlap(
-  px: number,
-  py: number,
-  rx: number,
-  ry: number,
-  rw: number,
-  rh: number,
-): boolean {
+export function aabbOverlap(px: number, py: number, rx: number, ry: number, rw: number, rh: number): boolean {
   return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
 }
 
@@ -86,10 +69,7 @@ export interface HitResult {
  * - Apply per-weapon damage, track kills
  * - Rockets apply splash damage on hit
  */
-export function resolveProjectileHits(
-  projectiles: readonly Projectile[],
-  players: readonly PlayerState[],
-): HitResult {
+export function resolveProjectileHits(projectiles: readonly Projectile[], players: readonly PlayerState[]): HitResult {
   const hitProjectileIds = new Set<number>();
   let updatedPlayers = [...players];
   const kills: { killerId: number; victimId: number }[] = [];
@@ -105,9 +85,7 @@ export function resolveProjectileHits(
       if (!(p.stateFlags & PlayerStateFlag.Alive)) continue;
       if (p.stateFlags & PlayerStateFlag.Invincible) continue;
 
-      if (
-        aabbOverlap(proj.x, proj.y, p.x, p.y, PLAYER_WIDTH, PLAYER_HEIGHT)
-      ) {
+      if (aabbOverlap(proj.x, proj.y, p.x, p.y, PLAYER_WIDTH, PLAYER_HEIGHT)) {
         hitProjectileIds.add(proj.id);
         const damage = getProjectileDamage(proj);
         const newHealth = p.health - damage;
@@ -124,12 +102,7 @@ export function resolveProjectileHits(
 
         // Rocket splash damage on impact
         if (isRocket(proj)) {
-          const splash = applySplashDamage(
-            proj.x,
-            proj.y,
-            proj.ownerId,
-            updatedPlayers,
-          );
+          const splash = applySplashDamage(proj.x, proj.y, proj.ownerId, updatedPlayers);
           updatedPlayers = splash.players;
           kills.push(...splash.kills);
         }
@@ -139,9 +112,7 @@ export function resolveProjectileHits(
     }
   }
 
-  const remainingProjectiles = projectiles.filter(
-    (proj) => !hitProjectileIds.has(proj.id),
-  );
+  const remainingProjectiles = projectiles.filter((proj) => !hitProjectileIds.has(proj.id));
 
   return { remainingProjectiles, updatedPlayers, kills };
 }

@@ -51,40 +51,16 @@ pub fn arena() -> GameMap {
             },
         ],
         spawn_points: vec![
-            Vec2 {
-                x: 120.0,
-                y: 476.0,
-            },
-            Vec2 {
-                x: 840.0,
-                y: 476.0,
-            },
-            Vec2 {
-                x: 420.0,
-                y: 278.0,
-            },
-            Vec2 {
-                x: 480.0,
-                y: 178.0,
-            },
+            Vec2 { x: 120.0, y: 476.0 },
+            Vec2 { x: 840.0, y: 476.0 },
+            Vec2 { x: 420.0, y: 278.0 },
+            Vec2 { x: 480.0, y: 178.0 },
         ],
         weapon_spawn_points: vec![
-            Vec2 {
-                x: 193.0,
-                y: 378.0,
-            }, // on left lower platform
-            Vec2 {
-                x: 743.0,
-                y: 378.0,
-            }, // on right lower platform
-            Vec2 {
-                x: 468.0,
-                y: 278.0,
-            }, // on mid platform
-            Vec2 {
-                x: 468.0,
-                y: 476.0,
-            }, // on ground center
+            Vec2 { x: 193.0, y: 378.0 }, // on left lower platform
+            Vec2 { x: 743.0, y: 378.0 }, // on right lower platform
+            Vec2 { x: 468.0, y: 278.0 }, // on mid platform
+            Vec2 { x: 468.0, y: 476.0 }, // on ground center
         ],
     }
 }

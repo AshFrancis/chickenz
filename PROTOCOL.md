@@ -23,7 +23,7 @@ aimY: number        // -1, 0, or 1 (aim direction vertical)
 
 **Lobby Actions**
 ```
-type: "set_username" | "quickplay" | "create" | "join_room" | "join_code" | "leave" | "set_wallet"
+type: "set_username" | "quickplay" | "create" | "join_room" | "join_code" | "leave" | "set_wallet" | "list_rooms" | "add_bot"
 type: "create_tournament" | "join_tournament_code"
 ```
 

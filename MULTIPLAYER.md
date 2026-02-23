@@ -20,8 +20,8 @@ The server-authoritative multiplayer system is live with the following features:
 {
   "type": "input",
   "buttons": 5,
-  "aimX": 0.707,
-  "aimY": -0.707
+  "aimX": 1,
+  "aimY": -1
 }
 ```
 
@@ -92,4 +92,4 @@ create/quickplay → waiting (1/2) → matched (2/2) → playing → ended
 - Transcripts persisted to SQLite DB (survive room cleanup and server restarts)
 - Available via `GET /transcript/{roomId}` — tries in-memory first, falls back to DB
 - Match history stored in SQLite with ELO rankings, proof status, wallet verification
-- Bot matches: auto-join casual quickplay after 20s if no human joins
+- Bot matches: click "Play vs Bot" to add a bot opponent to casual games

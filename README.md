@@ -4,8 +4,6 @@ Competitive 2D platformer shooter with ZK-provable game outcomes settled on Stel
 
 Two players compete in best-of-3 rounds (30 seconds each, 1 life per round). Five weapons spawn on the map (Shotgun, Rocket, Sniper, SMG, Pistol default). A sudden death mechanic closes the arena walls at 20s. The ZK proof replays **both winning rounds** inside RISC Zero's zkVM and cryptographically verifies the match result on-chain — no trusted server needed.
 
-Built for [Stellar Hacks: ZK Gaming](https://dorahacks.io/hackathon/stellar-hacks-zk-gaming) hackathon.
-
 ## Quick Start (Local Development)
 
 ### Prerequisites
@@ -48,7 +46,7 @@ pnpm dev:server
 pnpm dev:client
 ```
 
-Open `http://localhost:5173` in two browser tabs to play against yourself. If no opponent joins within 20 seconds, a bot will automatically join casual games.
+Open `http://localhost:5173` in two browser tabs to play against yourself. Click "Play vs Bot" to add a bot opponent to casual games.
 
 ### 4. Run tests
 
@@ -85,9 +83,7 @@ services/prover/
   core/                 Rust fixed-point sim (i32, 52 tests, single source of truth)
   wasm/                 WASM build of core (used by client + server)
   guest/                RISC Zero guest — multi-round proof (replays 2 winning rounds)
-  chunk-guest/          Chunk prover (360 ticks per chunk, single-round)
-  match-guest/          Match composer (verifies chunk chain)
-  host/                 Orchestration (monolithic + chunked + Boundless modes)
+  host/                 Orchestration (monolithic + Boundless modes)
 contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
 ```
 
@@ -247,7 +243,7 @@ The 76-byte journal committed to the zkVM contains: `winner(i32) + round_wins([u
 | [MULTIPLAYER.md](MULTIPLAYER.md) | Netcode, prediction, room lifecycle |
 | [PROTOCOL.md](PROTOCOL.md) | WebSocket message types, missing-input rule |
 | [TRANSCRIPT.md](TRANSCRIPT.md) | Commitment chain, transcript integrity |
-| [DEV_ROADMAP.md](DEV_ROADMAP.md) | Hackathon sprint plan and progress |
+| [DEV_ROADMAP.md](DEV_ROADMAP.md) | Development roadmap and progress |
 
 ## License
 

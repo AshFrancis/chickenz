@@ -244,9 +244,7 @@ impl ProverOutput {
 
     pub fn from_journal_bytes(b: &[u8]) -> Self {
         assert!(b.len() >= PROVER_OUTPUT_WORDS * 4);
-        let u32_at = |off: usize| -> u32 {
-            u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-        };
+        let u32_at = |off: usize| -> u32 { u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]) };
         let hash_at = |start: usize| -> [u8; 32] {
             let mut h = [0u8; 32];
             h.copy_from_slice(&b[start..start + 32]);

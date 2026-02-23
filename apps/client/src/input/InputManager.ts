@@ -135,8 +135,8 @@ export class InputManager {
       if (stored) {
         const p = JSON.parse(stored);
         // Support migration from old formats (crouch → taunt, single-key → pair)
-        const migrate = (v: any, def: [string, string]): [string, string] => {
-          if (Array.isArray(v) && v.length === 2) return [v[0] ?? "", v[1] ?? ""];
+        const migrate = (v: unknown, def: [string, string]): [string, string] => {
+          if (Array.isArray(v) && v.length === 2) return [String(v[0] ?? ""), String(v[1] ?? "")];
           if (typeof v === "string") return [v, def[1]];
           return [...def];
         };

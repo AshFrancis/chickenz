@@ -12,10 +12,18 @@ const CHARACTER_NAMES = ["NINJA FROG", "MASK DUDE", "PINK MAN", "VIRTUAL GUY"];
 // ── Character preferences (home/away) ────────────────────────────────────────
 let homeCharacter = parseInt(localStorage.getItem("chickenz-home-char") ?? "0", 10);
 let awayCharacter = parseInt(localStorage.getItem("chickenz-away-char") ?? "1", 10);
-if (homeCharacter < 0 || homeCharacter >= NUM_CHARACTERS) homeCharacter = 0;
-if (awayCharacter < 0 || awayCharacter >= NUM_CHARACTERS) awayCharacter = 1;
+if (!Number.isFinite(homeCharacter) || homeCharacter < 0 || homeCharacter >= NUM_CHARACTERS) homeCharacter = 0;
+if (!Number.isFinite(awayCharacter) || awayCharacter < 0 || awayCharacter >= NUM_CHARACTERS) awayCharacter = 1;
 let pendingCharacter = homeCharacter; // character chosen for next match
-import { initWalletKit, tryReconnectWallet, connectWallet, disconnectWallet, getConnectedAddress, settleMatch, signChallenge } from "./stellar";
+import {
+  initWalletKit,
+  tryReconnectWallet,
+  connectWallet,
+  disconnectWallet,
+  getConnectedAddress,
+  settleMatch,
+  signChallenge,
+} from "./stellar";
 
 interface MatchRecord {
   id: string;
@@ -48,7 +56,6 @@ interface MatchRecord {
 }
 
 // Wallet verification state
-let walletVerified = false;
 
 // ── DOM elements ───────────────────────────────────────────────────────────────
 
@@ -73,16 +80,6 @@ const btnSaveUsername = document.getElementById("btn-save-username") as HTMLButt
 const settingsUsernameError = document.getElementById("settings-username-error") as HTMLDivElement;
 const muteBtn = document.getElementById("btn-mute") as HTMLButtonElement;
 const fullscreenBtn = document.getElementById("btn-fullscreen") as HTMLButtonElement;
-
-// Gate overlay elements
-const gateOverlay = document.getElementById("gate-overlay") as HTMLDivElement;
-const gateWalletSection = document.getElementById("gate-wallet-section") as HTMLDivElement;
-const gateStep2 = document.getElementById("gate-step2") as HTMLDivElement;
-const gateAddress = document.getElementById("gate-address") as HTMLDivElement;
-const gateUsernameInput = document.getElementById("gate-username-input") as HTMLInputElement;
-const gatePlayBtn = document.getElementById("gate-play-btn") as HTMLButtonElement;
-const gateError = document.getElementById("gate-error") as HTMLDivElement;
-const gateSubtitle = document.getElementById("gate-subtitle") as HTMLParagraphElement;
 
 // Lobby elements
 const lobbyOverlay = document.getElementById("lobby-overlay") as HTMLDivElement;
@@ -148,29 +145,67 @@ window.addEventListener("resize", () => {
 // ── Session state ──────────────────────────────────────────────────────────────
 
 let networkManager: NetworkManager | null = null;
-let onlineRoomId: string | null = null;
 let currentUsername = "";
 let currentMode: GameMode = "casual";
-let lastMatchMode: GameMode = "casual";
-let proofPollTimer: ReturnType<typeof setInterval> | null = null;
 let currentTournamentId: string | null = null;
 let tournamentSpectating = false;
 
 // Auto-detect server: same host in production, localhost in dev
 const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-const DEFAULT_SERVER = location.port === "5173" || location.port === "5174"
-  ? "ws://localhost:3000/ws"
-  : `${wsProto}//${location.host}/ws`;
+const DEFAULT_SERVER =
+  location.port === "5173" || location.port === "5174" ? "ws://localhost:3000/ws" : `${wsProto}//${location.host}/ws`;
 
 // ── Animal name generator ────────────────────────────────────────────────────
 
 const ANIMALS = [
-  "Moose", "Fox", "Cat", "Dog", "Lion", "Monkey", "Zebra", "Bear",
-  "Wolf", "Eagle", "Hawk", "Otter", "Panda", "Koala", "Raven", "Shark",
-  "Whale", "Tiger", "Cobra", "Viper", "Gecko", "Lemur", "Bison", "Crane",
-  "Heron", "Finch", "Robin", "Llama", "Goose", "Duck", "Deer", "Frog",
-  "Toad", "Crab", "Crow", "Dove", "Lynx", "Mole", "Moth", "Wasp",
-  "Wren", "Swan", "Yak", "Newt", "Puma", "Seal", "Slug", "Mink",
+  "Moose",
+  "Fox",
+  "Cat",
+  "Dog",
+  "Lion",
+  "Monkey",
+  "Zebra",
+  "Bear",
+  "Wolf",
+  "Eagle",
+  "Hawk",
+  "Otter",
+  "Panda",
+  "Koala",
+  "Raven",
+  "Shark",
+  "Whale",
+  "Tiger",
+  "Cobra",
+  "Viper",
+  "Gecko",
+  "Lemur",
+  "Bison",
+  "Crane",
+  "Heron",
+  "Finch",
+  "Robin",
+  "Llama",
+  "Goose",
+  "Duck",
+  "Deer",
+  "Frog",
+  "Toad",
+  "Crab",
+  "Crow",
+  "Dove",
+  "Lynx",
+  "Mole",
+  "Moth",
+  "Wasp",
+  "Wren",
+  "Swan",
+  "Yak",
+  "Newt",
+  "Puma",
+  "Seal",
+  "Slug",
+  "Mink",
 ];
 
 function generateAnimalName(): string {
@@ -214,9 +249,9 @@ function deferBGMStart() {
 
   // Init wallet kit and try silent reconnect in background (optional)
   initWalletKit();
-  tryReconnectWallet().then(() => {
-    updateWalletUI();
-  }).catch(() => {});
+  tryReconnectWallet()
+    .then(() => updateWalletUI())
+    .catch(() => updateWalletUI());
 }
 
 // Gate is no longer used for initial entry — users go straight to lobby
@@ -233,10 +268,39 @@ function truncateAddress(addr: string): string {
 let verifyInProgress: string | null = null; // prevent duplicate verify popups
 let lastVerifiedAddr: string | null = null;
 
+/** Try to revalidate using a stored token (no Freighter popup). */
+async function tryStoredToken(addr: string): Promise<boolean> {
+  if (!networkManager) return false;
+  try {
+    const raw = localStorage.getItem("chickenz-wallet-token");
+    if (!raw) return false;
+    const stored = JSON.parse(raw) as { address: string; token: string };
+    if (stored.address !== addr || !stored.token) return false;
+    const res = await fetch(`${networkManager.httpOrigin}/api/wallet/revalidate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: addr, token: stored.token }),
+    });
+    const { verified } = await res.json();
+    if (verified) {
+      lastVerifiedAddr = addr;
+      return true;
+    }
+    // Token rejected — clear stale entry
+    localStorage.removeItem("chickenz-wallet-token");
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Full verification: challenge → Freighter sign → server verify. */
 async function verifyWallet(addr: string): Promise<boolean> {
   if (!networkManager) return false;
-  // Already verified this address
+  // Already verified this session
   if (lastVerifiedAddr === addr) return true;
+  // Try stored token first (no popup)
+  if (await tryStoredToken(addr)) return true;
   // Already verifying this address
   if (verifyInProgress === addr) return false;
   verifyInProgress = addr;
@@ -258,8 +322,14 @@ async function verifyWallet(addr: string): Promise<boolean> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ address: addr, challenge: message, signature }),
     });
-    const { verified } = await verifyRes.json();
-    if (verified) lastVerifiedAddr = addr;
+    const { verified, token } = await verifyRes.json();
+    if (verified) {
+      lastVerifiedAddr = addr;
+      // Persist token so future page loads skip Freighter
+      if (token) {
+        localStorage.setItem("chickenz-wallet-token", JSON.stringify({ address: addr, token }));
+      }
+    }
     return !!verified;
   } catch (err) {
     console.error("[wallet] Verification failed:", err);
@@ -277,34 +347,33 @@ function updateWalletUI() {
     walletBtn.classList.add("btn-warn");
     walletBtn.classList.remove("btn-primary");
     modeRankedBtn.classList.remove("locked");
-    // Attempt wallet verification
-    verifyWallet(addr).then((verified) => {
-      walletVerified = verified;
-      networkManager?.sendSetWallet(addr, verified);
-      if (verified) {
-        topBarAddress.innerHTML = `${truncateAddress(addr)} <span style="color:#66bb6a;font-size:10px">&#10003;</span>`;
-      }
-    }).catch(() => {
-      networkManager?.sendSetWallet(addr);
-    });
+    localStorage.setItem("chickenz-wallet-address", addr);
+    // Notify server of wallet address (verification deferred until ranked play)
+    networkManager?.sendSetWallet(addr);
   } else {
     topBarAddress.textContent = "";
     walletBtn.textContent = "Connect Stellar Wallet";
     walletBtn.classList.remove("btn-warn");
     walletBtn.classList.add("btn-primary");
-    walletVerified = false;
+    // Notify server to clear wallet address and verified state
+    networkManager?.sendSetWallet("");
+    lastVerifiedAddr = null;
+    localStorage.removeItem("chickenz-wallet-token");
+    localStorage.removeItem("chickenz-wallet-address");
+    // Leave ranked room/lobby if wallet disconnected
     if (currentMode === "ranked") {
+      networkManager?.sendLeave();
       setMode("casual");
     }
     modeRankedBtn.classList.add("locked");
   }
 }
 
-walletBtn.addEventListener("click", async () => {
+walletBtn.addEventListener("click", () => {
   if (getConnectedAddress()) {
     disconnectWallet();
   } else {
-    await connectWallet();
+    void connectWallet();
   }
 });
 
@@ -336,7 +405,8 @@ modeCasualBtn.addEventListener("click", () => {
 });
 
 modeRankedBtn.addEventListener("click", () => {
-  if (!getConnectedAddress()) return;
+  const addr = getConnectedAddress();
+  if (!addr) return;
   setMode("ranked");
 });
 
@@ -352,12 +422,12 @@ function buildSettingsFrame() {
   const COLS = 22;
   const TILE = 16;
   // Frame indices: (col, row) → row * 22 + col
-  const TOP_L = 4 * COLS + 12;   // (12,4)
-  const TOP_M = 4 * COLS + 13;   // (13,4)
-  const TOP_R = 4 * COLS + 14;   // (14,4)
-  const SIDE_T = 4 * COLS + 15;  // (15,4)
-  const SIDE_M = 5 * COLS + 15;  // (15,5)
-  const SIDE_B = 6 * COLS + 15;  // (15,6)
+  const TOP_L = 4 * COLS + 12; // (12,4)
+  const TOP_M = 4 * COLS + 13; // (13,4)
+  const TOP_R = 4 * COLS + 14; // (14,4)
+  const SIDE_T = 4 * COLS + 15; // (15,4)
+  const SIDE_M = 5 * COLS + 15; // (15,5)
+  const SIDE_B = 6 * COLS + 15; // (15,6)
 
   function makeTile(frameIdx: number, x: number, y: number): HTMLDivElement {
     const d = document.createElement("div");
@@ -557,77 +627,89 @@ document.querySelectorAll<HTMLButtonElement>(".key-btn").forEach((btn) => {
   });
 });
 
-window.addEventListener("keydown", (e) => {
-  if (!listeningBtn || !listeningAction) return;
-  e.preventDefault();
-  e.stopPropagation();
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!listeningBtn || !listeningAction) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-  // Ignore modifier-only keys
-  if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
+    // Ignore modifier-only keys
+    if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
 
-  const im = getInputManager();
-  if (!im) return;
+    const im = getInputManager();
+    if (!im) return;
 
-  const bindings = im.getBindings();
-  const newCode = e.code;
-  const actions: (keyof KeyBindings)[] = ["left", "right", "jump", "shoot", "taunt"];
+    const bindings = im.getBindings();
+    const newCode = e.code;
+    const actions: (keyof KeyBindings)[] = ["left", "right", "jump", "shoot", "taunt"];
 
-  // Duplicate detection: if another slot already has this key, clear it
-  for (const action of actions) {
-    for (let s = 0; s < 2; s++) {
-      if (bindings[action][s] === newCode) {
-        // Don't clear the slot we're about to set
-        if (action === listeningAction && s === listeningSlot) continue;
-        bindings[action][s] = "";
+    // Duplicate detection: if another slot already has this key, clear it
+    for (const action of actions) {
+      for (let s = 0; s < 2; s++) {
+        if (bindings[action][s] === newCode) {
+          // Don't clear the slot we're about to set
+          if (action === listeningAction && s === listeningSlot) continue;
+          bindings[action][s] = "";
+        }
       }
     }
-  }
 
-  bindings[listeningAction as keyof KeyBindings][listeningSlot] = newCode;
-  im.setBindings(bindings);
+    bindings[listeningAction as keyof KeyBindings][listeningSlot] = newCode;
+    im.setBindings(bindings);
 
-  listeningBtn.classList.remove("listening");
-  listeningBtn = null;
-  listeningAction = null;
-  refreshKeyBindingUI();
-}, { capture: true });
+    listeningBtn.classList.remove("listening");
+    listeningBtn = null;
+    listeningAction = null;
+    refreshKeyBindingUI();
+  },
+  { capture: true },
+);
 
 // Capture mouse buttons during rebinding
-window.addEventListener("mousedown", (e) => {
-  if (!listeningBtn || !listeningAction) return;
-  e.preventDefault();
-  e.stopPropagation();
+window.addEventListener(
+  "mousedown",
+  (e) => {
+    if (!listeningBtn || !listeningAction) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-  const im = getInputManager();
-  if (!im) return;
+    const im = getInputManager();
+    if (!im) return;
 
-  const bindings = im.getBindings();
-  const newCode = `Mouse${e.button}`;
-  const actions: (keyof KeyBindings)[] = ["left", "right", "jump", "shoot", "taunt"];
+    const bindings = im.getBindings();
+    const newCode = `Mouse${e.button}`;
+    const actions: (keyof KeyBindings)[] = ["left", "right", "jump", "shoot", "taunt"];
 
-  for (const action of actions) {
-    for (let s = 0; s < 2; s++) {
-      if (bindings[action][s] === newCode) {
-        if (action === listeningAction && s === listeningSlot) continue;
-        bindings[action][s] = "";
+    for (const action of actions) {
+      for (let s = 0; s < 2; s++) {
+        if (bindings[action][s] === newCode) {
+          if (action === listeningAction && s === listeningSlot) continue;
+          bindings[action][s] = "";
+        }
       }
     }
-  }
 
-  bindings[listeningAction as keyof KeyBindings][listeningSlot] = newCode;
-  im.setBindings(bindings);
+    bindings[listeningAction as keyof KeyBindings][listeningSlot] = newCode;
+    im.setBindings(bindings);
 
-  listeningBtn.classList.remove("listening");
-  listeningBtn = null;
-  listeningAction = null;
-  refreshKeyBindingUI();
+    listeningBtn.classList.remove("listening");
+    listeningBtn = null;
+    listeningAction = null;
+    refreshKeyBindingUI();
 
-  // Eat the follow-up click so it doesn't re-enter listen mode on the button
-  window.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    ev.preventDefault();
-  }, { capture: true, once: true });
-}, { capture: true });
+    // Eat the follow-up click so it doesn't re-enter listen mode on the button
+    window.addEventListener(
+      "click",
+      (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+      },
+      { capture: true, once: true },
+    );
+  },
+  { capture: true },
+);
 
 btnResetKeys.addEventListener("click", () => {
   const im = getInputManager();
@@ -656,8 +738,10 @@ sliderSFX.addEventListener("input", () => {
 
 // ── Mute All ─────────────────────────────────────────────────────────────────
 
-const MUTE_ICON_ON = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/>';
-const MUTE_ICON_OFF = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
+const MUTE_ICON_ON =
+  '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/>';
+const MUTE_ICON_OFF =
+  '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
 
 function updateMuteIcon(muted: boolean) {
   const svg = document.getElementById("mute-icon");
@@ -699,9 +783,9 @@ checkDynamicZoom.addEventListener("change", () => {
 
 fullscreenBtn.addEventListener("click", () => {
   if (document.fullscreenElement) {
-    document.exitFullscreen();
+    void document.exitFullscreen();
   } else {
-    document.documentElement.requestFullscreen();
+    void document.documentElement.requestFullscreen();
   }
   fullscreenBtn.blur();
 });
@@ -750,7 +834,7 @@ document.getElementById("btn-warmup-back")!.addEventListener("click", () => {
 });
 
 document.getElementById("btn-add-bot")!.addEventListener("click", () => {
-  networkManager?.send({ type: "add_bot" });
+  networkManager?.sendAddBot();
 });
 
 document.getElementById("btn-tournament-back")!.addEventListener("click", () => {
@@ -858,9 +942,10 @@ function renderRoomList(rooms: RoomInfo[]) {
 function createRoomElement(room: RoomInfo): HTMLDivElement {
   const el = document.createElement("div");
   el.className = "room-item";
-  const modeBadge = room.mode === "ranked"
-    ? `<span class="mode-badge ranked">Ranked</span>`
-    : `<span class="mode-badge casual">Casual</span>`;
+  const modeBadge =
+    room.mode === "ranked"
+      ? `<span class="mode-badge ranked">Ranked</span>`
+      : `<span class="mode-badge casual">Casual</span>`;
   el.innerHTML = `
     <span>
       <span class="room-name">${escapeHtml(room.name)}</span>
@@ -877,7 +962,7 @@ function createRoomElement(room: RoomInfo): HTMLDivElement {
   if (joinBtn) {
     joinBtn.addEventListener("click", () => {
       if (!networkManager?.connected) return;
-    
+
       pendingCharacter = homeCharacter;
       networkManager.sendJoinRoom(room.id, pendingCharacter, awayCharacter);
       lobbyStatus.textContent = "Joining...";
@@ -964,9 +1049,10 @@ function renderMatchHistory(matches: MatchRecord[]) {
     const el = document.createElement("div");
     el.className = "match-item";
     const ago = formatTimeAgo(m.timestamp);
-    const modeBadge = m.mode === "ranked"
-      ? `<span class="mode-badge ranked">Ranked</span>`
-      : `<span class="mode-badge casual">Casual</span>`;
+    const modeBadge =
+      m.mode === "ranked"
+        ? `<span class="mode-badge ranked">Ranked</span>`
+        : `<span class="mode-badge casual">Casual</span>`;
     const showSettle = m.mode === "ranked" && m.proofStatus === "verified" && getConnectedAddress();
     el.innerHTML = `
       <div>
@@ -1000,7 +1086,7 @@ function renderMatchHistory(matches: MatchRecord[]) {
     if (settleBtn) {
       settleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        handleSettleMatch(m.id);
+        void handleSettleMatch(m.id);
       });
     }
     // Click row to open detail
@@ -1112,22 +1198,26 @@ function formatDuration(startMs: number, endMs: number): string {
 }
 
 function explorerTxUrl(hash: string): string {
-  return `https://stellar.expert/explorer/testnet/tx/${hash}`;
+  return `https://stellar.expert/explorer/testnet/tx/${encodeURIComponent(hash)}`;
 }
 
 function explorerAccountUrl(addr: string): string {
-  return `https://stellar.expert/explorer/testnet/account/${addr}`;
+  return `https://stellar.expert/explorer/testnet/account/${encodeURIComponent(addr)}`;
 }
 
 function renderDataAvailability(m: MatchRecord): string {
   const rows: string[] = [];
   if (m.transcriptCid) {
     const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${m.transcriptCid}`;
-    rows.push(`<div class="dpg-row"><span class="dpg-label">Transcript</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">IPFS: ${m.transcriptCid.slice(0, 12)}...</a></span></div>`);
+    rows.push(
+      `<div class="dpg-row"><span class="dpg-label">Transcript</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">IPFS: ${escapeHtml(m.transcriptCid.slice(0, 12))}...</a></span></div>`,
+    );
   }
   if (m.boundlessRequestId) {
     const boundlessUrl = `https://sepolia.etherscan.io/address/0xB74800f8E921F1a5b62B657b42DEa2867bfD4Ff3#events`;
-    rows.push(`<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value"><a href="${boundlessUrl}" target="_blank" rel="noopener">${m.boundlessRequestId.slice(0, 16)}...</a></span></div>`);
+    rows.push(
+      `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value"><a href="${boundlessUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</a></span></div>`,
+    );
   }
   if (rows.length === 0) return "";
   return `
@@ -1142,9 +1232,10 @@ function renderDataAvailability(m: MatchRecord): string {
 
 function renderMatchDetail(m: MatchRecord) {
   const winnerName = m.winner === 0 ? m.player1 : m.winner === 1 ? m.player2 : "Draw";
-  const modeBadge = m.mode === "ranked"
-    ? `<span class="mode-badge ranked">Ranked</span>`
-    : `<span class="mode-badge casual">Casual</span>`;
+  const modeBadge =
+    m.mode === "ranked"
+      ? `<span class="mode-badge ranked">Ranked</span>`
+      : `<span class="mode-badge casual">Casual</span>`;
 
   // Players section
   const renderPlayer = (name: string, wallet: string | undefined, verified: boolean | undefined, isWinner: boolean) => {
@@ -1171,24 +1262,39 @@ function renderMatchDetail(m: MatchRecord) {
 
   // On-chain start_match / start_game happen right after match starts
   if (m.mode === "ranked" && m.startTxHash) {
-    addStep("start_match TX", m.matchStartTime,
-      `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`);
-    addStep("start_game TX", m.matchStartTime,
-      `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+    addStep(
+      "start_match TX",
+      m.matchStartTime,
+      `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`,
+    );
+    addStep(
+      "start_game TX",
+      m.matchStartTime,
+      `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`,
+    );
   }
 
   if (m.timestamp) {
-    const duration = m.matchStartTime ? `<span class="tl-duration">${formatDuration(m.matchStartTime, m.timestamp)}</span>` : "";
+    const duration = m.matchStartTime
+      ? `<span class="tl-duration">${formatDuration(m.matchStartTime, m.timestamp)}</span>`
+      : "";
     addStep("Match Ended", m.timestamp, duration);
   }
 
   if (m.mode === "ranked") {
-    addStep("Proof Requested", m.proofRequestedAt,
-      "", m.proofRequestedAt ? "done" : (m.proofStatus !== "none" ? "active" : "pending"));
+    addStep(
+      "Proof Requested",
+      m.proofRequestedAt,
+      "",
+      m.proofRequestedAt ? "done" : m.proofStatus !== "none" ? "active" : "pending",
+    );
 
     if (m.proofCompletedAt) {
-      const proveDur = m.proofRequestedAt ? `<span class="tl-duration">${formatDuration(m.proofRequestedAt, m.proofCompletedAt)}</span>` : "";
-      const sourceLabel = m.proofSource === "worker" ? "Self-Hosted" : m.proofSource === "boundless" ? "Boundless" : m.proofSource;
+      const proveDur = m.proofRequestedAt
+        ? `<span class="tl-duration">${formatDuration(m.proofRequestedAt, m.proofCompletedAt)}</span>`
+        : "";
+      const sourceLabel =
+        m.proofSource === "worker" ? "Self-Hosted" : m.proofSource === "boundless" ? "Boundless" : m.proofSource;
       const sourceBadge = sourceLabel ? `<span class="tl-badge">${escapeHtml(sourceLabel)}</span>` : "";
       addStep("Proof Generated", m.proofCompletedAt, `${sourceBadge}${proveDur}`);
     } else if (m.proofStatus === "proving") {
@@ -1197,10 +1303,16 @@ function renderMatchDetail(m: MatchRecord) {
 
     // On-chain settle_match / end_game happen after proof
     if (m.settleTxHash) {
-      addStep("settle_match TX", m.proofCompletedAt,
-        `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`);
-      addStep("end_game TX", m.proofCompletedAt,
-        `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`);
+      addStep(
+        "settle_match TX",
+        m.proofCompletedAt,
+        `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`,
+      );
+      addStep(
+        "end_game TX",
+        m.proofCompletedAt,
+        `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`,
+      );
     } else if (m.proofStatus === "settled") {
       addStep("settle_match TX", undefined, "", "done");
       addStep("end_game TX", undefined, "", "done");
@@ -1309,7 +1421,7 @@ function renderBracket(bracket: TournamentBracket, currentMatchIndex?: number) {
     else if (currentMatchIndex !== undefined && m.matchIndex === currentMatchIndex) el.classList.add("current");
 
     // Determine player names for this match
-    let p1 = "TBD", p2 = "TBD";
+    let p1: string, p2: string;
     if (m.matchIndex < 2) {
       // Semi-finals: fixed slots
       const slots = m.matchIndex === 0 ? [0, 1] : [2, 3];
@@ -1319,17 +1431,17 @@ function renderBracket(bracket: TournamentBracket, currentMatchIndex?: number) {
       // Winners final
       const w0 = bracket.matches[0]?.winnerSlot ?? -1;
       const w1 = bracket.matches[1]?.winnerSlot ?? -1;
-      p1 = w0 >= 0 ? (bracket.playerNames[w0] || "???") : "TBD";
-      p2 = w1 >= 0 ? (bracket.playerNames[w1] || "???") : "TBD";
+      p1 = w0 >= 0 ? bracket.playerNames[w0] || "???" : "TBD";
+      p2 = w1 >= 0 ? bracket.playerNames[w1] || "???" : "TBD";
     } else {
       // Losers final
       const l0 = bracket.matches[0]?.loserSlot ?? -1;
       const l1 = bracket.matches[1]?.loserSlot ?? -1;
-      p1 = l0 >= 0 ? (bracket.playerNames[l0] || "???") : "TBD";
-      p2 = l1 >= 0 ? (bracket.playerNames[l1] || "???") : "TBD";
+      p1 = l0 >= 0 ? bracket.playerNames[l0] || "???" : "TBD";
+      p2 = l1 >= 0 ? bracket.playerNames[l1] || "???" : "TBD";
     }
 
-    const winnerName = m.winnerSlot >= 0 ? (bracket.playerNames[m.winnerSlot] || "???") : "";
+    const winnerName = m.winnerSlot >= 0 ? bracket.playerNames[m.winnerSlot] || "???" : "";
     el.innerHTML = `
       <span class="match-label">${escapeHtml(m.matchLabel)}</span>
       <span class="match-players-text">${escapeHtml(p1)} vs ${escapeHtml(p2)}</span>
@@ -1357,8 +1469,6 @@ function connectToServer(url: string) {
     networkManager.disconnect();
   }
 
-  lobbyStatus.textContent = "Connecting...";
-
   networkManager = new NetworkManager({
     onLobby(rooms) {
       renderRoomList(rooms);
@@ -1367,20 +1477,26 @@ function connectToServer(url: string) {
     onWaiting(roomId, roomName, joinCode) {
       // Suppress when in tournament (GameRoom sends "waiting" internally)
       if (currentTournamentId) return;
+      // Hide bot button in ranked mode
+      const botBtn = document.getElementById("btn-add-bot");
+      if (botBtn) botBtn.style.display = currentMode === "ranked" ? "none" : "";
       const scene = getGameScene();
       if (scene) {
-        scene.startWarmup(joinCode, currentUsername, () => {
-          closeLobby();
-          applyAudioSettings(scene);
-        }, pendingCharacter);
+        scene.startWarmup(
+          joinCode,
+          currentUsername,
+          () => {
+            closeLobby();
+            applyAudioSettings(scene);
+          },
+          pendingCharacter,
+        );
       }
     },
 
     onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode, characters) {
       // Suppress when in tournament (tournament_match_start handles this)
       if (currentTournamentId) return;
-      onlineRoomId = roomId;
-      lastMatchMode = mode;
 
       const scene = getGameScene();
       if (!scene) return;
@@ -1389,7 +1505,15 @@ function connectToServer(url: string) {
       // Don't close lobby yet — let the transition overlay cover the screen first
       // to prevent a flash of the uninitialized game scene
       const needCloseLobby = !scene.isWarmup;
-      scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters, needCloseLobby ? closeLobby : undefined);
+      scene.startOnlineMatch(
+        playerId,
+        seed,
+        usernames,
+        mapIndex,
+        totalRounds,
+        characters,
+        needCloseLobby ? closeLobby : undefined,
+      );
       applyAudioSettings(scene);
       scene.onLocalInput = (input, tick) => {
         networkManager?.sendInput(input, tick);
@@ -1412,11 +1536,10 @@ function connectToServer(url: string) {
       if (scene) scene.startNewRound(seed, mapIndex, round);
     },
 
-    onEnded(winner, scores, roundWins, roomId, mode) {
+    onEnded(winner, _scores, _roundWins, _roomId, _mode) {
       // Suppress when in tournament (tournament_match_end handles this)
       if (currentTournamentId) return;
-      onlineRoomId = roomId;
-      lastMatchMode = mode;
+
       const scene = getGameScene();
       if (scene) scene.endOnlineMatch(winner);
 
@@ -1436,9 +1559,8 @@ function connectToServer(url: string) {
     },
 
     onDisconnect() {
-      lobbyStatus.textContent = "Disconnected from server.";
-      setLobbyButtons(true);
-      networkManager = null;
+      lobbyStatus.textContent = "Disconnected from server. Reconnecting...";
+      setLobbyButtons(false);
       // Clean up tournament state
       if (currentTournamentId) {
         hideAllTournamentOverlays();
@@ -1456,9 +1578,12 @@ function connectToServer(url: string) {
       hideAllTournamentOverlays();
       tournamentOverlay.classList.add("visible");
       tournamentCode.textContent = joinCode;
-      tournamentStatus.textContent = players.length < 4
-        ? `Waiting for players... (${players.length}/4)`
-        : "Starting tournament...";
+      tournamentStatus.textContent =
+        status === "playing"
+          ? "Tournament in progress..."
+          : status === "ended"
+            ? "Tournament ended"
+            : `Waiting for players... (${players.length}/4)`;
       tournamentPlayers.innerHTML = "";
       for (let i = 0; i < 4; i++) {
         const slot = document.createElement("div");
@@ -1519,7 +1644,7 @@ function connectToServer(url: string) {
       renderBracket(bracket, matchIndex + 1); // highlight next match
     },
 
-    onTournamentEnd(standings, bracket) {
+    onTournamentEnd(standings, _bracket) {
       const scene = getGameScene();
       if (scene) {
         if (tournamentSpectating) scene.stopSpectating();
@@ -1556,34 +1681,71 @@ function connectToServer(url: string) {
     }
   }, 100);
 
-  // Safety timeout: stop polling after 10s
-  setTimeout(() => clearInterval(waitForConnect), 10000);
+  // Safety timeout: stop polling after 10s and show error
+  setTimeout(() => {
+    clearInterval(waitForConnect);
+    if (!networkManager?.connected) {
+      lobbyStatus.textContent = "Could not connect to server. Check your connection and try again.";
+      setLobbyButtons(true);
+    }
+  }, 10000);
 }
 
 // ── Button handlers ────────────────────────────────────────────────────────────
 
+/** Ensure wallet is verified before a ranked action. Returns true if OK to proceed. */
+async function ensureRankedReady(): Promise<boolean> {
+  if (currentMode !== "ranked") return true;
+  const addr = getConnectedAddress();
+  if (!addr) {
+    lobbyStatus.textContent = "Connect a wallet to play ranked.";
+    return false;
+  }
+  if (lastVerifiedAddr === addr) return true;
+  lobbyStatus.textContent = "Verifying wallet...";
+  setLobbyButtons(false);
+  const ok = await verifyWallet(addr);
+  setLobbyButtons(true);
+  if (ok) {
+    lobbyStatus.textContent = "";
+  } else {
+    lobbyStatus.textContent = "Wallet verification failed. Try again or switch to Casual.";
+    setLobbyButtons(true);
+  }
+  return ok;
+}
+
 quickplayBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
-  pendingCharacter = homeCharacter;
-  networkManager.sendQuickplay(currentMode, pendingCharacter, awayCharacter);
-  lobbyStatus.textContent = `Finding a ${currentMode} match...`;
-  setLobbyButtons(false);
+  void ensureRankedReady().then((ok) => {
+    if (!ok || !networkManager?.connected) return;
+    pendingCharacter = homeCharacter;
+    networkManager.sendQuickplay(currentMode, pendingCharacter, awayCharacter);
+    lobbyStatus.textContent = `Finding a ${currentMode} match...`;
+    setLobbyButtons(false);
+  });
 });
 
 createPublicBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
-  pendingCharacter = homeCharacter;
-  networkManager.sendCreate(false, currentMode, pendingCharacter, awayCharacter);
-  lobbyStatus.textContent = `Creating ${currentMode} public match...`;
-  setLobbyButtons(false);
+  void ensureRankedReady().then((ok) => {
+    if (!ok || !networkManager?.connected) return;
+    pendingCharacter = homeCharacter;
+    networkManager.sendCreate(false, currentMode, pendingCharacter, awayCharacter);
+    lobbyStatus.textContent = `Creating ${currentMode} public match...`;
+    setLobbyButtons(false);
+  });
 });
 
 createPrivateBtn.addEventListener("click", () => {
   if (!networkManager?.connected) return;
-  pendingCharacter = homeCharacter;
-  networkManager.sendCreate(true, currentMode, pendingCharacter, awayCharacter);
-  lobbyStatus.textContent = `Creating ${currentMode} private match...`;
-  setLobbyButtons(false);
+  void ensureRankedReady().then((ok) => {
+    if (!ok || !networkManager?.connected) return;
+    pendingCharacter = homeCharacter;
+    networkManager.sendCreate(true, currentMode, pendingCharacter, awayCharacter);
+    lobbyStatus.textContent = `Creating ${currentMode} private match...`;
+    setLobbyButtons(false);
+  });
 });
 
 joinCodeBtn.addEventListener("click", () => {
@@ -1614,35 +1776,6 @@ createTournamentBtn.addEventListener("click", () => {
 
 // ── Settlement Flow (Ranked) ─────────────────────────────────────────────────
 
-function startProofPolling(matchId: string) {
-  if (proofPollTimer) clearInterval(proofPollTimer);
-  if (!networkManager) return;
-  const origin = networkManager.httpOrigin;
-
-  proofPollTimer = setInterval(async () => {
-    try {
-      const res = await fetch(`${origin}/api/matches/${matchId}/status`);
-      const data = await res.json();
-      if (data.proofStatus === "verified" || data.proofStatus === "settled") {
-        if (proofPollTimer) clearInterval(proofPollTimer);
-        proofPollTimer = null;
-        // Refresh match history to show updated status
-        if (activeTab === "history") fetchMatchHistory();
-      }
-    } catch {
-      // Network error, keep polling
-    }
-  }, 10000);
-
-  // Stop polling after 45 minutes
-  setTimeout(() => {
-    if (proofPollTimer) {
-      clearInterval(proofPollTimer);
-      proofPollTimer = null;
-    }
-  }, 45 * 60 * 1000);
-}
-
 async function handleSettleMatch(matchId: string) {
   if (!networkManager) return;
   const origin = networkManager.httpOrigin;
@@ -1669,7 +1802,7 @@ async function handleSettleMatch(matchId: string) {
     }
     const detail = await detailRes.json();
     const numericId = detail.sessionId as number;
-    if (numericId == null) {
+    if (numericId === null || numericId === undefined) {
       lobbyStatus.textContent = "Session ID not available.";
       return;
     }
@@ -1684,10 +1817,16 @@ async function handleSettleMatch(matchId: string) {
     const seal = hexToBytes(proof.seal);
     const journal = hexToBytes(proof.journal);
 
-    await settleMatch(numericId, seal, journal);
+    const txHash = await settleMatch(numericId, seal, journal);
 
-    // Notify server
-    await fetch(`${origin}/api/matches/${matchId}/settle`, { method: "POST" });
+    // Notify server with the on-chain tx hash
+    if (txHash) {
+      await fetch(`${origin}/api/matches/${matchId}/settle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ txHash }),
+      });
+    }
     lobbyStatus.textContent = "Match settled on-chain!";
     if (activeTab === "history") fetchMatchHistory();
   } catch (err) {

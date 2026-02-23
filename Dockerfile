@@ -1,14 +1,14 @@
 FROM oven/bun:1 AS builder
 WORKDIR /app
 
-# Copy workspace config
+# Copy workspace config and lockfiles
 COPY package.json pnpm-lock.yaml ./
 COPY packages/sim/package.json packages/sim/
 COPY apps/client/package.json apps/client/
 COPY services/server/package.json services/server/
 
-# Install dependencies
-RUN bun install --frozen-lockfile
+# Install dependencies (bun can read pnpm-lock.yaml)
+RUN bun install
 
 # Copy source
 COPY packages/sim packages/sim
@@ -25,17 +25,21 @@ RUN cd apps/client && bun run build
 FROM oven/bun:1
 WORKDIR /app
 
+# Run as non-root user
+RUN adduser --disabled-password --gecos "" chickenz
+USER chickenz
+
 # Copy sim (pure TS, zero deps)
-COPY --from=builder /app/packages/sim packages/sim
+COPY --from=builder --chown=chickenz /app/packages/sim packages/sim
 
 # Copy server source
-COPY --from=builder /app/services/server services/server
+COPY --from=builder --chown=chickenz /app/services/server services/server
 
 # Copy WASM pkg (server loads from services/prover/wasm/pkg/)
-COPY --from=builder /app/services/prover/wasm/pkg services/prover/wasm/pkg
+COPY --from=builder --chown=chickenz /app/services/prover/wasm/pkg services/prover/wasm/pkg
 
 # Copy built client into server's public dir
-COPY --from=builder /app/apps/client/dist services/server/public
+COPY --from=builder --chown=chickenz /app/apps/client/dist services/server/public
 
 # Symlink workspace package (sim has zero npm deps, no install needed)
 RUN mkdir -p node_modules/@chickenz && ln -s /app/packages/sim node_modules/@chickenz/sim

@@ -1,15 +1,6 @@
-import type {
-  GameState,
-  PlayerState,
-  Projectile,
-  PlayerInput,
-  InputMap,
-  MatchConfig,
-  PlayerId,
-} from "./types";
+import type { GameState, PlayerState, Projectile, PlayerInput, InputMap, MatchConfig, PlayerId } from "./types";
 import { NULL_INPUT, Button, PlayerStateFlag } from "./types";
 import {
-  SHOOT_COOLDOWN,
   RESPAWN_TICKS,
   INVINCIBLE_TICKS,
   MAX_HEALTH,
@@ -28,11 +19,7 @@ import {
   JUMP_VELOCITY,
 } from "./constants";
 import { applyPlayerInput, applyGravity, moveAndCollide } from "./physics";
-import {
-  moveProjectile,
-  isOutOfBounds,
-  resolveProjectileHits,
-} from "./projectiles";
+import { moveProjectile, isOutOfBounds, resolveProjectileHits } from "./projectiles";
 import { prngIntRange } from "./prng";
 import {
   tickPickupTimers,
@@ -64,15 +51,10 @@ import {
  * 15. Tick pickup respawn timers
  * 16. Advance tick
  */
-export function step(
-  prev: GameState,
-  inputs: InputMap,
-  prevInputs: InputMap,
-  config: MatchConfig,
-): GameState {
+export function step(prev: GameState, inputs: InputMap, prevInputs: InputMap, config: MatchConfig): GameState {
   // 0. Match over or death linger — winner can still move, projectiles travel, skip combat
   if (prev.matchOver || prev.deathLingerTimer > 0) {
-    let deathLingerTimer = prev.deathLingerTimer > 0 ? prev.deathLingerTimer - 1 : 0;
+    const deathLingerTimer = prev.deathLingerTimer > 0 ? prev.deathLingerTimer - 1 : 0;
     const matchOver = prev.matchOver || deathLingerTimer <= 0;
 
     // Winner movement
@@ -92,20 +74,18 @@ export function step(
     }
 
     // Projectiles keep moving, removed on collision/expiry/OOB
-    const projectiles = prev.projectiles
-      .map(moveProjectile)
-      .filter((proj) => {
-        if (proj.lifetime <= 0) return false;
-        if (isOutOfBounds(proj, config.map, prev.arenaLeft, prev.arenaRight)) return false;
-        // Platform collision
-        for (const plat of config.map.platforms) {
-          if (proj.x >= plat.x && proj.x <= plat.x + plat.width &&
-              proj.y >= plat.y - 4 && proj.y <= plat.y + plat.height) return false;
-        }
-        if (proj.x <= prev.arenaLeft || proj.x >= prev.arenaRight) return false;
-        if (proj.y <= 0 || proj.y >= config.map.height) return false;
-        return true;
-      });
+    const projectiles = prev.projectiles.map(moveProjectile).filter((proj) => {
+      if (proj.lifetime <= 0) return false;
+      if (isOutOfBounds(proj, config.map, prev.arenaLeft, prev.arenaRight)) return false;
+      // Platform collision
+      for (const plat of config.map.platforms) {
+        if (proj.x >= plat.x && proj.x <= plat.x + plat.width && proj.y >= plat.y - 4 && proj.y <= plat.y + plat.height)
+          return false;
+      }
+      if (proj.x <= prev.arenaLeft || proj.x >= prev.arenaRight) return false;
+      if (proj.y <= 0 || proj.y >= config.map.height) return false;
+      return true;
+    });
 
     return { ...prev, players: lingerPlayers, projectiles, tick: prev.tick + 1, matchOver, deathLingerTimer };
   }
@@ -138,10 +118,7 @@ export function step(
 
   // Tick invincibility
   players = players.map((p) => {
-    if (
-      p.stateFlags & PlayerStateFlag.Alive &&
-      p.stateFlags & PlayerStateFlag.Invincible
-    ) {
+    if (p.stateFlags & PlayerStateFlag.Alive && p.stateFlags & PlayerStateFlag.Invincible) {
       const newTimer = p.respawnTimer - 1;
       if (newTimer <= 0) {
         return {
@@ -174,7 +151,7 @@ export function step(
   });
 
   // 4. Apply gravity (skip riders — they ride the victim)
-  players = players.map((p) => p.stompingOn !== null ? p : applyGravity(p));
+  players = players.map((p) => (p.stompingOn !== null ? p : applyGravity(p)));
 
   // 5. Move + collide (skip riders — they're positioned by stomp logic)
   players = players.map((p) => {
@@ -186,7 +163,6 @@ export function step(
   // 5b. Stomp mechanic — detect, attach, damage, shake off
   const stompKills: { killerId: number; victimId: number }[] = [];
   {
-
     for (let a = 0; a < players.length; a++) {
       const pa = players[a]!;
       if (!(pa.stateFlags & PlayerStateFlag.Alive)) continue;
@@ -238,15 +214,16 @@ export function step(
 
     // Process active stomps: damage, rider positioning, shake off, auto-run
     for (let b = 0; b < players.length; b++) {
-      let victim = players[b]!;
+      const victim = players[b]!;
       if (victim.stompedBy === null) continue;
       const riderId = victim.stompedBy;
-      const riderIdx = players.findIndex(p => p.id === riderId);
-      if (riderIdx < 0) { // rider gone, detach
+      const riderIdx = players.findIndex((p) => p.id === riderId);
+      if (riderIdx < 0) {
+        // rider gone, detach
         players[b] = { ...victim, stompedBy: null, stompShakeProgress: 0, stompLastShakeDir: 0 };
         continue;
       }
-      let rider = players[riderIdx]!;
+      const rider = players[riderIdx]!;
       if (!(rider.stateFlags & PlayerStateFlag.Alive)) {
         // Rider died, detach
         players[b] = { ...victim, stompedBy: null, stompShakeProgress: 0, stompLastShakeDir: 0 };
@@ -369,7 +346,7 @@ export function step(
   weaponPickups = pickupResult.pickups;
 
   // 7. Process shooting
-  let newProjectiles: Projectile[] = [];
+  const newProjectiles: Projectile[] = [];
   players = players.map((p) => {
     const input = resolvedInputs.get(p.id)!;
     if (
@@ -380,13 +357,7 @@ export function step(
       p.ammo > 0
     ) {
       const stats = WEAPON_STATS[p.weapon];
-      const result = createWeaponProjectiles(
-        p,
-        input.aimX,
-        input.aimY,
-        nextProjectileId,
-        rngState,
-      );
+      const result = createWeaponProjectiles(p, input.aimX, input.aimY, nextProjectileId, rngState);
       nextProjectileId = result.nextId;
       rngState = result.rngState;
       newProjectiles.push(...result.projectiles);
@@ -404,10 +375,7 @@ export function step(
   });
 
   // 8. Move projectiles, remove expired and out-of-bounds
-  let projectiles: Projectile[] = [
-    ...prev.projectiles.map(moveProjectile),
-    ...newProjectiles,
-  ];
+  let projectiles: Projectile[] = [...prev.projectiles.map(moveProjectile), ...newProjectiles];
 
   // 8b. Projectile-platform/wall collision
   // All projectiles are destroyed on platform or arena wall hit.
@@ -422,8 +390,7 @@ export function step(
 
     // Check platform collision (4px buffer above surface so bullets hit visible grass edge)
     for (const plat of map.platforms) {
-      if (proj.x >= plat.x && proj.x <= plat.x + plat.width &&
-          proj.y >= plat.y - 4 && proj.y <= plat.y + plat.height) {
+      if (proj.x >= plat.x && proj.x <= plat.x + plat.width && proj.y >= plat.y - 4 && proj.y <= plat.y + plat.height) {
         hitSolid = true;
         break;
       }
@@ -444,9 +411,7 @@ export function step(
     }
   }
 
-  projectiles = projectiles.filter(
-    (proj) => !destroyedIds.has(proj.id),
-  );
+  projectiles = projectiles.filter((proj) => !destroyedIds.has(proj.id));
 
   // 9. Projectile-player collision
   const hitResult = resolveProjectileHits(projectiles, players);
@@ -498,11 +463,7 @@ export function step(
             spawnY = map.platforms[0]!.y - PLAYER_HEIGHT;
           } else {
             let spawnIdx: number;
-            [spawnIdx, rngState] = prngIntRange(
-              rngState,
-              0,
-              map.spawnPoints.length - 1,
-            );
+            [spawnIdx, rngState] = prngIntRange(rngState, 0, map.spawnPoints.length - 1);
             const spawn = map.spawnPoints[spawnIdx]!;
             spawnX = Math.max(arenaLeft, Math.min(spawn.x, arenaRight - PLAYER_WIDTH));
             spawnY = spawn.y;

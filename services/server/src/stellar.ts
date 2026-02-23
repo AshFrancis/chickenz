@@ -1,4 +1,7 @@
+import { createHash } from "crypto";
+
 // Lazy import — don't crash if @stellar/stellar-sdk isn't installed
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import has no static types
 let StellarSdk: any = null;
 try {
   StellarSdk = await import("@stellar/stellar-sdk");
@@ -11,6 +14,7 @@ const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const CHICKENZ_CONTRACT = "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
 const ADMIN_SECRET = process.env.STELLAR_ADMIN_SECRET;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic SDK type
 function getAdmin(): any | null {
   if (!StellarSdk || !ADMIN_SECRET) return null;
   try {
@@ -23,6 +27,7 @@ function getAdmin(): any | null {
 
 async function submitTx(
   method: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic SDK ScVal args
   args: any[],
 ): Promise<string | null> {
   const admin = getAdmin();
@@ -48,10 +53,13 @@ async function submitTx(
     throw new Error(`Simulation failed for ${method}: ${simResult.error}`);
   }
 
-  const prepared = StellarSdk.rpc.assembleTransaction(
-    tx,
-    simResult as any,
-  ).build();
+  const prepared = StellarSdk.rpc
+    .assembleTransaction(
+      tx,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK type mismatch
+      simResult as any,
+    )
+    .build();
 
   prepared.sign(admin);
 
@@ -105,21 +113,40 @@ export async function settleMatchOnChain(
   journal: Uint8Array,
 ): Promise<string | null> {
   if (!StellarSdk) return null;
-  return await submitTx("settle_match", [
-    StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
-    StellarSdk.nativeToScVal(Buffer.from(seal), { type: "bytes" }),
-    StellarSdk.nativeToScVal(Buffer.from(journal), { type: "bytes" }),
-  ]);
+  try {
+    return await submitTx("settle_match", [
+      StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
+      StellarSdk.nativeToScVal(Buffer.from(seal), { type: "bytes" }),
+      StellarSdk.nativeToScVal(Buffer.from(journal), { type: "bytes" }),
+    ]);
+  } catch (err) {
+    console.error("[stellar] settleMatchOnChain failed:", err);
+    return null;
+  }
 }
 
-/** Verify a Stellar signature using Keypair.verify(). */
+/** Verify a Stellar transaction hash is successful on-chain. */
+export async function verifyTxOnChain(txHash: string): Promise<boolean> {
+  if (!StellarSdk) return false;
+  try {
+    const server = new StellarSdk.rpc.Server(RPC_URL);
+    const response = await server.getTransaction(txHash);
+    return response.status === "SUCCESS";
+  } catch {
+    return false;
+  }
+}
+
+/** Verify a Stellar signature using Keypair.verify().
+ *  Freighter's signMessage prefixes with "Stellar Signed Message:\n" and SHA-256 hashes before signing. */
 export function verifySignature(publicKey: string, message: string, signature: string): boolean {
   if (!StellarSdk) return false;
   try {
     const keypair = StellarSdk.Keypair.fromPublicKey(publicKey);
-    const msgBytes = Buffer.from(message, "utf-8");
+    const prefixed = "Stellar Signed Message:\n" + message;
+    const hash = createHash("sha256").update(Buffer.from(prefixed, "utf-8")).digest();
     const sigBytes = Buffer.from(signature, "base64");
-    return keypair.verify(msgBytes, sigBytes);
+    return keypair.verify(hash, sigBytes);
   } catch {
     return false;
   }

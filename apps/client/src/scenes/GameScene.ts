@@ -4,13 +4,11 @@ import {
   MAP_POOL,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
-  PROJECTILE_RADIUS,
   INITIAL_LIVES,
   MATCH_DURATION_TICKS,
   SUDDEN_DEATH_START_TICK,
   TICK_RATE,
   TICK_DT_MS,
-  MAX_JUMPS,
   WEAPON_STATS,
   Button,
   PlayerStateFlag,
@@ -22,6 +20,9 @@ import type { GameMap, MatchConfig, PlayerInput } from "@chickenz/sim";
 import { WasmState } from "../wasm";
 import { InputManager } from "../input/InputManager";
 import { PredictionManager } from "../net/PredictionManager";
+import type { StateMessage, SerializedPlayer, SerializedProjectile } from "../../../../services/server/src/protocol";
+/** Game state data — shared shape of StateMessage, SpectateStateMessage, and WASM exports */
+type GameStateData = Omit<StateMessage, "type">;
 import { DPR, VIEW_W, VIEW_H } from "../game";
 import { playSFX } from "../audio/sfx";
 
@@ -56,20 +57,20 @@ const GUN_TEXTURES: Record<number, string> = {
 
 // Per-gun visual config: position offset, scale, muzzle (shot origin), bob
 interface GunConfig {
-  offsetX: number;   // from character center, before facing flip
+  offsetX: number; // from character center, before facing flip
   offsetY: number;
   scale: number;
-  muzzleX: number;   // from gun center, before facing flip (scaled)
+  muzzleX: number; // from gun center, before facing flip (scaled)
   muzzleY: number;
   bobAmplitude: number; // max pixels of vertical bob (synced to anim frames)
 }
 
 const GUN_CONFIG: Record<number, GunConfig> = {
-  [WeaponType.Pistol]:  { offsetX: 14, offsetY: 6.5, scale: 0.5, muzzleX: 13.5, muzzleY: -5, bobAmplitude: 0.6 },
+  [WeaponType.Pistol]: { offsetX: 14, offsetY: 6.5, scale: 0.5, muzzleX: 13.5, muzzleY: -5, bobAmplitude: 0.6 },
   [WeaponType.Shotgun]: { offsetX: 4.5, offsetY: 11.5, scale: 0.5, muzzleX: 29, muzzleY: -3, bobAmplitude: 0.9 },
-  [WeaponType.Sniper]:  { offsetX: 7, offsetY: 8.5, scale: 0.5, muzzleX: 27, muzzleY: -2, bobAmplitude: 0.6 },
-  [WeaponType.Rocket]:  { offsetX: 5, offsetY: 8, scale: 0.5, muzzleX: 23.5, muzzleY: 0, bobAmplitude: 1 },
-  [WeaponType.SMG]:     { offsetX: 11.5, offsetY: 6.5, scale: 0.5, muzzleX: 14, muzzleY: -4.5, bobAmplitude: 1 },
+  [WeaponType.Sniper]: { offsetX: 7, offsetY: 8.5, scale: 0.5, muzzleX: 27, muzzleY: -2, bobAmplitude: 0.6 },
+  [WeaponType.Rocket]: { offsetX: 5, offsetY: 8, scale: 0.5, muzzleX: 23.5, muzzleY: 0, bobAmplitude: 1 },
+  [WeaponType.SMG]: { offsetX: 11.5, offsetY: 6.5, scale: 0.5, muzzleX: 14, muzzleY: -4.5, bobAmplitude: 1 },
 };
 
 const CHARACTER_ANIMS = [
@@ -92,44 +93,18 @@ const CROUCH_SOUNDS: Record<string, string> = {
 
 /** Compute the spritesheet frame index for a tile at (tx,ty) in a platform grid. */
 function getTerrainFrame(tx: number, ty: number, tilesW: number, tilesH: number): number {
-  let cx: number, cy: number;
-
   // Single-height platforms use dedicated thin platform tiles
   if (tilesH === 1) {
     const p = THIN_PLATFORM;
-    cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
+    const cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
     return p.row * TERRAIN_COLS + (p.col + cx);
   }
   // Multi-height platforms use green grass 9-slice
   const t = GRASS_TERRAIN;
-  cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
-  cy = ty === 0 ? 0 : ty === tilesH - 1 ? 2 : 1;
+  const cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
+  const cy = ty === 0 ? 0 : ty === tilesH - 1 ? 2 : 1;
   return (t.row + cy) * TERRAIN_COLS + (t.col + cx);
 }
-
-const WEAPON_PROJECTILE_COLORS: Record<number, number> = {
-  [WeaponType.Pistol]: 0xffee58,
-  [WeaponType.Shotgun]: 0xff9800,
-  [WeaponType.Sniper]: 0x00e5ff,
-  [WeaponType.Rocket]: 0xff1744,
-  [WeaponType.SMG]: 0x76ff03,
-};
-
-const WEAPON_PICKUP_COLORS: Record<number, number> = {
-  [WeaponType.Pistol]: 0xfdd835,
-  [WeaponType.Shotgun]: 0xfb8c00,
-  [WeaponType.Sniper]: 0x00b8d4,
-  [WeaponType.Rocket]: 0xd50000,
-  [WeaponType.SMG]: 0x64dd17,
-};
-
-const WEAPON_NAMES: Record<number, string> = {
-  [WeaponType.Pistol]: "PISTOL",
-  [WeaponType.Shotgun]: "SHOTGUN",
-  [WeaponType.Sniper]: "SNIPER",
-  [WeaponType.Rocket]: "ROCKET",
-  [WeaponType.SMG]: "SMG",
-};
 
 const BG_KEYS = ["bg-blue", "bg-brown", "bg-gray", "bg-green", "bg-pink", "bg-purple", "bg-yellow"];
 const PIXEL_FONT = '"Silkscreen", monospace';
@@ -156,8 +131,8 @@ function smoothLerp(a: number, b: number, factor: number, dt: number): number {
 }
 
 export class GameScene extends Phaser.Scene {
-  private prevState: any = null;
-  private currState: any = null;
+  private prevState: GameStateData | null = null;
+  private currState: GameStateData | null = null;
   private config!: MatchConfig;
   private warmupWasm: WasmState | null = null;
   private replayWasm: WasmState | null = null;
@@ -217,7 +192,13 @@ export class GameScene extends Phaser.Scene {
 
   // Smooth render positions (per-frame lerp absorbs prediction/reconciliation snaps)
   private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
-  private remoteSmooth: { x: number; y: number; vx: number; vy: number; initialized: boolean } = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+  private remoteSmooth: { x: number; y: number; vx: number; vy: number; initialized: boolean } = {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    initialized: false,
+  };
 
   // Camera
   private currentZoom = 1.0;
@@ -241,7 +222,7 @@ export class GameScene extends Phaser.Scene {
 
   // Warmup mode (waiting room with jumping)
   private warmupMode = false;
-  private warmupState: any = null;
+  private warmupState: GameStateData | null = null;
   private warmupConfig: MatchConfig | null = null;
   private warmupAccum = 0;
   private warmupJoinCode = "";
@@ -258,7 +239,7 @@ export class GameScene extends Phaser.Scene {
   private prevFrameButtons: [number, number] = [0, 0];
 
   // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
-  private pendingServerState: any = null;
+  private pendingServerState: GameStateData | null = null;
   private pendingServerButtons: [number, number] | undefined = undefined;
 
   // Netcode diagnostics
@@ -319,11 +300,10 @@ export class GameScene extends Phaser.Scene {
     // Character spritesheets (32×32 frames)
     for (const slug of CHARACTER_SLUGS) {
       for (const anim of CHARACTER_ANIMS) {
-        this.load.spritesheet(
-          `${slug}-${anim.key}`,
-          `/sprites/characters/${slug}-${anim.key}.png`,
-          { frameWidth: 32, frameHeight: 32 },
-        );
+        this.load.spritesheet(`${slug}-${anim.key}`, `/sprites/characters/${slug}-${anim.key}.png`, {
+          frameWidth: 32,
+          frameHeight: 32,
+        });
       }
     }
 
@@ -349,9 +329,13 @@ export class GameScene extends Phaser.Scene {
     this.gfxOverlay = this.add.graphics();
 
     // Warm up font: create a hidden text to force Phaser to rasterize the font atlas
-    const warmFont = this.add.text(-100, -100, "ABCabc123", {
-      fontFamily: PIXEL_FONT, fontSize: "16px",
-    }).setResolution(DPR).setVisible(false);
+    const warmFont = this.add
+      .text(-100, -100, "ABCabc123", {
+        fontFamily: PIXEL_FONT,
+        fontSize: "16px",
+      })
+      .setResolution(DPR)
+      .setVisible(false);
     this.time.delayedCall(100, () => warmFont.destroy());
 
     // JIT warmup: run ~300 silent WASM sim ticks to warm up the module
@@ -389,58 +373,82 @@ export class GameScene extends Phaser.Scene {
       .setDepth(100);
     this.inputManager.init(this.game.canvas);
 
-    this.controlsText = this.add.text(10, VIEW_H - 25, "", {
-      fontSize: "8px",
-      color: "#888888",
-      fontFamily: PIXEL_FONT,
-    }).setResolution(DPR).setDepth(100);
+    this.controlsText = this.add
+      .text(10, VIEW_H - 25, "", {
+        fontSize: "8px",
+        color: "#888888",
+        fontFamily: PIXEL_FONT,
+      })
+      .setResolution(DPR)
+      .setDepth(100);
 
-    this.weaponText = this.add.text(VIEW_W / 2, VIEW_H - 20, "", {
-      fontSize: "8px",
-      color: "#ffffff",
-      fontFamily: PIXEL_FONT,
-      align: "center",
-    }).setOrigin(0.5, 1).setResolution(DPR).setDepth(100);
-
-    // Player name texts (rendered on main camera, move with players)
-    for (let i = 0; i < 2; i++) {
-      const text = this.add.text(0, 0, "", {
-        fontSize: "10px",
+    this.weaponText = this.add
+      .text(VIEW_W / 2, VIEW_H - 20, "", {
+        fontSize: "8px",
         color: "#ffffff",
         fontFamily: PIXEL_FONT,
         align: "center",
-      }).setOrigin(0.5, 1).setResolution(DPR).setDepth(50)
+      })
+      .setOrigin(0.5, 1)
+      .setResolution(DPR)
+      .setDepth(100);
+
+    // Player name texts (rendered on main camera, move with players)
+    for (let i = 0; i < 2; i++) {
+      const text = this.add
+        .text(0, 0, "", {
+          fontSize: "10px",
+          color: "#ffffff",
+          fontFamily: PIXEL_FONT,
+          align: "center",
+        })
+        .setOrigin(0.5, 1)
+        .setResolution(DPR)
+        .setDepth(50)
         .setShadow(1, 1, "#000000", 0);
       this.nameTexts.push(text);
     }
 
     // Stomp alert texts (one per player, world-space below player)
     for (let i = 0; i < 2; i++) {
-      const alertText = this.add.text(0, 0, "SHAKE HIM OFF!", {
-        fontSize: "7px",
-        color: "#ffffff",
-        fontFamily: PIXEL_FONT,
-        align: "center",
-        stroke: "#000000",
-        strokeThickness: 2,
-      }).setOrigin(0.5, 0).setDepth(50).setResolution(DPR).setAlpha(0);
+      const alertText = this.add
+        .text(0, 0, "SHAKE HIM OFF!", {
+          fontSize: "7px",
+          color: "#ffffff",
+          fontFamily: PIXEL_FONT,
+          align: "center",
+          stroke: "#000000",
+          strokeThickness: 2,
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(50)
+        .setResolution(DPR)
+        .setAlpha(0);
       this.stompAlertTexts.push(alertText);
     }
 
     // Round indicator (top-left)
-    this.roundText = this.add.text(10, 10, "", {
-      fontSize: "8px",
-      color: "#ffffff",
-      fontFamily: PIXEL_FONT,
-    }).setResolution(DPR).setDepth(100);
+    this.roundText = this.add
+      .text(10, 10, "", {
+        fontSize: "8px",
+        color: "#ffffff",
+        fontFamily: PIXEL_FONT,
+      })
+      .setResolution(DPR)
+      .setDepth(100);
 
     // Replay info text
-    this.replayInfoText = this.add.text(VIEW_W / 2, VIEW_H - 10, "", {
-      fontSize: "8px",
-      color: "#ffee58",
-      fontFamily: PIXEL_FONT,
-      align: "center",
-    }).setOrigin(0.5, 1).setResolution(DPR).setDepth(100).setVisible(false);
+    this.replayInfoText = this.add
+      .text(VIEW_W / 2, VIEW_H - 10, "", {
+        fontSize: "8px",
+        color: "#ffee58",
+        fontFamily: PIXEL_FONT,
+        align: "center",
+      })
+      .setOrigin(0.5, 1)
+      .setResolution(DPR)
+      .setDepth(100)
+      .setVisible(false);
 
     // Camera setup — main camera for game world, HUD camera for overlay
     // DPR-scaled canvas: zoom by DPR so world coords map to pixels
@@ -458,7 +466,14 @@ export class GameScene extends Phaser.Scene {
     this.hudCamera.setZoom(DPR);
 
     // Collect HUD elements (rendered only on hudCamera)
-    const hudElements = [this.timerText, this.suddenDeathText, this.controlsText, this.weaponText, this.roundText, this.replayInfoText];
+    const hudElements = [
+      this.timerText,
+      this.suddenDeathText,
+      this.controlsText,
+      this.weaponText,
+      this.roundText,
+      this.replayInfoText,
+    ];
     // stompAlertTexts are world-space (not HUD) — HUD camera should ignore them
     for (const at of this.stompAlertTexts) this.hudCamera.ignore(at);
 
@@ -502,16 +517,12 @@ export class GameScene extends Phaser.Scene {
     }
     for (let i = 0; i < 2; i++) {
       const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
-      const sprite = this.add.sprite(0, 0, `${slug}-idle`)
-        .setDepth(20)
-        .setVisible(false);
+      const sprite = this.add.sprite(0, 0, `${slug}-idle`).setDepth(20).setVisible(false);
       this.hudCamera.ignore(sprite);
       this.playerSprites.push(sprite);
 
       // Gun sprite (rendered on top of character, scale set per-weapon in drawPlayers)
-      const gun = this.add.image(0, 0, "gun-pistol")
-        .setDepth(21)
-        .setVisible(false);
+      const gun = this.add.image(0, 0, "gun-pistol").setDepth(21).setVisible(false);
       this.hudCamera.ignore(gun);
       this.gunSprites.push(gun);
     }
@@ -595,11 +606,12 @@ export class GameScene extends Phaser.Scene {
       bgmFadedOut = false;
       if (!this.bgm) return;
       const ctx = (this.sound as Phaser.Sound.WebAudioSoundManager).context;
-      if (ctx.state === "suspended") ctx.resume();
+      if (ctx.state === "suspended") void ctx.resume();
       this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, 0, this.bgmVolume, 400);
     };
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) fadeOut(); else fadeIn();
+      if (document.hidden) fadeOut();
+      else fadeIn();
     });
     window.addEventListener("blur", fadeOut);
     window.addEventListener("focus", fadeIn);
@@ -663,13 +675,17 @@ export class GameScene extends Phaser.Scene {
     };
     // Free previous WASM state if any
     if (this.warmupWasm) {
-      try { this.warmupWasm.free(); } catch { /* already freed */ }
+      try {
+        this.warmupWasm.free();
+      } catch {
+        /* already freed */
+      }
     }
     // Use warmup constructor: 99 lives, no sudden death, no match end
-    this.warmupWasm = (WasmState as any).new_warmup(0, JSON.stringify(map)) as WasmState;
+    this.warmupWasm = WasmState.new_warmup(0, JSON.stringify(map));
     this.warmupState = this.warmupWasm!.export_state();
     // Banish player 2 off-screen and import back so WASM sim knows they're gone
-    this.banishWarmupPlayer2(this.warmupState);
+    this.banishWarmupPlayer2(this.warmupState!);
     this.warmupWasm!.import_state(this.warmupState);
     this.currState = this.warmupState;
     this.prevState = this.warmupState;
@@ -703,8 +719,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Move player 2 far off-screen so they can't absorb bullets or affect camera. */
-  private banishWarmupPlayer2(state: any) {
-    const p1 = state.players[1] as { x: number; y: number; vx: number; vy: number } | undefined;
+  private banishWarmupPlayer2(state: GameStateData) {
+    const p1 = state.players[1];
     if (p1) {
       p1.x = -9999;
       p1.y = -9999;
@@ -717,16 +733,30 @@ export class GameScene extends Phaser.Scene {
     this.warmupMode = false;
     this.warmupState = null;
     if (this.warmupWasm) {
-      try { this.warmupWasm.free(); } catch { /* already freed */ }
+      try {
+        this.warmupWasm.free();
+      } catch {
+        /* already freed */
+      }
       this.warmupWasm = null;
     }
     document.getElementById("warmup-overlay")?.classList.remove("visible");
   }
 
-  startOnlineMatch(playerId: number, seed: number, usernames?: [string, string], mapIndex: number = 0, totalRounds: number = 3, characters?: [number, number], onCovered?: () => void) {
+  startOnlineMatch(
+    playerId: number,
+    seed: number,
+    usernames?: [string, string],
+    mapIndex: number = 0,
+    totalRounds: number = 3,
+    characters?: [number, number],
+    onCovered?: () => void,
+  ) {
     if (!this.sceneReady) {
       // deferred — scene not ready yet
-      this.onReady(() => this.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters, onCovered));
+      this.onReady(() =>
+        this.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters, onCovered),
+      );
       return;
     }
     this.localPlayerId = playerId;
@@ -825,15 +855,27 @@ export class GameScene extends Phaser.Scene {
 
   /** Play a diamond wipe transition using a DOM overlay (bypasses Phaser camera issues). */
   playTransition(onMidpoint: () => void) {
-    if (this.transitionActive) { onMidpoint(); return; }
+    if (this.transitionActive) {
+      onMidpoint();
+      return;
+    }
     this.transitionActive = true;
 
     const overlay = document.getElementById("transition-overlay");
-    if (!overlay) { onMidpoint(); this.transitionActive = false; return; }
+    if (!overlay) {
+      onMidpoint();
+      this.transitionActive = false;
+      return;
+    }
     const cells = overlay.querySelectorAll<HTMLElement>(".t-cell");
 
-    const { TRANS_COLS: cols, TRANS_WAVE_DELAY: WAVE_DELAY,
-            TRANS_GROW_MS: GROW_MS, TRANS_HOLD_MS: HOLD_MS, TRANS_SHRINK_MS: SHRINK_MS } = GameScene;
+    const {
+      TRANS_COLS: cols,
+      TRANS_WAVE_DELAY: WAVE_DELAY,
+      TRANS_GROW_MS: GROW_MS,
+      TRANS_HOLD_MS: HOLD_MS,
+      TRANS_SHRINK_MS: SHRINK_MS,
+    } = GameScene;
 
     // Reset all cells
     for (const cell of cells) {
@@ -920,7 +962,11 @@ export class GameScene extends Phaser.Scene {
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
     if (this.prediction) {
-      try { this.prediction.free(); } catch { /* already freed */ }
+      try {
+        this.prediction.free();
+      } catch {
+        /* already freed */
+      }
     }
     this.prediction = new PredictionManager(seed, mapJson, this.localPlayerId);
     this.predictionAccum = 0;
@@ -970,17 +1016,13 @@ export class GameScene extends Phaser.Scene {
     h = Math.imul(h ^ (h >>> 13), 0x45d9f3b);
     h = (h ^ (h >>> 16)) >>> 0;
     const bgKey = BG_KEYS[h % BG_KEYS.length]!;
-    const angle = ((h >>> 8) & 0xffff) / 0xffff * Math.PI * 2;
+    const angle = (((h >>> 8) & 0xffff) / 0xffff) * Math.PI * 2;
     this.bgScrollX = Math.cos(angle) * 0.3;
     this.bgScrollY = Math.sin(angle) * 0.3;
 
     // Create/update background tileSprite clipped to arena bounds
     if (this.bgTile) this.bgTile.destroy();
-    this.bgTile = this.add.tileSprite(
-      map.width / 2, map.height / 2,
-      map.width, map.height,
-      bgKey,
-    ).setDepth(-100);
+    this.bgTile = this.add.tileSprite(map.width / 2, map.height / 2, map.width, map.height, bgKey).setDepth(-100);
     this.hudCamera?.ignore(this.bgTile);
 
     for (const plat of map.platforms) {
@@ -989,12 +1031,14 @@ export class GameScene extends Phaser.Scene {
       for (let ty = 0; ty < tilesH; ty++) {
         for (let tx = 0; tx < tilesW; tx++) {
           const frame = getTerrainFrame(tx, ty, tilesW, tilesH);
-          const img = this.add.image(
-            plat.x + tx * 16 + 8, // center of tile
-            plat.y + ty * 16 + 8,
-            "terrain",
-            frame,
-          ).setDepth(0);
+          const img = this.add
+            .image(
+              plat.x + tx * 16 + 8, // center of tile
+              plat.y + ty * 16 + 8,
+              "terrain",
+              frame,
+            )
+            .setDepth(0);
           this.hudCamera?.ignore(img);
           this.platformTiles.push(img);
         }
@@ -1009,20 +1053,14 @@ export class GameScene extends Phaser.Scene {
       // Find the nearest platform surface below this spawn point
       let platformTop = map.height; // fallback to bottom
       for (const plat of map.platforms) {
-        if (plat.y > sp.y && plat.y < platformTop &&
-            sp.x >= plat.x && sp.x <= plat.x + plat.width) {
+        if (plat.y > sp.y && plat.y < platformTop && sp.x >= plat.x && sp.x <= plat.x + plat.width) {
           platformTop = plat.y;
         }
       }
       // Place tile so visual (top 3px of frame) rests on platform: center = platformTop + 5
       const tileY = platformTop + 5;
       for (let i = 0; i < 3; i++) {
-        const img = this.add.image(
-          sp.x + (i - 1) * 16,
-          tileY,
-          "terrain",
-          PEDESTAL_FRAMES[i]!,
-        ).setDepth(0);
+        const img = this.add.image(sp.x + (i - 1) * 16, tileY, "terrain", PEDESTAL_FRAMES[i]!).setDepth(0);
         this.hudCamera?.ignore(img);
         this.platformTiles.push(img);
       }
@@ -1030,10 +1068,16 @@ export class GameScene extends Phaser.Scene {
 
     // Border tiles around arena using dark stone 9-slice (cols 0-2, rows 0-2)
     const TC = TERRAIN_COLS; // 22 tiles per row
-    const B_TL = 3, B_T = 2 * TC + 1, B_TR = 4;
-    const B_ML = TC + 2, B_MR = TC;
-    const B_BL = TC + 3, B_B = 1, B_BR = TC + 4;
-    const mw = map.width, mh = map.height;
+    const B_TL = 3,
+      B_T = 2 * TC + 1,
+      B_TR = 4;
+    const B_ML = TC + 2,
+      B_MR = TC;
+    const B_BL = TC + 3,
+      B_B = 1,
+      B_BR = TC + 4;
+    const mw = map.width,
+      mh = map.height;
     const tilesX = Math.ceil(mw / 16);
     const tilesY = Math.ceil(mh / 16);
 
@@ -1060,7 +1104,13 @@ export class GameScene extends Phaser.Scene {
     addBorder(mw - bo, mh - bo, B_BR);
   }
 
-  startReplay(transcript: TickInputPair[], seed: number, mapIndex?: number, usernames?: [string, string], characters?: [number, number]) {
+  startReplay(
+    transcript: TickInputPair[],
+    seed: number,
+    mapIndex?: number,
+    usernames?: [string, string],
+    characters?: [number, number],
+  ) {
     if (!this.sceneReady) {
       this.onReady(() => this.startReplay(transcript, seed, mapIndex, usernames, characters));
       return;
@@ -1094,7 +1144,11 @@ export class GameScene extends Phaser.Scene {
     };
     // Free previous replay WASM state
     if (this.replayWasm) {
-      try { this.replayWasm.free(); } catch { /* already freed */ }
+      try {
+        this.replayWasm.free();
+      } catch {
+        /* already freed */
+      }
     }
     this.replayWasm = new WasmState(seed, mapJson);
     const initial = this.replayWasm.export_state();
@@ -1129,7 +1183,11 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  startMultiRoundReplay(rounds: { seed: number; mapIndex: number; transcript: TickInputPair[] }[], usernames?: [string, string], characters?: [number, number]) {
+  startMultiRoundReplay(
+    rounds: { seed: number; mapIndex: number; transcript: TickInputPair[] }[],
+    usernames?: [string, string],
+    characters?: [number, number],
+  ) {
     if (!rounds.length) return;
     this.replayRounds = rounds;
     this.replayCurrentRound = 0;
@@ -1162,7 +1220,11 @@ export class GameScene extends Phaser.Scene {
     };
     // Free previous replay WASM state
     if (this.replayWasm) {
-      try { this.replayWasm.free(); } catch { /* already freed */ }
+      try {
+        this.replayWasm.free();
+      } catch {
+        /* already freed */
+      }
     }
     this.replayWasm = new WasmState(round.seed, mapJson);
     const initial = this.replayWasm.export_state();
@@ -1181,7 +1243,11 @@ export class GameScene extends Phaser.Scene {
     this.replayRoundTransitionTimer = 0;
     this.replayInfoText.setVisible(false);
     if (this.replayWasm) {
-      try { this.replayWasm.free(); } catch { /* already freed */ }
+      try {
+        this.replayWasm.free();
+      } catch {
+        /* already freed */
+      }
       this.replayWasm = null;
     }
     hideAnnounce();
@@ -1190,7 +1256,7 @@ export class GameScene extends Phaser.Scene {
     window.dispatchEvent(new CustomEvent("replayEnded"));
   }
 
-  receiveState(state: any, lastButtons?: [number, number]) {
+  receiveState(state: StateMessage, lastButtons?: [number, number]) {
     // Drop out-of-order packets — prevents old states from overwriting newer ones
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
@@ -1220,7 +1286,13 @@ export class GameScene extends Phaser.Scene {
 
   // ── Spectator Mode (Tournament) ───────────────────────────────────────────
 
-  startSpectating(seed: number, usernames: [string, string], mapIndex: number, totalRounds: number, characters: [number, number]) {
+  startSpectating(
+    seed: number,
+    usernames: [string, string],
+    mapIndex: number,
+    totalRounds: number,
+    characters: [number, number],
+  ) {
     if (!this.sceneReady) {
       this.onReady(() => this.startSpectating(seed, usernames, mapIndex, totalRounds, characters));
       return;
@@ -1247,7 +1319,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  receiveSpectateState(state: any, lastButtons?: [number, number]) {
+  receiveSpectateState(state: GameStateData, lastButtons?: [number, number]) {
     // Same as receiveState but skip prediction
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
@@ -1281,7 +1353,7 @@ export class GameScene extends Phaser.Scene {
       if (this.bgm) {
         this.bgm.stop();
         this.bgm.destroy();
-        this.bgm = undefined as any;
+        this.bgm = null;
       }
     } else {
       this.startBGM();
@@ -1368,17 +1440,16 @@ export class GameScene extends Phaser.Scene {
         ticksRun++;
         if (this.warmupWasm.match_over()) break;
         const p0 = this.warmupState?.players?.[0];
-        const input = p0 ? this.inputManager.getPlayer1Input(
-          p0.x + PLAYER_WIDTH / 2,
-          p0.y + PLAYER_HEIGHT / 2,
-        ) : NULL_INPUT;
+        const input = p0
+          ? this.inputManager.getPlayer1Input(p0.x + PLAYER_WIDTH / 2, p0.y + PLAYER_HEIGHT / 2)
+          : NULL_INPUT;
         const prevWarmup = this.warmupState;
         this.warmupWasm.step(input.buttons, input.aimX, input.aimY, 0, 0, 0);
         this.warmupState = this.warmupWasm.export_state();
-        this.banishWarmupPlayer2(this.warmupState);
+        this.banishWarmupPlayer2(this.warmupState!);
         // Import banished state back so WASM sim has P2 off-screen (prevents bullet absorption)
         this.warmupWasm.import_state(this.warmupState);
-        this.detectAudioEvents(prevWarmup, this.warmupState);
+        this.detectAudioEvents(prevWarmup!, this.warmupState!);
       }
       if (this.warmupAccum > TICK_DT_MS * 2) this.warmupAccum = 0;
       this.currState = this.warmupState;
@@ -1398,8 +1469,12 @@ export class GameScene extends Phaser.Scene {
           const tickInputs = this.replayTranscript[this.replayTick]!;
           const p0i = tickInputs[0];
           const p1i = tickInputs[1];
-          const b0 = p0i.buttons, ax0 = p0i.aim_x ?? p0i.aimX ?? 0, ay0 = p0i.aim_y ?? p0i.aimY ?? 0;
-          const b1 = p1i.buttons, ax1 = p1i.aim_x ?? p1i.aimX ?? 0, ay1 = p1i.aim_y ?? p1i.aimY ?? 0;
+          const b0 = p0i.buttons,
+            ax0 = p0i.aim_x ?? p0i.aimX ?? 0,
+            ay0 = p0i.aim_y ?? p0i.aimY ?? 0;
+          const b1 = p1i.buttons,
+            ax1 = p1i.aim_x ?? p1i.aimX ?? 0,
+            ay1 = p1i.aim_y ?? p1i.aimY ?? 0;
           this.prevState = this.currState;
           this.replayWasm.step(b0, ax0, ay0, b1, ax1, ay1);
           this.currState = this.replayWasm.export_state();
@@ -1411,7 +1486,9 @@ export class GameScene extends Phaser.Scene {
           const wName = (this.playerUsernames[w] || `Player ${w + 1}`).toUpperCase();
           const hasMoreRounds = this.replayCurrentRound + 1 < this.replayRounds.length;
           if (hasMoreRounds) {
-            showAnnounce(`Round ${this.replayCurrentRound + 1} - ${wName} wins!\n${this.replayRoundWins[0]} - ${this.replayRoundWins[1]}`);
+            showAnnounce(
+              `Round ${this.replayCurrentRound + 1} - ${wName} wins!\n${this.replayRoundWins[0]} - ${this.replayRoundWins[1]}`,
+            );
             this.replayRoundTransitionTimer = 2000;
           } else {
             const mw = this.replayRoundWins[0] > this.replayRoundWins[1] ? 0 : 1;
@@ -1442,8 +1519,7 @@ export class GameScene extends Phaser.Scene {
     if (this.playing && this.prediction && !this.replayMode) {
       // Cap prediction: don't run further than MAX_LEAD ticks ahead of server
       const MAX_LEAD = 10;
-      const canPredict = this.lastServerTick === 0 ||
-        this.prediction.currentTick < this.lastServerTick + MAX_LEAD;
+      const canPredict = this.lastServerTick === 0 || this.prediction.currentTick < this.lastServerTick + MAX_LEAD;
 
       // Run prediction at fixed 60Hz rate
       this.predictionAccum += delta;
@@ -1460,12 +1536,11 @@ export class GameScene extends Phaser.Scene {
         this.predictionAccum -= TICK_DT_MS;
         ticksRun++;
 
-        const player = this.prediction.predictedState.players[this.localPlayerId];
+        const predState = this.prediction.predictedState;
+        if (!predState) continue;
+        const player = predState.players[this.localPlayerId];
         if (player) {
-          const input = this.inputManager.getPlayer1Input(
-            player.x + PLAYER_WIDTH / 2,
-            player.y + PLAYER_HEIGHT / 2,
-          );
+          const input = this.inputManager.getPlayer1Input(player.x + PLAYER_WIDTH / 2, player.y + PLAYER_HEIGHT / 2);
           const nextTick = this.prediction.currentTick + 1;
           this.onLocalInput?.(input, nextTick);
           this.prediction.predictTick(input);
@@ -1483,12 +1558,11 @@ export class GameScene extends Phaser.Scene {
         const targetTick = this.lastServerTick + PRED_LEAD;
         let extraTicks = 0;
         while (this.prediction.currentTick < targetTick && extraTicks < 4) {
-          const player = this.prediction.predictedState.players[this.localPlayerId];
+          const predState2 = this.prediction.predictedState;
+          if (!predState2) break;
+          const player = predState2.players[this.localPlayerId];
           if (!player) break;
-          const input = this.inputManager.getPlayer1Input(
-            player.x + PLAYER_WIDTH / 2,
-            player.y + PLAYER_HEIGHT / 2,
-          );
+          const input = this.inputManager.getPlayer1Input(player.x + PLAYER_WIDTH / 2, player.y + PLAYER_HEIGHT / 2);
           const nextTick = this.prediction.currentTick + 1;
           this.onLocalInput?.(input, nextTick);
           this.prediction.predictTick(input);
@@ -1519,13 +1593,13 @@ export class GameScene extends Phaser.Scene {
     const curr = this.currState;
     if (!curr) return;
 
-    const predicted = this.replayMode ? null : this.prediction?.predictedState;
+    const predicted = this.replayMode ? null : (this.prediction?.predictedState ?? null);
     const displayState = predicted ?? curr;
 
     // Detect rocket explosions — local player rockets from predicted, remote from server
     const localId = this.localPlayerId;
     const currentRocketIds = new Set<number>();
-    const rocketSource = (predicted && !this.replayMode) ? predicted : curr;
+    const rocketSource = predicted && !this.replayMode ? predicted : curr;
     const serverRockets = curr.projectiles;
     // Track local player rockets from predicted state
     for (const proj of rocketSource.projectiles) {
@@ -1546,7 +1620,7 @@ export class GameScene extends Phaser.Scene {
     const rcfg = GUN_CONFIG[WeaponType.Rocket];
     const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
     // Local player rockets from predicted state (or curr if no prediction, e.g. warmup)
-    const localRocketSource = (predicted && !this.replayMode) ? predicted : curr;
+    const localRocketSource = predicted && !this.replayMode ? predicted : curr;
     for (const proj of localRocketSource.projectiles) {
       if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) {
         this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
@@ -1568,7 +1642,7 @@ export class GameScene extends Phaser.Scene {
     this.drawHUD(curr, displayState, predicted);
   }
 
-  private drawArena(g: Phaser.GameObjects.Graphics, displayState: any) {
+  private drawArena(g: Phaser.GameObjects.Graphics, displayState: GameStateData) {
     const map = this.config?.map ?? ARENA;
     // Platforms are rendered by tile sprites (createMapTiles), not Graphics.
     // Draw sudden death damage zone (cosmetic — zone is damage-only, not physical).
@@ -1579,13 +1653,13 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawPickups(_g: Phaser.GameObjects.Graphics, displayState: any) {
+  private drawPickups(_g: Phaser.GameObjects.Graphics, displayState: GameStateData) {
     const tick = displayState.tick;
     const activeIds = new Set<number>();
 
     for (const pickup of displayState.weaponPickups) {
       activeIds.add(pickup.id);
-      const wasActive = this.prevPickupActive.get(pickup.id) ?? (pickup.respawnTimer <= 0);
+      const wasActive = this.prevPickupActive.get(pickup.id) ?? pickup.respawnTimer <= 0;
 
       if (pickup.respawnTimer > 0) {
         // Respawning — hide sprite, show faint outline via graphics
@@ -1594,7 +1668,8 @@ export class GameScene extends Phaser.Scene {
 
         // Detect collection: was active, now respawning → play collection animation
         if (wasActive) {
-          const fx = this.add.sprite(pickup.x, pickup.y + 20, "collected")
+          const fx = this.add
+            .sprite(pickup.x, pickup.y + 20, "collected")
             .setDepth(25)
             .setScale(1);
           this.hudCamera.ignore(fx);
@@ -1612,7 +1687,8 @@ export class GameScene extends Phaser.Scene {
       const tex = GUN_TEXTURES[pickup.weapon];
       let sprite = this.getPickupSprite(pickup.id);
       if (!sprite) {
-        sprite = this.add.image(pickup.x, py, tex ?? "gun-pistol")
+        sprite = this.add
+          .image(pickup.x, py, tex ?? "gun-pistol")
           .setDepth(15)
           .setScale(0.6);
         this.hudCamera.ignore(sprite);
@@ -1649,13 +1725,13 @@ export class GameScene extends Phaser.Scene {
 
   private drawPlayers(
     g: Phaser.GameObjects.Graphics,
-    curr: any,
-    predicted: any,
+    curr: GameStateData,
+    predicted: GameStateData | null,
     delta?: number,
   ) {
     // First pass: compute draw positions for all players
     const drawPositions: { x: number; y: number }[] = [];
-    const playerStates: any[] = [];
+    const playerStates: (SerializedPlayer | null)[] = [];
 
     for (let i = 0; i < curr.players.length; i++) {
       if (this.warmupMode && i === 1) {
@@ -1665,7 +1741,7 @@ export class GameScene extends Phaser.Scene {
       }
       const isLocal = i === this.localPlayerId && !this.replayMode;
       const raw = curr.players[i]!;
-      let cp: any;
+      let cp: SerializedPlayer;
       let drawX: number, drawY: number;
 
       if (this.replayMode) {
@@ -1676,18 +1752,30 @@ export class GameScene extends Phaser.Scene {
         // Use predicted position for responsiveness, but server-authoritative combat fields
         // (health, lives, deaths) to avoid desync artifacts like "healing" when server disagrees
         const pred = predicted?.players[i];
-        cp = pred ? { ...pred, health: raw.health, lives: raw.lives, alive: raw.alive, stateFlags: raw.stateFlags, stompedBy: raw.stompedBy, stompingOn: raw.stompingOn, stompShakeProgress: raw.stompShakeProgress } : raw;
+        cp = pred
+          ? {
+              ...pred,
+              health: raw.health,
+              lives: raw.lives,
+              stateFlags: raw.stateFlags,
+              stompedBy: raw.stompedBy,
+              stompingOn: raw.stompingOn,
+              stompShakeProgress: raw.stompShakeProgress,
+            }
+          : raw;
         // Smooth local player visuals using velocity advancement (same as remote)
         // to avoid stutter on high-refresh displays between 60Hz prediction ticks
         const ls = this.localSmooth;
         const dt = delta ?? 16.667;
         if (!ls.initialized) {
-          ls.x = cp.x; ls.y = cp.y;
+          ls.x = cp.x;
+          ls.y = cp.y;
           ls.initialized = true;
         }
         const teleported = Math.abs(ls.x - cp.x) > 80 || Math.abs(ls.y - cp.y) > 80;
         if (teleported) {
-          ls.x = cp.x; ls.y = cp.y;
+          ls.x = cp.x;
+          ls.y = cp.y;
         } else {
           // Advance by velocity, then pull toward predicted position
           ls.x += (cp.vx ?? 0) * (dt / TICK_DT_MS);
@@ -1706,13 +1794,16 @@ export class GameScene extends Phaser.Scene {
         const smooth = this.remoteSmooth;
         const dt = delta ?? 16.667;
         if (!smooth.initialized) {
-          smooth.x = cp.x; smooth.y = cp.y;
-          smooth.vx = cp.vx ?? 0; smooth.vy = cp.vy ?? 0;
+          smooth.x = cp.x;
+          smooth.y = cp.y;
+          smooth.vx = cp.vx ?? 0;
+          smooth.vy = cp.vy ?? 0;
           smooth.initialized = true;
         }
         const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
         if (teleported) {
-          smooth.x = cp.x; smooth.y = cp.y;
+          smooth.x = cp.x;
+          smooth.y = cp.y;
         } else {
           // Advance by velocity (dead reckoning), then correct toward server
           smooth.x += smooth.vx * (dt / TICK_DT_MS);
@@ -1736,8 +1827,8 @@ export class GameScene extends Phaser.Scene {
     // Snap riders to victim draw positions so they match exactly
     for (let i = 0; i < playerStates.length; i++) {
       const cp = playerStates[i];
-      if (!cp || cp.stompingOn == null || cp.stompingOn < 0) continue;
-      const victimIdx = curr.players.findIndex((p: any) => p.id === cp.stompingOn);
+      if (!cp || cp.stompingOn === null || cp.stompingOn < 0) continue;
+      const victimIdx = curr.players.findIndex((p) => p.id === cp.stompingOn);
       if (victimIdx >= 0 && drawPositions[victimIdx]) {
         drawPositions[i] = {
           x: drawPositions[victimIdx]!.x,
@@ -1791,7 +1882,7 @@ export class GameScene extends Phaser.Scene {
       if (sprite) {
         const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
         let animKey: string;
-        const hasGun = cp.weapon != null && cp.weapon >= 0;
+        const hasGun = cp.weapon !== null && cp.weapon >= 0;
         // Determine crouch button state for edge detection
         // Local player: read inputManager directly (no round-trip delay)
         const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
@@ -1830,15 +1921,15 @@ export class GameScene extends Phaser.Scene {
         // Don't nudge at map boundary walls — sprite already flush with wall tiles
         const mapW = this.config?.map.width ?? 960;
         const atMapWall = cp.x <= 0 || cp.x + PLAYER_WIDTH >= mapW;
-        const wallNudge = (cp.wallSliding && !atMapWall) ? cp.wallDir * 4 : 0;
+        const wallNudge = cp.wallSliding && !atMapWall ? cp.wallDir * 4 : 0;
         sprite.setPosition(Math.round(drawX + PLAYER_WIDTH / 2 + wallNudge), Math.round(drawY + PLAYER_HEIGHT / 2));
         sprite.setFlipX(cp.facing === Facing.Left);
         sprite.setVisible(true);
         sprite.setAlpha(invincible ? 0.6 : 1);
         // Rider renders behind victim; victim on top so their bars are visible
-        if (cp.stompingOn != null && cp.stompingOn >= 0) {
+        if (cp.stompingOn !== null && cp.stompingOn >= 0) {
           sprite.setDepth(18);
-        } else if (cp.stompedBy != null && cp.stompedBy >= 0) {
+        } else if (cp.stompedBy !== null && cp.stompedBy >= 0) {
           sprite.setDepth(22);
         } else {
           sprite.setDepth(20);
@@ -1848,7 +1939,7 @@ export class GameScene extends Phaser.Scene {
       // Gun sprite — position at character's hand, bob synced to animation frame
       const gunSprite = this.gunSprites[i];
       if (gunSprite) {
-        if (cp.weapon != null && cp.weapon >= 0 && alive) {
+        if (cp.weapon !== null && cp.weapon >= 0 && alive) {
           const tex = GUN_TEXTURES[cp.weapon];
           if (tex && gunSprite.texture.key !== tex) {
             gunSprite.setTexture(tex);
@@ -1859,21 +1950,19 @@ export class GameScene extends Phaser.Scene {
           // Bob derived from current animation frame — steps at 20fps, in sync with the sprite
           const frameIdx = sprite?.anims?.currentFrame?.index ?? 0;
           const totalFrames = sprite?.anims?.currentAnim?.frames?.length ?? 1;
-          const bobY = gcfg && totalFrames > 1
-            ? Math.sin((frameIdx / totalFrames) * Math.PI * 2) * gcfg.bobAmplitude
-            : 0;
+          const bobY =
+            gcfg && totalFrames > 1 ? Math.sin((frameIdx / totalFrames) * Math.PI * 2) * gcfg.bobAmplitude : 0;
           const gunOffX = gunFacing * (gcfg?.offsetX ?? 10);
           const gunOffY = (gcfg?.offsetY ?? 4) + bobY;
-          gunSprite.setPosition(
-            drawX + PLAYER_WIDTH / 2 + gunOffX,
-            drawY + PLAYER_HEIGHT / 2 + gunOffY,
-          );
+          gunSprite.setPosition(drawX + PLAYER_WIDTH / 2 + gunOffX, drawY + PLAYER_HEIGHT / 2 + gunOffY);
           gunSprite.setScale(gcfg?.scale ?? 0.5);
           gunSprite.setFlipX(gunFacing === -1);
           gunSprite.setVisible(true);
           gunSprite.setAlpha(invincible ? 0.6 : 1);
           // Match sprite depth for stomp layering
-          gunSprite.setDepth(cp.stompingOn != null && cp.stompingOn >= 0 ? 19 : cp.stompedBy != null && cp.stompedBy >= 0 ? 23 : 21);
+          gunSprite.setDepth(
+            cp.stompingOn !== null && cp.stompingOn >= 0 ? 19 : cp.stompedBy !== null && cp.stompedBy >= 0 ? 23 : 21,
+          );
         } else {
           gunSprite.setVisible(false);
         }
@@ -1905,11 +1994,7 @@ export class GameScene extends Phaser.Scene {
         // Double jump in air: cloud arc below character
         if (!wasGrounded && !cp.grounded && cp.jumpsLeft < prevJumps! && cp.vy < 0 && this.dustEmitter) {
           for (let p = 0; p < 12; p++) {
-            this.dustEmitter.emitParticleAt(
-              feetX + (Math.random() - 0.5) * 24,
-              feetY - 4,
-              1,
-            );
+            this.dustEmitter.emitParticleAt(feetX + (Math.random() - 0.5) * 24, feetY - 4, 1);
           }
         }
 
@@ -1925,24 +2010,22 @@ export class GameScene extends Phaser.Scene {
       const cp = playerStates[i];
       if (!cp) continue;
       const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
-      const btns = isLocal
-        ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
-        : this.lastReceivedButtons[i];
+      const btns = isLocal ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons : this.lastReceivedButtons[i];
       this.prevFrameButtons[i] = btns ?? 0;
     }
   }
 
   private drawPlayerOverlays(
     g: Phaser.GameObjects.Graphics,
-    cp: any,
+    cp: SerializedPlayer,
     drawX: number,
     drawY: number,
     index: number,
-    predicted: any,
-    curr: any,
+    predicted: GameStateData | null,
+    curr: GameStateData,
   ) {
     // Stomped victims draw bars on high-depth overlay so they render above rider sprite
-    const barGfx = cp.stompedBy != null && cp.stompedBy >= 0 ? this.gfxOverlay : g;
+    const barGfx = cp.stompedBy !== null && cp.stompedBy >= 0 ? this.gfxOverlay : g;
 
     // Health bar with black stroke
     const barY = drawY - 3;
@@ -1957,7 +2040,7 @@ export class GameScene extends Phaser.Scene {
     // "Shake him off!" alert + progress bar below stomped player
     const alertText = this.stompAlertTexts[index];
     const shakeBarBelow = drawY + PLAYER_HEIGHT + 2;
-    if (cp.stompedBy != null && cp.stompedBy >= 0 && cp.stompShakeProgress > 0) {
+    if (cp.stompedBy !== null && cp.stompedBy >= 0 && cp.stompShakeProgress > 0) {
       const shakePct = cp.stompShakeProgress / 100;
       barGfx.fillStyle(0x000000);
       barGfx.fillRect(drawX - 1, shakeBarBelow - 1, PLAYER_WIDTH + 2, 5);
@@ -1967,11 +2050,12 @@ export class GameScene extends Phaser.Scene {
       barGfx.fillRect(drawX, shakeBarBelow, PLAYER_WIDTH * shakePct, 3);
     }
     if (alertText) {
-      const alertY = (cp.stompedBy != null && cp.stompedBy >= 0 && cp.stompShakeProgress > 0)
-        ? shakeBarBelow + 6
-        : drawY + PLAYER_HEIGHT + 2;
+      const alertY =
+        cp.stompedBy !== null && cp.stompedBy >= 0 && cp.stompShakeProgress > 0
+          ? shakeBarBelow + 6
+          : drawY + PLAYER_HEIGHT + 2;
       alertText.setPosition(drawX + PLAYER_WIDTH / 2, alertY);
-      if (cp.stompedBy != null && cp.stompedBy >= 0) {
+      if (cp.stompedBy !== null && cp.stompedBy >= 0) {
         const pulse = Math.sin((predicted?.tick ?? curr.tick) * 0.2) * 0.3 + 0.7;
         alertText.setAlpha(pulse);
       } else {
@@ -1994,14 +2078,14 @@ export class GameScene extends Phaser.Scene {
 
   private drawProjectiles(
     g: Phaser.GameObjects.Graphics,
-    curr: any,
-    predicted: any,
+    curr: GameStateData,
+    predicted: GameStateData | null,
     _delta: number,
   ) {
     // Local player's bullets from predicted state (instant feedback).
     // Remote player's bullets from server state (matches their rendered position).
     const localId = this.localPlayerId;
-    const projectiles: { proj: any; ownerState: any }[] = [];
+    const projectiles: { proj: SerializedProjectile; ownerState: GameStateData }[] = [];
 
     if (predicted && !this.replayMode) {
       for (const p of predicted.projectiles) {
@@ -2023,7 +2107,7 @@ export class GameScene extends Phaser.Scene {
       // First frame only: snap X to muzzle position (forward motion masks the transition)
       const maxLife = WEAPON_STATS[p.weapon as WeaponType]?.lifetime ?? 90;
       if (p.lifetime >= maxLife - 1 && gcfg) {
-        const owner = ownerState.players.find((pl: any) => pl.id === p.ownerId);
+        const owner = ownerState.players.find((pl) => pl.id === p.ownerId);
         if (owner) {
           // When wall sliding, gun points away from wall (same logic as gun sprite)
           const fdir = owner.wallSliding ? -(owner.facing as number) : (owner.facing as number);
@@ -2035,12 +2119,30 @@ export class GameScene extends Phaser.Scene {
       // Per-weapon bullet size (w × h)
       let bw: number, bh: number;
       switch (p.weapon) {
-        case WeaponType.Pistol:  bw = 3; bh = 2; break;
-        case WeaponType.SMG:     bw = 3; bh = 2; break;
-        case WeaponType.Shotgun: bw = 4; bh = 2; break;
-        case WeaponType.Sniper:  bw = 6; bh = 2; break;
-        case WeaponType.Rocket:  bw = 6; bh = 4; break;
-        default:                 bw = 3; bh = 2; break;
+        case WeaponType.Pistol:
+          bw = 3;
+          bh = 2;
+          break;
+        case WeaponType.SMG:
+          bw = 3;
+          bh = 2;
+          break;
+        case WeaponType.Shotgun:
+          bw = 4;
+          bh = 2;
+          break;
+        case WeaponType.Sniper:
+          bw = 6;
+          bh = 2;
+          break;
+        case WeaponType.Rocket:
+          bw = 6;
+          bh = 4;
+          break;
+        default:
+          bw = 3;
+          bh = 2;
+          break;
       }
       // Black shadow behind white rectangular bullet
       g.fillStyle(0x000000, 0.6);
@@ -2064,7 +2166,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private drawHUD(curr: any, displayState: any, predicted: any) {
+  private drawHUD(curr: GameStateData, displayState: GameStateData, _predicted: GameStateData | null) {
     // Warmup mode — hide all game HUD
     if (this.warmupMode) {
       this.timerText.setText("");
@@ -2104,7 +2206,9 @@ export class GameScene extends Phaser.Scene {
 
     // Round info
     if (!this.replayMode) {
-      this.roundText.setText(`R${this.currentRound + 1}/${this.totalRounds}  ${this.roundWins[0]}-${this.roundWins[1]}`);
+      this.roundText.setText(
+        `R${this.currentRound + 1}/${this.totalRounds}  ${this.roundWins[0]}-${this.roundWins[1]}`,
+      );
       this.roundText.setVisible(true);
     } else {
       this.roundText.setVisible(false);
@@ -2129,7 +2233,7 @@ export class GameScene extends Phaser.Scene {
     cam.scrollY = Math.round(cam.scrollY);
   }
 
-  private updateCamera(curr: any, predicted: any, delta: number) {
+  private updateCamera(curr: GameStateData, predicted: GameStateData | null, delta: number) {
     const cam = this.cameras.main;
 
     // Fixed zoom mode: show whole arena, centered (with padding so edges aren't clipped)
@@ -2224,7 +2328,9 @@ export class GameScene extends Phaser.Scene {
       try {
         this.sound.play(key, { volume: this.sfxVolume });
         return;
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
     playSFX(key, this.sfxVolume);
   }
@@ -2238,7 +2344,9 @@ export class GameScene extends Phaser.Scene {
         this.sound.stopByKey(key);
         this.sound.play(key, { volume: this.sfxVolume });
         return;
-      } catch { /* fall through */ }
+      } catch {
+        /* fall through */
+      }
     }
     playSFX(key, this.sfxVolume);
   }
@@ -2300,7 +2408,10 @@ export class GameScene extends Phaser.Scene {
       if (this.bgm?.isPlaying && "volume" in this.bgm) {
         const oldTrack = this.bgm as Phaser.Sound.WebAudioSound;
         this.fadeVolume(oldTrack, oldTrack.volume, 0, 1000);
-        setTimeout(() => { oldTrack.stop(); oldTrack.destroy(); }, 1050);
+        setTimeout(() => {
+          oldTrack.stop();
+          oldTrack.destroy();
+        }, 1050);
       } else if (this.bgm) {
         this.bgm.destroy();
       }
@@ -2312,9 +2423,9 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private detectAudioEvents(prev: any, curr: any) {
+  private detectAudioEvents(prev: GameStateData, curr: GameStateData) {
     // New projectiles → shoot sound (detect by ID, not count, since old ones expire)
-    const prevIds = new Set(prev.projectiles.map((p: any) => p.id));
+    const prevIds = new Set(prev.projectiles.map((p) => p.id));
     for (const proj of curr.projectiles) {
       if (!prevIds.has(proj.id)) {
         if (proj.weapon === WeaponType.SMG) {
@@ -2334,14 +2445,14 @@ export class GameScene extends Phaser.Scene {
         if (cp.health < pp.health && cp.health > 0) {
           this.playSound("hit");
         }
-        if ((pp.stateFlags & PlayerStateFlag.Alive) && !(cp.stateFlags & PlayerStateFlag.Alive)) {
+        if (pp.stateFlags & PlayerStateFlag.Alive && !(cp.stateFlags & PlayerStateFlag.Alive)) {
           this.playSound("death");
         }
-        if (cp.weapon != null && cp.weapon >= 0 && cp.weapon !== pp.weapon) {
+        if (cp.weapon !== null && cp.weapon >= 0 && cp.weapon !== pp.weapon) {
           this.playSound("pickup");
         }
         // Jump: jumpsLeft decreased while alive
-        if (cp.jumpsLeft < pp.jumpsLeft && (cp.stateFlags & PlayerStateFlag.Alive)) {
+        if (cp.jumpsLeft < pp.jumpsLeft && cp.stateFlags & PlayerStateFlag.Alive) {
           this.playSound("jump");
         }
       }

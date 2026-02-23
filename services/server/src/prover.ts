@@ -2,11 +2,12 @@ import { spawn } from "child_process";
 import { writeFile, readFile, unlink, mkdir, rmdir } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
-const PROVER_BINARY = process.env.PROVER_BINARY || resolve(import.meta.dir, "../../prover/target/release/chickenz-host");
+const PROVER_BINARY =
+  process.env.PROVER_BINARY || resolve(import.meta.dir, "../../prover/target/release/chickenz-host");
 const WORKER_TIMEOUT_MS = 60_000; // worker considered offline after 60s without poll
 
 export interface ProofArtifacts {
-  seal: string;    // hex-encoded
+  seal: string; // hex-encoded
   journal: string; // hex-encoded
   imageId: string; // hex-encoded
   boundlessRequestId?: string; // Boundless marketplace request ID (hex)
@@ -15,7 +16,7 @@ export interface ProofArtifacts {
 export interface ProofJob {
   matchId: string;
   transcript: object;
-  status: "queued" | "claimed" | "proving" | "done" | "failed";
+  status: "queued" | "claimed" | "done";
   claimedAt?: number;
   artifacts?: ProofArtifacts;
   onResult?: (artifacts: ProofArtifacts | null, source?: string) => void;
@@ -35,8 +36,18 @@ export function workerHeartbeat() {
   lastWorkerPing = Date.now();
 }
 
-/** Queue a proof job. Called when a ranked match ends. */
-export function queueProof(matchId: string, transcript: object, onResult?: (artifacts: ProofArtifacts | null, source?: string) => void): ProofJob {
+/** Queue a proof job. Called when a ranked match ends. Deduplicates by matchId. */
+export function queueProof(
+  matchId: string,
+  transcript: object,
+  onResult?: (artifacts: ProofArtifacts | null, source?: string) => void,
+): ProofJob {
+  // Prevent duplicate queue entries for the same match
+  const existing = proofQueue.find((j) => j.matchId === matchId);
+  if (existing) {
+    console.log(`[prover] Job for ${matchId} already in queue (status: ${existing.status}), skipping`);
+    return existing;
+  }
   const job: ProofJob = { matchId, transcript, status: "queued", onResult };
   proofQueue.push(job);
   console.log(`[prover] Queued proof for ${matchId} (queue size: ${proofQueue.length})`);
@@ -56,33 +67,37 @@ export function claimNextJob(): ProofJob | null {
   return job ?? null;
 }
 
-/** Get a job's transcript for the worker to download. */
+/** Get a job's transcript for the worker to download (only if claimed). */
 export function getJobTranscript(matchId: string): object | null {
-  const job = proofQueue.find((j) => j.matchId === matchId);
+  const job = proofQueue.find((j) => j.matchId === matchId && j.status === "claimed");
   return job?.transcript ?? null;
 }
 
-/** Worker submits proof result. */
+/** Worker submits proof result (only for claimed jobs). */
 export function submitJobResult(matchId: string, artifacts: ProofArtifacts): ProofJob | null {
-  const job = proofQueue.find((j) => j.matchId === matchId);
+  const job = proofQueue.find((j) => j.matchId === matchId && j.status === "claimed");
   if (!job) return null;
   job.artifacts = artifacts;
   job.status = "done";
   console.log(`[prover] Proof received for ${matchId}`);
   // Invoke onResult callback if registered
   if (job.onResult) {
-    try { job.onResult(artifacts, "worker"); } catch (e) { console.error(`[prover] onResult callback error for ${matchId}:`, e); }
+    try {
+      job.onResult(artifacts, "worker");
+    } catch (e) {
+      console.error(`[prover] onResult callback error for ${matchId}:`, e);
+    }
   }
   return job;
 }
 
-/** Prune completed/failed jobs older than 5 min, reset stale claimed jobs. */
+/** Prune completed jobs, reset stale claimed jobs. */
 function pruneJobs() {
   const now = Date.now();
   for (let i = proofQueue.length - 1; i >= 0; i--) {
     const job = proofQueue[i]!;
-    // Remove completed/failed jobs older than 5 min
-    if ((job.status === "done" || job.status === "failed") && job.claimedAt && now - job.claimedAt > JOB_TIMEOUT_MS) {
+    // Remove completed jobs (result already delivered via callback)
+    if (job.status === "done") {
       proofQueue.splice(i, 1);
       continue;
     }
@@ -102,10 +117,7 @@ export function getJob(matchId: string): ProofJob | null {
 
 // ── Boundless fallback (spawns local binary) ─────────────
 
-export async function proveBoundless(
-  matchId: string,
-  transcript: object,
-): Promise<ProofArtifacts | null> {
+export async function proveBoundless(matchId: string, transcript: object): Promise<ProofArtifacts | null> {
   const workDir = join(tmpdir(), `chickenz-prove-${matchId}`);
   const inputPath = join(workDir, "input.json");
   const outputPath = join(workDir, "proof_artifacts.json");
@@ -129,8 +141,12 @@ export async function proveBoundless(
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      proc.stdout.on("data", (data: Buffer) => { stdout += data.toString(); });
-      proc.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
+      proc.stdout.on("data", (data: Buffer) => {
+        stdout += data.toString();
+      });
+      proc.stderr.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
       proc.on("error", (err) => {
         console.error(`[prover] Failed to spawn Boundless for ${matchId}:`, err.message);
         reject(err);
@@ -162,9 +178,21 @@ export async function proveBoundless(
     console.error(`[prover] Error in Boundless proving ${matchId}:`, err);
     return null;
   } finally {
-    try { await unlink(inputPath); } catch {}
-    try { await unlink(outputPath); } catch {}
-    try { await rmdir(workDir); } catch {}
+    try {
+      await unlink(inputPath);
+    } catch {
+      /* cleanup */
+    }
+    try {
+      await unlink(outputPath);
+    } catch {
+      /* cleanup */
+    }
+    try {
+      await rmdir(workDir);
+    } catch {
+      /* cleanup */
+    }
   }
 }
 
@@ -178,25 +206,35 @@ export function proveMatch(
   onResult: (artifacts: ProofArtifacts | null, source?: string) => void,
 ) {
   let settled = false;
+
+  function markJobDone() {
+    const job = proofQueue.find((j) => j.matchId === matchId);
+    if (job && job.status !== "done") {
+      job.status = "done";
+    }
+  }
+
   const settleOnce = (source: string) => (artifacts: ProofArtifacts | null, _source?: string) => {
     if (settled) return;
-    if (!artifacts) {
-      // Only settle with null if both have failed — track individually
-      return;
-    }
+    if (!artifacts) return;
     settled = true;
+    markJobDone(); // Prevent workers from re-claiming
     console.log(`[prover] ${matchId} proved by ${source}`);
     onResult(artifacts, source);
   };
 
   // Safety timeout: if neither prover settles within 10 minutes, report failure
-  setTimeout(() => {
-    if (!settled) {
-      settled = true;
-      console.log(`[prover] ${matchId} timed out after 10 minutes`);
-      onResult(null);
-    }
-  }, 10 * 60 * 1000);
+  setTimeout(
+    () => {
+      if (!settled) {
+        settled = true;
+        markJobDone(); // Clean up stale job
+        console.log(`[prover] ${matchId} timed out after 10 minutes`);
+        onResult(null);
+      }
+    },
+    10 * 60 * 1000,
+  );
 
   // Always queue for worker (gaming PC polls these)
   queueProof(matchId, transcript, settleOnce("worker"));
@@ -211,24 +249,18 @@ export function proveMatch(
           settleOnce("boundless")(artifacts);
         } else {
           console.log(`[prover] Boundless failed for ${matchId}`);
-          // If worker hasn't delivered either, give up
-          if (!settled) {
-            const job = proofQueue.find((j) => j.matchId === matchId);
-            if (!job || job.status === "failed") {
-              settled = true;
-              onResult(null);
-            }
+          // If worker job is also gone (pruned/not claimed), give up
+          if (!settled && !proofQueue.find((j) => j.matchId === matchId && j.status !== "done")) {
+            settled = true;
+            onResult(null);
           }
         }
       })
       .catch(() => {
         console.log(`[prover] Boundless error for ${matchId}`);
-        if (!settled) {
-          const job = proofQueue.find((j) => j.matchId === matchId);
-          if (!job || job.status === "failed") {
-            settled = true;
-            onResult(null);
-          }
+        if (!settled && !proofQueue.find((j) => j.matchId === matchId && j.status !== "done")) {
+          settled = true;
+          onResult(null);
         }
       });
   } else {

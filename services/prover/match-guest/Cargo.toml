@@ -1,9 +1,0 @@
-[package]
-name = "chickenz-match-guest"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-chickenz-core = { path = "../core" }
-risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
-sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.9-risczero.0" }

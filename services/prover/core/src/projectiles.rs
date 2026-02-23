@@ -62,10 +62,7 @@ pub struct HitResult {
 /// - Skip invincible players
 /// - Apply per-weapon damage, track kills
 /// - Rockets apply splash damage on hit
-pub fn resolve_projectile_hits(
-    projectiles: &[Projectile],
-    players: &[PlayerState],
-) -> HitResult {
+pub fn resolve_projectile_hits(projectiles: &[Projectile], players: &[PlayerState]) -> HitResult {
     let mut hit_projectile_ids = Vec::new();
     let mut updated_players = players.to_vec();
     let mut kills = Vec::new();
@@ -107,8 +104,7 @@ pub fn resolve_projectile_hits(
 
                 // Rocket splash damage on impact
                 if is_rocket(proj) {
-                    let splash_kills =
-                        apply_splash_damage(proj.x, proj.y, proj.owner_id, &mut updated_players);
+                    let splash_kills = apply_splash_damage(proj.x, proj.y, proj.owner_id, &mut updated_players);
                     for (killer, victim) in splash_kills {
                         kills.push(ProjectileKill {
                             killer_id: killer,

@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Chickenz ZK Prover
-# Usage: ./scripts/prove.sh <transcript.json> [--local] [--chunked]
+# Usage: ./scripts/prove.sh <transcript.json> [--local] [--boundless]
 #
 # Modes:
-#   --local     Generate local STARK proof (no Groth16, can't settle on-chain)
-#   --chunked   Use chunked composition (10 chunks + match composer)
-#   (default)   Generate Groth16 proof via Bonsai (requires BONSAI_API_KEY)
+#   --local       Generate local STARK proof (no Groth16, can't settle on-chain)
+#   --boundless   Generate Groth16 proof via Boundless marketplace
+#   (default)     Generate Groth16 proof locally (requires RISC Zero Groth16 toolchain)
 #
 # Dev mode (for testing):
-#   RISC0_DEV_MODE=1 ./scripts/prove.sh transcript.json --chunked
+#   RISC0_DEV_MODE=1 ./scripts/prove.sh transcript.json --local
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -18,16 +18,17 @@ PROVER_DIR="$ROOT_DIR/services/prover"
 HOST_BIN="$PROVER_DIR/target/release/chickenz-host"
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <transcript.json> [--local] [--chunked]"
+    echo "Usage: $0 <transcript.json> [--local] [--boundless]"
     echo ""
     echo "Options:"
-    echo "  --local     Local STARK proof (no Groth16)"
-    echo "  --chunked   Chunked composition (recommended)"
+    echo "  --local       Local STARK proof (no Groth16)"
+    echo "  --boundless   Groth16 via Boundless marketplace"
     echo ""
     echo "Environment:"
     echo "  RISC0_DEV_MODE=1    Skip real proving (testing only)"
-    echo "  BONSAI_API_KEY      Required for Groth16 proofs"
-    echo "  BONSAI_API_URL      Bonsai API endpoint"
+    echo "  RPC_URL              Required for Boundless proving"
+    echo "  PRIVATE_KEY          Required for Boundless proving"
+    echo "  PINATA_JWT           Required for Boundless proving"
     exit 1
 fi
 
@@ -46,23 +47,9 @@ if [ ! -f "$HOST_BIN" ]; then
     (cd "$PROVER_DIR" && cargo build --release -p chickenz-host)
 fi
 
-# Check for Groth16 requirements
-HAS_LOCAL=false
-for arg in "$@"; do
-    if [ "$arg" = "--local" ]; then HAS_LOCAL=true; fi
-done
-
-if [ "$HAS_LOCAL" = false ] && [ -z "${RISC0_DEV_MODE:-}" ]; then
-    if [ -z "${BONSAI_API_KEY:-}" ]; then
-        echo "WARNING: No BONSAI_API_KEY set. Groth16 proving requires Bonsai."
-        echo "  Set BONSAI_API_KEY and BONSAI_API_URL, or use --local for STARK."
-        echo ""
-    fi
-fi
-
 echo "=== Chickenz ZK Prover ==="
 echo "Transcript: $TRANSCRIPT"
-echo "Mode: ${RISC0_DEV_MODE:+dev }${HAS_LOCAL:+STARK}${HAS_LOCAL:-Groth16} $@"
+echo "Args: $@"
 echo ""
 
 "$HOST_BIN" "$TRANSCRIPT" "$@"

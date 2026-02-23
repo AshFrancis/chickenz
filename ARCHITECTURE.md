@@ -15,10 +15,8 @@ services/server/        Bun WebSocket server — matchmaking, rooms, ELO, on-cha
 services/prover/
   core/                 Rust sim (fixed-point i32, single source of truth, 52 tests)
   wasm/                 WASM crate — wasm-bindgen wrapper (used by client + server)
-  guest/                RISC Zero monolithic guest (multi-round, ~5.2M cycles/round)
-  chunk-guest/          Chunk prover guest (single-round, 360 ticks per chunk)
-  match-guest/          Match composer guest (verifies chunk proof chain)
-  host/                 Orchestration (monolithic + chunked + Boundless modes)
+  guest/                RISC Zero guest (multi-round, ~234K cycles/round)
+  host/                 Orchestration (monolithic + Boundless modes)
 contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
 ```
 
@@ -31,25 +29,25 @@ Browser                          Server                    Blockchain
   │                                │                          │
   ├─ Connect wallet ──────────────→│                          │
   ├─ Set username ────────────────→│                          │
-  ├─ Quick Play / Create Room ───→│                          │
+  ├─ Quick Play / Create Room ────→│                          │
   │                                ├─ Match players           │
   │                                ├─ start_match() ────────→ │ Game Hub
-  │←── matched(playerId, seed) ───┤                          │
+  │←── matched(playerId, seed) ────┤                          │
   │                                │                          │
-  │  ┌─ 30-second round (best of 3) ──┐ │                          │
-  │  │ Client sends inputs ────→│ │                          │
-  │  │ Server runs WASM sim 60Hz│ │                          │
-  │  │ Server broadcasts state  │ │                          │
-  │  │ Client predicts + renders│ │                          │
-  │  └─────────────────────────┘ │                          │
+  │  ┌─ 30-second round (bo3) ──┐  │                          │
+  │  │ Client sends inputs ────→│  │                          │
+  │  │ Server runs WASM sim 60Hz│  │                          │
+  │  │ Server broadcasts state  │  │                          │
+  │  │ Client predicts + renders│  │                          │
+  │  └──────────────────────────┘  │                          │
   │                                │                          │
-  │←── ended(winner, scores) ─────┤                          │
+  │←── ended(winner, scores) ──────┤                          │
   │                                ├─ Store transcript        │
   │                                ├─ Generate ZK proof ────┐ │
-  │                                │  (worker or Boundless)  │ │
-  │                                ├─ settle_match(seal) ──→│ │ Verifier
-  │                                │                       └→ │ Game Hub
-  │←── Settlement confirmed ──────┤                          │
+  │                                │  (worker or Boundless) │ │
+  │                                ├─ settle_match(seal) ──→│ │ 
+  │                                │                        └→│ Verifier → Game Hub
+  │←── Settlement confirmed ───────┤                          │
 ```
 
 ---

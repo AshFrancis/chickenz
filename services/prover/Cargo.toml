@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "guest", "chunk-guest", "match-guest", "methods", "host"]
+members = ["core", "guest", "methods", "host"]
 # Only build core by default; guest/methods/host need RISC Zero toolchain
 default-members = ["core"]
 # wasm crate excluded: has std deps (wasm-bindgen) incompatible with no_std guest builds
@@ -8,6 +8,11 @@ resolver = "2"
 
 [workspace.dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+unwrap_used = { level = "allow" }
 
 # Optimize guest code for minimal cycles in zkVM
 [profile.release]

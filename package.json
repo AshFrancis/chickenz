@@ -1,17 +1,30 @@
 {
   "private": true,
-  "workspaces": ["packages/*", "apps/*", "services/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "services/*"
+  ],
   "scripts": {
     "dev:client": "pnpm --filter @chickenz/client dev",
     "dev:server": "pnpm --filter @chickenz/server dev",
     "build": "pnpm build:wasm && pnpm --filter @chickenz/client build",
     "start": "bun services/server/src/index.ts",
     "test": "bun test packages/sim",
-    "typecheck": "tsc -b packages/sim apps/client",
-    "build:wasm": "cd services/prover/wasm && wasm-pack build --target web"
+    "typecheck": "tsc -b packages/sim && tsc --noEmit -p apps/client && bun build services/server/src/index.ts --outdir /tmp/chickenz-typecheck --target bun",
+    "build:wasm": "cd services/prover/wasm && wasm-pack build --target web",
+    "lint": "eslint packages/sim/src apps/client/src services/server/src",
+    "lint:fix": "eslint --fix packages/sim/src apps/client/src services/server/src",
+    "format": "prettier --write 'packages/sim/src/**/*.ts' 'apps/client/src/**/*.ts' 'services/server/src/**/*.ts' '*.json'",
+    "format:check": "prettier --check 'packages/sim/src/**/*.ts' 'apps/client/src/**/*.ts' 'services/server/src/**/*.ts' '*.json'"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.0.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.8.1",
     "sharp": "^0.34.5",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.56.0"
   }
 }

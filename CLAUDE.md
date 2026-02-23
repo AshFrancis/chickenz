@@ -9,17 +9,6 @@
 
 Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes settled on Stellar Soroban. Two players compete in best-of-3 rounds (30 seconds each, 1 life per round). Five weapons spawn on the map. A sudden death mechanic closes the arena walls at 20s. The full input transcript feeds a RISC Zero ZK proof that verifies the result on-chain.
 
-## Hackathon
-
-**Stellar Hacks: ZK Gaming** on DoraHacks. Deadline: **2026-02-23**.
-
-Submission requirements:
-1. **ZK-Powered Mechanic** — ZK proof must power a core game mechanic (not just a demo)
-2. **Deployed Onchain Component** — Soroban contract on Stellar Testnet, must call `start_game()` and `end_game()` on the Game Hub: `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG`
-3. **Front End** — Functional UI showing gameplay + ZK + onchain connection
-4. **Open-source Repo** — Public GitHub with clear README
-5. **Video Demo** — 2-3 minute walkthrough
-
 ## Status
 
 All phases complete. Deterministic sim (64 TS tests), Rust prover (52 tests), Soroban contracts deployed, multiplayer server with lobby/ELO/replays/bots/tournaments, Phaser client with prediction + wallet connect.
@@ -42,9 +31,7 @@ services/prover/
   core/                 Rust fixed-point sim (i32, 52 tests, single source of truth)
   wasm/                 WASM build of core (used by client + server)
   guest/                RISC Zero guest — multi-round proof (2 winning rounds)
-  chunk-guest/          Chunk prover guest (360 ticks, single-round)
-  match-guest/          Match composer guest
-  host/                 Orchestration (monolithic + chunked + Boundless)
+  host/                 Orchestration (monolithic + Boundless)
 contracts/chickenz/     Soroban game contract (deployed on testnet)
 ```
 
@@ -103,7 +90,7 @@ Required calls:
 | File | Contents |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Component layout, authority model, data flow |
-| [DEV_ROADMAP.md](DEV_ROADMAP.md) | Hackathon sprint plan and progress |
+| [DEV_ROADMAP.md](DEV_ROADMAP.md) | Development roadmap and progress |
 | [SIM_SPEC.md](SIM_SPEC.md) | GameState/PlayerState structures, transition function, determinism |
 | [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) | RISC Zero pipeline, journal layout, settlement flow |
 | [MULTIPLAYER.md](MULTIPLAYER.md) | Netcode, prediction, room lifecycle |

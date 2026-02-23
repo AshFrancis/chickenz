@@ -63,12 +63,7 @@ pub fn apply_gravity(p: &PlayerState) -> PlayerState {
 /// Integrate position and resolve collisions with platforms.
 /// Platforms are one-way: only collide when falling onto the top surface.
 /// Also clamp to map boundaries and dynamic arena bounds.
-pub fn move_and_collide(
-    p: &PlayerState,
-    map: &GameMap,
-    arena_left: f64,
-    arena_right: f64,
-) -> PlayerState {
+pub fn move_and_collide(p: &PlayerState, map: &GameMap, arena_left: f64, arena_right: f64) -> PlayerState {
     if p.state_flags & player_state_flag::ALIVE == 0 {
         return *p;
     }
@@ -84,11 +79,7 @@ pub fn move_and_collide(
         let feet_after = y + PLAYER_HEIGHT;
         let plat_top = plat.y;
 
-        if feet_before <= plat_top
-            && feet_after >= plat_top
-            && x + PLAYER_WIDTH > plat.x
-            && x < plat.x + plat.width
-        {
+        if feet_before <= plat_top && feet_after >= plat_top && x + PLAYER_WIDTH > plat.x && x < plat.x + plat.width {
             y = plat_top - PLAYER_HEIGHT;
             vy = 0.0;
             grounded = true;

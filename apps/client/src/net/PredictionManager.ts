@@ -1,5 +1,8 @@
 import type { PlayerInput } from "@chickenz/sim";
 import { NULL_INPUT } from "@chickenz/sim";
+import type { StateMessage } from "../../../../services/server/src/protocol";
+/** Game state data — shared shape of StateMessage, SpectateStateMessage, and WASM exports */
+type GameStateData = Omit<StateMessage, "type">;
 import { WasmState } from "../wasm";
 import { InputBuffer } from "./InputBuffer";
 
@@ -20,7 +23,7 @@ export class PredictionManager {
   private lastLocalInput: PlayerInput = NULL_INPUT;
   private seed: number;
   private mapJson: string;
-  private _cachedState: any = null;
+  private _cachedState: GameStateData | null = null;
   private _cacheValid = false;
 
   // Diagnostics
@@ -35,9 +38,9 @@ export class PredictionManager {
   }
 
   /** Export the current predicted state as a plain JS object for rendering. Cached until next step/import. */
-  get predictedState(): any {
+  get predictedState(): GameStateData | null {
     if (!this._cacheValid) {
-      this._cachedState = this.wasmState.export_state();
+      this._cachedState = this.wasmState.export_state() as GameStateData;
       this._cacheValid = true;
     }
     return this._cachedState;
@@ -60,10 +63,7 @@ export class PredictionManager {
     const p0 = this.localPlayerId === 0 ? localInput : NULL_INPUT;
     const p1 = this.localPlayerId === 1 ? localInput : NULL_INPUT;
 
-    this.wasmState.step(
-      p0.buttons, p0.aimX, p0.aimY,
-      p1.buttons, p1.aimX, p1.aimY,
-    );
+    this.wasmState.step(p0.buttons, p0.aimX, p0.aimY, p1.buttons, p1.aimX, p1.aimY);
 
     this._cacheValid = false;
   }
@@ -75,7 +75,7 @@ export class PredictionManager {
    * from T+1..predictedTick. Capped at MAX_REPLAY to prevent runaway if
    * client prediction drifts ahead of server.
    */
-  applyServerState(serverState: any, serverTick: number, _serverLastButtons?: [number, number]): void {
+  applyServerState(serverState: GameStateData, serverTick: number, _serverLastButtons?: [number, number]): void {
     const MAX_REPLAY = 16; // cap replay to prevent progressive slowdown
 
     if (serverTick >= this.predictedTick) {
@@ -125,29 +125,38 @@ export class PredictionManager {
       const localInput = this.inputBuffer.get(tick);
       const p0 = this.localPlayerId === 0 ? localInput : NULL_INPUT;
       const p1 = this.localPlayerId === 1 ? localInput : NULL_INPUT;
-      this.wasmState.step(
-        p0.buttons, p0.aimX, p0.aimY,
-        p1.buttons, p1.aimX, p1.aimY,
-      );
+      this.wasmState.step(p0.buttons, p0.aimX, p0.aimY, p1.buttons, p1.aimX, p1.aimY);
     }
 
     this.inputBuffer.prune(serverTick);
     this._cacheValid = false;
   }
 
-  private recreateFromState(serverState: any, serverTick: number): void {
-    console.warn(`[Prediction] import_state failed (WASM tick=${this.wasmState.tick()}, expected=${serverTick}), recreating`);
-    try { this.wasmState.free(); } catch { /* already freed */ }
+  private recreateFromState(serverState: GameStateData, serverTick: number): void {
+    console.warn(
+      `[Prediction] import_state failed (WASM tick=${this.wasmState.tick()}, expected=${serverTick}), recreating`,
+    );
+    try {
+      this.wasmState.free();
+    } catch {
+      /* already freed */
+    }
     this.wasmState = new WasmState(this.seed, this.mapJson);
     this.wasmState.import_state(serverState);
     if (this.wasmState.tick() !== serverTick) {
-      console.error(`[Prediction] import_state failed even after recreate (tick=${this.wasmState.tick()}, expected=${serverTick})`);
+      console.error(
+        `[Prediction] import_state failed even after recreate (tick=${this.wasmState.tick()}, expected=${serverTick})`,
+      );
     }
   }
 
   /** Reset prediction state (e.g., on round start). */
   reset(seed: number, mapJson: string) {
-    try { this.wasmState.free(); } catch { /* already freed */ }
+    try {
+      this.wasmState.free();
+    } catch {
+      /* already freed */
+    }
     this.wasmState = new WasmState(seed, mapJson);
     this.predictedTick = 0;
     this.inputBuffer.clear();
@@ -156,7 +165,11 @@ export class PredictionManager {
 
   /** Free WASM resources. */
   free() {
-    try { this.wasmState.free(); } catch { /* already freed */ }
+    try {
+      this.wasmState.free();
+    } catch {
+      /* already freed */
+    }
   }
 
   get currentTick(): number {

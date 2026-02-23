@@ -1,21 +1,12 @@
 import type { PlayerState, Projectile, WeaponPickup, GameMap } from "./types";
 import { WeaponType, PlayerStateFlag } from "./types";
-import {
-  WEAPON_STATS,
-  WEAPON_PICKUP_RESPAWN_TICKS,
-  WEAPON_ROTATION,
-  PLAYER_WIDTH,
-  PLAYER_HEIGHT,
-} from "./constants";
+import { WEAPON_STATS, WEAPON_PICKUP_RESPAWN_TICKS, WEAPON_ROTATION, PLAYER_WIDTH, PLAYER_HEIGHT } from "./constants";
 import { prngNext } from "./prng";
 
 /** Create initial weapon pickups from map spawn points. Uses rng to assign weapon types. */
-export function createInitialPickups(
-  map: GameMap,
-  rngState: number,
-): { pickups: WeaponPickup[]; rngState: number } {
+export function createInitialPickups(map: GameMap, rngState: number): { pickups: WeaponPickup[]; rngState: number } {
   const pickups: WeaponPickup[] = [];
-  let rng = rngState;
+  const rng = rngState;
 
   for (let i = 0; i < map.weaponSpawnPoints.length; i++) {
     const sp = map.weaponSpawnPoints[i]!;
@@ -34,9 +25,7 @@ export function createInitialPickups(
 }
 
 /** Tick pickup respawn timers and rotate weapon type when respawning. */
-export function tickPickupTimers(
-  pickups: readonly WeaponPickup[],
-): WeaponPickup[] {
+export function tickPickupTimers(pickups: readonly WeaponPickup[]): WeaponPickup[] {
   return pickups.map((p) => {
     if (p.respawnTimer <= 0) return p;
     const newTimer = p.respawnTimer - 1;
@@ -119,7 +108,8 @@ export function createWeaponProjectiles(
   const stats = WEAPON_STATS[weapon];
 
   // Normalize aim vector; when wall sliding, always shoot away from wall
-  let ax = aimX, ay = aimY;
+  let ax = aimX,
+    ay = aimY;
   if (player.wallSliding) {
     ax = -player.facing;
     ay = 0;

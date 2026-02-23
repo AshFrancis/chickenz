@@ -12,11 +12,7 @@ export function prngNext(state: number): [number, number] {
 }
 
 /** Returns a random integer in [min, max] inclusive. */
-export function prngIntRange(
-  state: number,
-  min: number,
-  max: number,
-): [number, number] {
+export function prngIntRange(state: number, min: number, max: number): [number, number] {
   const [value, nextState] = prngNext(state);
   const range = max - min + 1;
   return [min + Math.floor(value * range), nextState];

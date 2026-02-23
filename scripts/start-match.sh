@@ -2,18 +2,19 @@
 set -euo pipefail
 
 # Chickenz Start Match On-Chain
-# Usage: ./scripts/start-match.sh <session_id> <seed>
+# Usage: ./scripts/start-match.sh <session_id> <seed> [player2_address]
 #
 # Registers a match on the Game Hub with the given seed commitment.
+# If player2_address is omitted, uses the same address as player1 (testing).
 
 CHICKENZ_CONTRACT="CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP"
 NETWORK="testnet"
 SOURCE="${STELLAR_SOURCE:-default}"
 
 if [ $# -lt 2 ]; then
-    echo "Usage: $0 <session_id> <seed>"
+    echo "Usage: $0 <session_id> <seed> [player2_address]"
     echo ""
-    echo "Example: $0 42 42"
+    echo "Example: $0 42 42 GABC..."
     echo ""
     echo "Environment:"
     echo "  STELLAR_SOURCE    Stellar key name (default: 'default')"
@@ -30,13 +31,15 @@ seed = int('$SEED').to_bytes(4, 'little')
 print(hashlib.sha256(seed).hexdigest())
 ")
 
-PLAYER=$(stellar keys address "$SOURCE" 2>/dev/null)
+PLAYER1=$(stellar keys address "$SOURCE" 2>/dev/null)
+PLAYER2="${3:-$PLAYER1}"
 
 echo "=== Chickenz Start Match ==="
 echo "Session ID:  $SESSION_ID"
 echo "Seed:        $SEED"
 echo "Seed commit: $SEED_COMMIT"
-echo "Player:      $PLAYER"
+echo "Player 1:    $PLAYER1"
+echo "Player 2:    $PLAYER2"
 echo "Contract:    $CHICKENZ_CONTRACT"
 echo ""
 
@@ -47,8 +50,8 @@ stellar contract invoke \
     --network "$NETWORK" \
     -- start_match \
     --session_id "$SESSION_ID" \
-    --player1 "$PLAYER" \
-    --player2 "$PLAYER" \
+    --player1 "$PLAYER1" \
+    --player2 "$PLAYER2" \
     --seed_commit "$SEED_COMMIT"
 
 echo ""

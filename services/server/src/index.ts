@@ -1,10 +1,36 @@
 import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
-import type { ClientMessage, RoomInfo, GameMode } from "./protocol";
-import { startMatchOnChain, settleMatchOnChain, verifySignature } from "./stellar";
-import { proveMatch, claimNextJob, getJobTranscript, submitJobResult, getJob, workerHeartbeat, isWorkerOnline, type ProofArtifacts } from "./prover";
-import { updateElo, getLeaderboard, insertMatch, updateProofStatus, getRecentMatches, getMatchById, generateMatchId, updateStartTxHash, updateSettleTxHash, updateProofTimestamps, updateMatchStartTime, updateWalletVerified, saveTranscript, getTranscriptByRoomId, updateTranscriptCid, updateBoundlessRequestId, type MatchRecord } from "./db";
+import type { ClientMessage, RoomInfo, GameMode, InputMessage } from "./protocol";
+import { generateJoinCode } from "./protocol";
+import { startMatchOnChain, settleMatchOnChain, verifySignature, verifyTxOnChain } from "./stellar";
+import {
+  proveMatch,
+  claimNextJob,
+  getJobTranscript,
+  submitJobResult,
+  isWorkerOnline,
+  type ProofArtifacts,
+} from "./prover";
+import {
+  updateElo,
+  getLeaderboard,
+  insertMatch,
+  updateProofStatus,
+  getRecentMatches,
+  getMatchById,
+  generateMatchId,
+  updateStartTxHash,
+  updateSettleTxHash,
+  updateProofTimestamps,
+  updateMatchStartTime,
+  updateWalletVerified,
+  saveTranscript,
+  getTranscriptByRoomId,
+  updateTranscriptCid,
+  updateBoundlessRequestId,
+  type MatchRecord,
+} from "./db";
 import { normalize, resolve } from "path";
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -44,9 +70,14 @@ const PORT = Number(process.env.PORT) || 3000;
 const rooms = new Map<string, GameRoom>();
 const tournaments = new Map<string, TournamentRoom>();
 const lobbySockets = new Set<ServerWebSocket<SocketData>>();
+const allSockets = new Set<ServerWebSocket<SocketData>>(); // all connected WS clients
 
 function generateRoomId(): string {
-  return crypto.randomUUID().slice(0, 8);
+  let id: string;
+  do {
+    id = crypto.randomUUID().slice(0, 8);
+  } while (rooms.has(id));
+  return id;
 }
 
 function getVisibleRooms(): RoomInfo[] {
@@ -114,7 +145,7 @@ async function pinTranscriptToIPFS(matchId: string, transcript: object) {
       console.error(`[ipfs] Pinata pin failed for ${matchId}: ${res.status}`);
       return;
     }
-    const data = await res.json() as { IpfsHash: string };
+    const data = (await res.json()) as { IpfsHash: string };
     const cid = data.IpfsHash;
     updateTranscriptCid(matchId, cid);
     console.log(`[ipfs] Transcript pinned for ${matchId}: ${cid}`);
@@ -123,7 +154,14 @@ async function pinTranscriptToIPFS(matchId: string, transcript: object) {
   }
 }
 
-function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) {
+function returnToLobby(
+  sockets: ServerWebSocket<SocketData>[],
+  winner: number,
+  roomId: string,
+  roomName: string,
+  scores: [number, number],
+  mode: GameMode,
+) {
   const room = rooms.get(roomId);
 
   // Only update ELO for ranked matches with sufficient input activity (never bots)
@@ -145,7 +183,8 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
   // Record match history
   if (sockets.length === 2) {
     const matchId = generateMatchId();
-    const sessionId = room?.sessionId || (Date.now() >>> 0);
+    if (room) room.matchRecordId = matchId;
+    const sessionId = room?.sessionId || Date.now() >>> 0;
     const record: MatchRecord = {
       id: matchId,
       sessionId,
@@ -171,8 +210,10 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
     record.wallet1Verified = !!sockets[0]?.data.walletVerified;
     record.wallet2Verified = !!sockets[1]?.data.walletVerified;
 
-    // Trigger proving for ranked matches (never bots)
-    if (mode === "ranked" && !room?.isBotMatch && room) {
+    // Trigger proving for ranked matches (never bots), only if match completed naturally (2 winning rounds)
+    const rw = room?.roundWinsSnapshot;
+    const hasFullResult = rw && (rw[0] >= 2 || rw[1] >= 2);
+    if (mode === "ranked" && !room?.isBotMatch && room && hasFullResult) {
       record.proofStatus = "proving";
       const transcript = room.getTranscript();
       const proofRequestedAt = Date.now();
@@ -203,7 +244,7 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
       const fullTranscript = room.getFullTranscript();
       saveTranscript(matchId, fullTranscript);
       // Pin to IPFS for immutable data availability (async, non-blocking)
-      pinTranscriptToIPFS(matchId, fullTranscript);
+      void pinTranscriptToIPFS(matchId, fullTranscript);
     }
 
     // Store timeline fields that insertMatch doesn't cover
@@ -214,6 +255,8 @@ function returnToLobby(sockets: ServerWebSocket<SocketData>[], winner: number, r
   }
 
   for (const ws of sockets) {
+    // Skip bot sockets — they're fake objects that should never enter the lobby
+    if (!allSockets.has(ws)) continue;
     lobbySockets.add(ws);
     sendLobby(ws);
   }
@@ -232,7 +275,14 @@ function onMatchStarted(room: GameRoom) {
   new DataView(seedBytes.buffer).setUint32(0, room.currentSeed, true);
   const seedCommit = new Uint8Array(new Bun.CryptoHasher("sha256").update(seedBytes).digest());
   startMatchOnChain(room.sessionId, w1, w2, seedCommit)
-    .then((hash) => { if (hash) room.startTxHash = hash; })
+    .then((hash) => {
+      if (!hash) return;
+      room.startTxHash = hash;
+      // If match already ended and DB record exists, update directly (race fix)
+      if (room.matchRecordId) {
+        updateStartTxHash(room.matchRecordId, hash);
+      }
+    })
     .catch(() => {});
 }
 
@@ -255,27 +305,108 @@ function findRoomByJoinCode(code: string): GameRoom | undefined {
   return undefined;
 }
 
+/** Check if a join code is already in use by any room or tournament. */
+function isJoinCodeInUse(code: string): boolean {
+  for (const room of rooms.values()) {
+    if (room.joinCode === code && !room.isEnded()) return true;
+  }
+  for (const t of tournaments.values()) {
+    if (t.joinCode === code && t.status !== "ended") return true;
+  }
+  return false;
+}
+
+/** Ensure a room/tournament's join code is globally unique; re-roll if collision. */
+function ensureUniqueJoinCode(entity: { joinCode: string }) {
+  while (isJoinCodeInUse(entity.joinCode)) {
+    entity.joinCode = generateJoinCode();
+  }
+}
+
 // ── Username validation ───────────────────────────────────
 
 const PROFANITY_LIST = new Set([
-  "fuck", "shit", "ass", "bitch", "dick", "cock", "pussy", "cunt",
-  "fag", "nigger", "nigga", "retard", "whore", "slut",
-  "damn", "piss", "twat", "wanker", "arse", "bollock",
-  "bugger", "chink", "coon", "dyke", "feck", "homo",
-  "jizz", "kike", "knob", "muff", "nig", "prick",
-  "spic", "tit", "turd", "anal", "anus", "balls",
-  "boob", "dildo", "douche", "erect", "felch", "fudge",
-  "gtfo", "handjob", "horny", "jackoff", "jerkoff", "milf",
-  "nazi", "nude", "nutsack", "orgasm", "penis", "porn",
-  "pube", "rape", "scrotum", "semen", "sex", "skank",
-  "spunk", "stfu", "testicle", "vagina", "vulva",
+  "fuck",
+  "shit",
+  "ass",
+  "bitch",
+  "dick",
+  "cock",
+  "pussy",
+  "cunt",
+  "fag",
+  "nigger",
+  "nigga",
+  "retard",
+  "whore",
+  "slut",
+  "damn",
+  "piss",
+  "twat",
+  "wanker",
+  "arse",
+  "bollock",
+  "bugger",
+  "chink",
+  "coon",
+  "dyke",
+  "feck",
+  "homo",
+  "jizz",
+  "kike",
+  "knob",
+  "muff",
+  "nig",
+  "prick",
+  "spic",
+  "tit",
+  "turd",
+  "anal",
+  "anus",
+  "balls",
+  "boob",
+  "dildo",
+  "douche",
+  "erect",
+  "felch",
+  "fudge",
+  "gtfo",
+  "handjob",
+  "horny",
+  "jackoff",
+  "jerkoff",
+  "milf",
+  "nazi",
+  "nude",
+  "nutsack",
+  "orgasm",
+  "penis",
+  "porn",
+  "pube",
+  "rape",
+  "scrotum",
+  "semen",
+  "sex",
+  "skank",
+  "spunk",
+  "stfu",
+  "testicle",
+  "vagina",
+  "vulva",
 ]);
 
 function normalizeLeetSpeak(s: string): string {
-  return s.toLowerCase()
-    .replace(/0/g, "o").replace(/1/g, "i").replace(/3/g, "e")
-    .replace(/4/g, "a").replace(/5/g, "s").replace(/7/g, "t")
-    .replace(/@/g, "a").replace(/\$/g, "s").replace(/!/g, "i");
+  return s
+    .toLowerCase()
+    .replace(/0/g, "o")
+    .replace(/1/g, "i")
+    .replace(/3/g, "e")
+    .replace(/4/g, "a")
+    .replace(/5/g, "s")
+    .replace(/7/g, "t")
+    .replace(/@/g, "a")
+    .replace(/\$/g, "s")
+    .replace(/!/g, "i");
 }
 
 function isValidUsername(name: string): boolean {
@@ -291,12 +422,57 @@ function isValidUsername(name: string): boolean {
 
 // ── Server ─────────────────────────────────────────────────
 
+// Server-issued challenges: token → issue timestamp (for single-use + freshness)
+const issuedChallenges = new Map<string, number>();
+// Reusable verification tokens: address → token (survives page reloads, lost on server restart)
+const verifiedTokens = new Map<string, string>();
+// Prune expired challenges every 10 minutes
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [token, ts] of issuedChallenges) {
+      if (now - ts > 10 * 60 * 1000) issuedChallenges.delete(token);
+    }
+  },
+  10 * 60 * 1000,
+);
+
 const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || "*";
-const corsHeaders = {
+const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 };
+
+// Simple per-IP rate limiter for HTTP API endpoints
+const httpRateMap = new Map<string, { count: number; resetAt: number }>();
+const HTTP_RATE_WINDOW = 60_000; // 1 minute window
+const HTTP_RATE_LIMIT = 120; // max requests per window per IP
+
+function checkHttpRate(ip: string): boolean {
+  const now = Date.now();
+  let entry = httpRateMap.get(ip);
+  if (!entry || now >= entry.resetAt) {
+    entry = { count: 0, resetAt: now + HTTP_RATE_WINDOW };
+    httpRateMap.set(ip, entry);
+  }
+  entry.count++;
+  return entry.count <= HTTP_RATE_LIMIT;
+}
+// Prune stale rate entries every 5 minutes
+setInterval(
+  () => {
+    const now = Date.now();
+    for (const [ip, entry] of httpRateMap) {
+      if (now >= entry.resetAt) httpRateMap.delete(ip);
+    }
+  },
+  5 * 60 * 1000,
+);
 
 const server = Bun.serve<SocketData>({
   port: PORT,
@@ -308,13 +484,21 @@ const server = Bun.serve<SocketData>({
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
+    // Rate limit API endpoints
+    if (url.pathname.startsWith("/api/")) {
+      const ip = server.requestIP(req)?.address ?? "unknown";
+      if (!checkHttpRate(ip)) {
+        return Response.json({ error: "Too many requests" }, { status: 429, headers: corsHeaders });
+      }
+    }
+
     // Redirect raw IP access to domain
     const host = req.headers.get("host") || "";
     if (host.startsWith("178.156.244.26")) {
       return new Response(null, {
         status: 301,
         headers: {
-          "Location": `https://chickenz.io${url.pathname}${url.search}`,
+          Location: `https://chickenz.io${url.pathname}${url.search}`,
           "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         },
       });
@@ -322,8 +506,23 @@ const server = Bun.serve<SocketData>({
 
     // WebSocket upgrade
     if (url.pathname === "/ws") {
+      // Validate Origin header to prevent cross-site WebSocket hijacking
+      const origin = req.headers.get("origin") ?? "";
+      if (ALLOWED_ORIGIN !== "*" && origin && origin !== ALLOWED_ORIGIN) {
+        return new Response("Forbidden origin", { status: 403 });
+      }
       const upgraded = server.upgrade(req, {
-        data: { roomId: null, playerId: -1, username: "", walletAddress: "", character: 0, awayCharacter: 1, tournamentId: null, msgCount: 0, msgResetTime: Date.now() },
+        data: {
+          roomId: null,
+          playerId: -1,
+          username: "",
+          walletAddress: "",
+          character: 0,
+          awayCharacter: 1,
+          tournamentId: null,
+          msgCount: 0,
+          msgResetTime: Date.now(),
+        },
       });
       if (!upgraded) {
         return new Response("WebSocket upgrade failed", {
@@ -364,9 +563,10 @@ const server = Bun.serve<SocketData>({
       return Response.json(getLeaderboard(), { headers: corsHeaders });
     }
 
-    // Match history endpoints
+    // Match history endpoints (strip sensitive fields for public API)
     if (url.pathname === "/api/matches") {
-      return Response.json(getRecentMatches(), { headers: corsHeaders });
+      const matches = getRecentMatches().map(({ wallet1: _w1, wallet2: _w2, proofArtifacts: _pa, ...rest }) => rest);
+      return Response.json(matches, { headers: corsHeaders });
     }
     const matchStatusMatch = url.pathname.match(/^\/api\/matches\/(.+)\/status$/);
     if (matchStatusMatch) {
@@ -397,12 +597,15 @@ const server = Bun.serve<SocketData>({
       if (!record) {
         return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
       }
-      return Response.json({
-        ...record,
-        contractAddress: "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
-        verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
-        gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
-      }, { headers: corsHeaders });
+      return Response.json(
+        {
+          ...record,
+          contractAddress: "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
+          verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
+          gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
+        },
+        { headers: corsHeaders },
+      );
     }
 
     // ── Client-triggered settle notification ──────────────
@@ -413,16 +616,29 @@ const server = Bun.serve<SocketData>({
       if (!record) {
         return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
       }
-      const body = await req.json().catch(() => ({} as any));
+      if (record.proofStatus !== "verified") {
+        return Response.json({ error: "Match not in verified state" }, { status: 400, headers: corsHeaders });
+      }
+      const body = await req.json().catch(() => ({}) as Record<string, unknown>);
       const txHash = body?.txHash;
-      if (!txHash || typeof txHash !== "string" || txHash.length < 10) {
+      if (!txHash || typeof txHash !== "string") {
         return Response.json({ error: "txHash required" }, { status: 400, headers: corsHeaders });
       }
-      if (record.proofStatus === "verified") {
-        updateProofStatus(matchId, "settled");
-        updateSettleTxHash(matchId, txHash);
+      // Validate txHash looks like a Stellar transaction hash (64 hex chars)
+      if (!/^[0-9a-fA-F]{64}$/.test(txHash)) {
+        return Response.json({ error: "Invalid txHash format" }, { status: 400, headers: corsHeaders });
       }
-      return Response.json({ ok: true, proofStatus: record.proofStatus }, { headers: corsHeaders });
+      // Verify the transaction on-chain before marking settled
+      const txVerified = await verifyTxOnChain(txHash);
+      if (!txVerified) {
+        return Response.json(
+          { error: "Transaction not found or not successful on-chain" },
+          { status: 400, headers: corsHeaders },
+        );
+      }
+      updateProofStatus(matchId, "settled");
+      updateSettleTxHash(matchId, txHash);
+      return Response.json({ ok: true, proofStatus: "settled" }, { headers: corsHeaders });
     }
 
     // ── Wallet challenge/verify endpoints ─────────────────
@@ -432,12 +648,13 @@ const server = Bun.serve<SocketData>({
         return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
       }
       const challenge = `chickenz-auth:${crypto.randomUUID()}:${Date.now()}`;
+      issuedChallenges.set(challenge, Date.now());
       return Response.json({ challenge }, { headers: corsHeaders });
     }
 
     if (req.method === "POST" && url.pathname === "/api/wallet/verify") {
       try {
-        const body = await req.json() as { address: string; challenge: string; signature: string };
+        const body = (await req.json()) as { address: string; challenge: string; signature: string };
         if (!body.address || !body.challenge || !body.signature) {
           return Response.json({ error: "Missing fields" }, { status: 400, headers: corsHeaders });
         }
@@ -450,6 +667,12 @@ const server = Bun.serve<SocketData>({
           return Response.json({ error: "Invalid challenge" }, { status: 400, headers: corsHeaders });
         }
         const challengeToken = challengeMatch[0]!;
+        // Verify this challenge was actually issued by this server (prevents forgery)
+        if (!issuedChallenges.has(challengeToken)) {
+          return Response.json({ error: "Challenge not recognized" }, { status: 400, headers: corsHeaders });
+        }
+        // Consume the challenge (single-use)
+        issuedChallenges.delete(challengeToken);
         // Validate challenge freshness (5 min window)
         const parts = challengeToken.split(":");
         const challengeTs = parseInt(parts[2] ?? "0", 10);
@@ -457,17 +680,44 @@ const server = Bun.serve<SocketData>({
           return Response.json({ error: "Challenge expired" }, { status: 400, headers: corsHeaders });
         }
         const verified = verifySignature(body.address, body.challenge, body.signature);
-        // Mark matching WebSocket connections as verified server-side
+        // Mark ALL matching WebSocket connections as verified (not just lobby)
+        let token: string | undefined;
         if (verified) {
-          for (const ws of lobbySockets) {
+          for (const ws of allSockets) {
             if (ws.data.walletAddress === body.address) {
               ws.data.walletVerified = true;
             }
           }
+          // Issue a reusable token so the client can skip Freighter on future page loads
+          token = crypto.randomUUID();
+          verifiedTokens.set(body.address, token);
         }
-        return Response.json({ verified }, { headers: corsHeaders });
+        return Response.json({ verified, token }, { headers: corsHeaders });
       } catch {
         return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
+      }
+    }
+
+    // Revalidate with a previously issued token (no Freighter popup needed)
+    if (req.method === "POST" && url.pathname === "/api/wallet/revalidate") {
+      try {
+        const body = (await req.json()) as { address: string; token: string };
+        if (!body.address || !body.token) {
+          return Response.json({ verified: false }, { headers: corsHeaders });
+        }
+        const stored = verifiedTokens.get(body.address);
+        if (!stored || stored !== body.token) {
+          return Response.json({ verified: false }, { headers: corsHeaders });
+        }
+        // Token matches — mark all matching WebSocket connections as verified
+        for (const ws of allSockets) {
+          if (ws.data.walletAddress === body.address) {
+            ws.data.walletVerified = true;
+          }
+        }
+        return Response.json({ verified: true }, { headers: corsHeaders });
+      } catch {
+        return Response.json({ verified: false }, { headers: corsHeaders });
       }
     }
 
@@ -506,11 +756,15 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/(.+)$/)) {
       const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
       try {
-        const body = await req.json() as { seal: string; journal: string; imageId: string };
+        const body = (await req.json()) as { seal: string; journal: string; imageId: string };
         // 1E: Validate proof artifacts are valid hex with correct lengths
         // Seal: 260 bytes (520 hex) with selector, or 256 bytes (512 hex) without
-        if (typeof body.seal !== "string" || typeof body.journal !== "string" ||
-            !/^[0-9a-fA-F]{512}([0-9a-fA-F]{8})?$/.test(body.seal) || !/^[0-9a-fA-F]{152}$/.test(body.journal)) {
+        if (
+          typeof body.seal !== "string" ||
+          typeof body.journal !== "string" ||
+          !/^[0-9a-fA-F]{512}([0-9a-fA-F]{8})?$/.test(body.seal) ||
+          !/^[0-9a-fA-F]{152}$/.test(body.journal)
+        ) {
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
         const job = submitJobResult(matchId, body);
@@ -543,9 +797,10 @@ const server = Bun.serve<SocketData>({
 
     // Static file serving (production client build)
     const STATIC_DIR = new URL("../public", import.meta.url).pathname;
+    const staticDirWithSep = STATIC_DIR.endsWith("/") ? STATIC_DIR : STATIC_DIR + "/";
     const filePath = url.pathname === "/" ? "/index.html" : url.pathname;
     const resolved = normalize(resolve(STATIC_DIR, "." + filePath));
-    if (!resolved.startsWith(STATIC_DIR)) {
+    if (!resolved.startsWith(staticDirWithSep) && resolved !== STATIC_DIR) {
       return new Response("Not found", { status: 404, headers: corsHeaders });
     }
     const file = Bun.file(resolved);
@@ -564,6 +819,7 @@ const server = Bun.serve<SocketData>({
 
   websocket: {
     open(ws: ServerWebSocket<SocketData>) {
+      allSockets.add(ws);
       lobbySockets.add(ws);
       sendLobby(ws);
     },
@@ -604,22 +860,26 @@ const server = Bun.serve<SocketData>({
 
       // ── Set wallet address ──────────────────────────────────
       if (msg.type === "set_wallet") {
-        const addr = ((msg as any).address ?? "").trim();
+        const addr = (msg.address ?? "").trim();
         if (addr && /^G[A-Z2-7]{55}$/.test(addr)) {
           ws.data.walletAddress = addr;
           // Don't trust client-supplied verified flag; require server-side verification
+          ws.data.walletVerified = false;
+        } else {
+          // Empty or invalid address = wallet disconnected — clear verified state
+          ws.data.walletAddress = "";
           ws.data.walletVerified = false;
         }
         return;
       }
 
       // Store character choices from any room-related message
-      if (typeof (msg as any).character === "number") {
-        const ch = (msg as any).character;
+      if ("character" in msg && typeof msg.character === "number") {
+        const ch = msg.character;
         if (ch >= 0 && ch <= 3) ws.data.character = ch;
       }
-      if (typeof (msg as any).awayCharacter === "number") {
-        const ch = (msg as any).awayCharacter;
+      if ("awayCharacter" in msg && typeof msg.awayCharacter === "number") {
+        const ch = msg.awayCharacter;
         if (ch >= 0 && ch <= 3) ws.data.awayCharacter = ch;
       }
 
@@ -651,13 +911,13 @@ const server = Bun.serve<SocketData>({
 
       // ── Create room ─────────────────────────────────────
       if (msg.type === "create") {
-        if (ws.data.roomId) {
-          ws.send(JSON.stringify({ type: "error", message: "Already in a room" }));
+        if (ws.data.roomId || ws.data.tournamentId) {
+          ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
           return;
         }
 
         const isPrivate = !!msg.isPrivate;
-        const mode: GameMode = (msg as any).mode === "ranked" ? "ranked" : "casual";
+        const mode: GameMode = msg.mode === "ranked" ? "ranked" : "casual";
         if (mode === "ranked" && !ws.data.walletVerified) {
           ws.send(JSON.stringify({ type: "error", message: "Verified wallet required for ranked" }));
           return;
@@ -665,6 +925,7 @@ const server = Bun.serve<SocketData>({
         const name = isPrivate ? "Private Match" : "Public Match";
         const roomId = generateRoomId();
         const room = new GameRoom(roomId, name, ws, isPrivate, mode);
+        ensureUniqueJoinCode(room);
         room.onEnded = returnToLobby;
         room.onStarted = onMatchStarted;
         rooms.set(roomId, room);
@@ -675,8 +936,8 @@ const server = Bun.serve<SocketData>({
 
       // ── Join by room ID ────────────────────────────────────
       if (msg.type === "join_room") {
-        if (ws.data.roomId) {
-          ws.send(JSON.stringify({ type: "error", message: "Already in a room" }));
+        if (ws.data.roomId || ws.data.tournamentId) {
+          ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
           return;
         }
 
@@ -736,6 +997,12 @@ const server = Bun.serve<SocketData>({
           return;
         }
 
+        // Enforce wallet verification for ranked rooms (same as join_room)
+        if (room.mode === "ranked" && !ws.data.walletVerified) {
+          ws.send(JSON.stringify({ type: "error", message: "Verified wallet required for ranked" }));
+          return;
+        }
+
         room.addPlayer(ws);
         lobbySockets.delete(ws);
         broadcastLobby();
@@ -744,12 +1011,12 @@ const server = Bun.serve<SocketData>({
 
       // ── Quickplay (auto-match) ───────────────────────────
       if (msg.type === "quickplay") {
-        if (ws.data.roomId) {
-          ws.send(JSON.stringify({ type: "error", message: "Already in a room" }));
+        if (ws.data.roomId || ws.data.tournamentId) {
+          ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
           return;
         }
 
-        const mode: GameMode = (msg as any).mode === "ranked" ? "ranked" : "casual";
+        const mode: GameMode = msg.mode === "ranked" ? "ranked" : "casual";
         if (mode === "ranked" && !ws.data.walletVerified) {
           ws.send(JSON.stringify({ type: "error", message: "Verified wallet required for ranked" }));
           return;
@@ -770,6 +1037,7 @@ const server = Bun.serve<SocketData>({
         if (!matched) {
           const roomId = generateRoomId();
           const room = new GameRoom(roomId, "Quick Play", ws, false, mode);
+          ensureUniqueJoinCode(room);
           room.onEnded = returnToLobby;
           room.onStarted = onMatchStarted;
           rooms.set(roomId, room);
@@ -787,8 +1055,12 @@ const server = Bun.serve<SocketData>({
           ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
           return;
         }
-        const tournamentId = crypto.randomUUID().slice(0, 8);
+        let tournamentId: string;
+        do {
+          tournamentId = crypto.randomUUID().slice(0, 8);
+        } while (tournaments.has(tournamentId));
         const tournament = new TournamentRoom(tournamentId, ws);
+        ensureUniqueJoinCode(tournament);
         ws.data.tournamentId = tournamentId;
         tournament.onEnded = (sockets) => {
           for (const s of sockets) {
@@ -810,7 +1082,7 @@ const server = Bun.serve<SocketData>({
           ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
           return;
         }
-        const code = ((msg as any).code ?? "").trim().toUpperCase();
+        const code = (msg.code ?? "").trim().toUpperCase();
         if (code.length !== 5) {
           ws.send(JSON.stringify({ type: "error", message: "Invalid join code" }));
           return;
@@ -840,7 +1112,7 @@ const server = Bun.serve<SocketData>({
         const roomId = ws.data.roomId;
         if (!roomId) return;
         const room = rooms.get(roomId);
-        if (room && room.isWaiting() && room.playerCount === 1) {
+        if (room && room.isWaiting() && room.playerCount === 1 && room.mode !== "ranked") {
           room.addBot();
           broadcastLobby();
         }
@@ -849,22 +1121,24 @@ const server = Bun.serve<SocketData>({
 
       // ── Game input ───────────────────────────────────────
       if (msg.type === "input") {
+        // Validate input fields (applies to both regular and tournament games)
+        if (typeof msg.buttons !== "number" || !Number.isInteger(msg.buttons) || msg.buttons < 0 || msg.buttons > 0x1f)
+          return;
+        if (!Number.isFinite(msg.aimX) || !Number.isFinite(msg.aimY)) return;
+        msg.aimX = Math.max(-1, Math.min(1, Math.round(msg.aimX)));
+        msg.aimY = Math.max(-1, Math.min(1, Math.round(msg.aimY)));
+
         // Tournament input: route through tournament's active game room
         const tournamentId = ws.data.tournamentId;
         if (tournamentId) {
           const tournament = tournaments.get(tournamentId);
           if (tournament) {
-            tournament.handleInput(ws, msg as any);
+            tournament.handleInput(ws, msg as InputMessage);
           }
           return;
         }
         const roomId = ws.data.roomId;
         if (!roomId) return;
-        if (typeof msg.buttons !== "number" || !Number.isInteger(msg.buttons) || msg.buttons < 0 || msg.buttons > 0x1F) return;
-        if (!Number.isFinite(msg.aimX) || !Number.isFinite(msg.aimY)) return;
-        // Clamp aim to valid integer range
-        msg.aimX = Math.max(-1, Math.min(1, Math.round(msg.aimX)));
-        msg.aimY = Math.max(-1, Math.min(1, Math.round(msg.aimY)));
         const room = rooms.get(roomId);
         if (!room) return;
         room.handleInput(ws.data.playerId, msg);
@@ -873,6 +1147,7 @@ const server = Bun.serve<SocketData>({
     },
 
     close(ws: ServerWebSocket<SocketData>) {
+      allSockets.delete(ws);
       lobbySockets.delete(ws);
 
       // Clean up spectator references

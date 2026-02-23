@@ -1,11 +1,15 @@
-.git
 node_modules
 target
 *.tsbuildinfo
 .env
 .env.local
 contracts
-services/prover
+services/prover/core
+services/prover/guest
+services/prover/chunk-guest
+services/prover/match-guest
+services/prover/host
+services/prover/target
 apps/client/dist
 apps/client/node_modules
 services/server/node_modules

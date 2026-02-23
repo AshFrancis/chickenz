@@ -6,8 +6,18 @@ import type { SocketData } from "./GameRoom";
 // ── Bot Names ──────────────────────────────────────────────
 
 const BOT_NAMES = [
-  "Clucky", "Pecker", "Nugget", "Drumstk", "Eggbert", "Beaker",
-  "Feather", "Rooster", "Henny", "Clucker", "Yolko", "Bantam",
+  "Clucky",
+  "Pecker",
+  "Nugget",
+  "Drumstk",
+  "Eggbert",
+  "Beaker",
+  "Feather",
+  "Rooster",
+  "Henny",
+  "Clucker",
+  "Yolko",
+  "Bantam",
 ];
 
 export function randomBotName(): string {
@@ -42,12 +52,12 @@ export function createBotSocket(botName: string): GameSocket {
 export type BotDifficulty = "easy" | "medium" | "hard";
 
 interface DifficultyParams {
-  dodgeChance: number;       // probability of reacting to any projectile
+  dodgeChance: number; // probability of reacting to any projectile
   dodgeReactionTicks: number; // min ticks before projectile hits to react
-  shootChance: number;       // probability of shooting per decision tick
-  decisionInterval: number;  // ticks between shoot decisions
-  stompChance: number;       // probability of trying to jump above opponent vs staying grounded
-  pickupDetour: number;      // max distance to detour for weapon pickup
+  shootChance: number; // probability of shooting per decision tick
+  decisionInterval: number; // ticks between shoot decisions
+  stompChance: number; // probability of trying to jump above opponent vs staying grounded
+  pickupDetour: number; // max distance to detour for weapon pickup
 }
 
 const DIFFICULTY: Record<BotDifficulty, DifficultyParams> = {
@@ -81,11 +91,11 @@ const DIFFICULTY: Record<BotDifficulty, DifficultyParams> = {
 
 /** Platform navigation: approach edge → jump → move inward → land */
 interface PlatformNav {
-  platY: number;        // platform top Y
-  approachX: number;    // X to reach before jumping
-  inwardDir: number;    // +1 right, -1 left (direction to move after jump)
+  platY: number; // platform top Y
+  approachX: number; // X to reach before jumping
+  inwardDir: number; // +1 right, -1 left (direction to move after jump)
   phase: "approach" | "jump" | "land";
-  ticks: number;        // safety counter to abandon stale navs
+  ticks: number; // safety counter to abandon stale navs
 }
 
 export interface BotState {
@@ -97,7 +107,7 @@ export interface BotState {
   stuckTicks: number;
   nav: PlatformNav | null;
   difficulty: BotDifficulty;
-  dodgeSeed: number;    // per-projectile dodge roll (deterministic per tick range)
+  dodgeSeed: number; // per-projectile dodge roll (deterministic per tick range)
 }
 
 export function createBotState(difficulty: BotDifficulty = "easy"): BotState {
@@ -120,28 +130,33 @@ export function createBotState(difficulty: BotDifficulty = "easy"): BotState {
 // Aim values are i8 integers: -1 = left, 0 = neutral, 1 = right.
 
 interface ExportedPlayer {
-  x: number; y: number;
-  vx: number; vy: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
   grounded: boolean;
   wallSliding: boolean;
-  weapon: number;       // -1 = no weapon
+  weapon: number; // -1 = no weapon
   ammo: number;
   shootCooldown: number;
   lives: number;
   stateFlags: number;
-  stompedBy: number;    // -1 = not stomped
+  stompedBy: number; // -1 = not stomped
   respawnTimer: number;
   jumpsLeft: number;
 }
 
 interface ExportedProjectile {
-  x: number; y: number;
-  vx: number; vy: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
   ownerId: number;
 }
 
 interface ExportedPickup {
-  x: number; y: number;
+  x: number;
+  y: number;
   respawnTimer: number;
 }
 
@@ -159,8 +174,7 @@ const ALIVE_FLAG = 1;
 /** Find the platform under a point (feetY = bottom of entity, within 8px of platform top). */
 function findPlatformAt(map: GameMap, x: number, feetY: number): Platform | null {
   for (const p of map.platforms) {
-    if (x >= p.x && x <= p.x + p.width &&
-        feetY >= p.y - 8 && feetY <= p.y + 8) {
+    if (x >= p.x && x <= p.x + p.width && feetY >= p.y - 8 && feetY <= p.y + 8) {
       return p;
     }
   }
@@ -174,8 +188,7 @@ function isUnderPlatform(map: GameMap, x: number, y: number): Platform | null {
     // Platform bottom must be above bot's head (p.y + p.height <= y)
     // Bot must horizontally overlap with the platform
     // Only consider platforms within ~120px (reachable by jump)
-    if (p.y + p.height <= y && y - p.y < 120 &&
-        x + PLAYER_WIDTH > p.x && x < p.x + p.width) {
+    if (p.y + p.height <= y && y - p.y < 120 && x + PLAYER_WIDTH > p.x && x < p.x + p.width) {
       return p;
     }
   }
@@ -199,7 +212,7 @@ function dropDownDir(bot: ExportedPlayer, opp: ExportedPlayer, map: GameMap): nu
   if (oppCx > botPlat.x + botPlat.width) return Button.Right;
   // Opponent is horizontally within the platform — pick nearest edge
   const distToLeft = bot.x - botPlat.x;
-  const distToRight = (botPlat.x + botPlat.width) - (bot.x + PLAYER_WIDTH);
+  const distToRight = botPlat.x + botPlat.width - (bot.x + PLAYER_WIDTH);
   return distToLeft < distToRight ? Button.Left : Button.Right;
 }
 
@@ -217,7 +230,7 @@ function findNearestPlatformAbove(map: GameMap, botX: number, botY: number, targ
     // Bonus for platforms toward the target (halve score if in the right direction)
     if (targetX !== undefined) {
       const targetDir = targetX - botX; // positive = target is right
-      const platDir = cx - botX;        // positive = platform is right
+      const platDir = cx - botX; // positive = platform is right
       if (targetDir * platDir > 0) score *= 0.5; // same direction → prefer
     }
     if (score < bestScore) {
@@ -231,7 +244,13 @@ function findNearestPlatformAbove(map: GameMap, botX: number, botY: number, targ
 /** Plan a route to reach the top of a platform from below.
  *  The bot must move fully outside the platform's horizontal extent before jumping.
  *  Respects arena boundaries (includes sudden death walls). */
-function planPlatformNav(bot: ExportedPlayer, plat: Platform, map?: GameMap, arenaLeft = 0, arenaRight = 960): PlatformNav {
+function planPlatformNav(
+  bot: ExportedPlayer,
+  plat: Platform,
+  map?: GameMap,
+  arenaLeft = 0,
+  arenaRight = 960,
+): PlatformNav {
   // Margin: full player width + 8px buffer so the entire body is clear
   const leftEdge = plat.x - PLAYER_WIDTH - 8;
   const rightEdge = plat.x + plat.width + 8;
@@ -254,16 +273,17 @@ function planPlatformNav(bot: ExportedPlayer, plat: Platform, map?: GameMap, are
   if (useLeft) {
     return { platY: plat.y, approachX: Math.max(arenaLeft, leftEdge), inwardDir: 1, phase: "approach", ticks: 0 };
   } else {
-    return { platY: plat.y, approachX: Math.min(arenaRight - PLAYER_WIDTH, rightEdge), inwardDir: -1, phase: "approach", ticks: 0 };
+    return {
+      platY: plat.y,
+      approachX: Math.min(arenaRight - PLAYER_WIDTH, rightEdge),
+      inwardDir: -1,
+      phase: "approach",
+      ticks: 0,
+    };
   }
 }
 
-export function botThink(
-  botId: number,
-  state: ExportedState,
-  map: GameMap,
-  botState: BotState,
-): PlayerInput {
+export function botThink(botId: number, state: ExportedState, map: GameMap, botState: BotState): PlayerInput {
   const bot = state.players[botId]!;
   const opp = state.players[1 - botId]!;
   const diff = DIFFICULTY[botState.difficulty];
@@ -280,9 +300,7 @@ export function botThink(
   }
 
   // Stuck detection
-  if (botState.lastX >= 0 &&
-      Math.abs(bot.x - botState.lastX) < 1 &&
-      Math.abs(bot.y - botState.lastY) < 1) {
+  if (botState.lastX >= 0 && Math.abs(bot.x - botState.lastX) < 1 && Math.abs(bot.y - botState.lastY) < 1) {
     botState.stuckTicks++;
   } else {
     botState.stuckTicks = 0;
@@ -298,7 +316,7 @@ export function botThink(
   const hasWeapon = bot.weapon >= 0 && bot.ammo > 0;
 
   // Aim toward opponent
-  const aimX: number = dx > 8 ? 1 : dx < -8 ? -1 : (bot.vx >= 0 ? 1 : -1);
+  const aimX: number = dx > 8 ? 1 : dx < -8 ? -1 : bot.vx >= 0 ? 1 : -1;
 
   // 1. Stomped → mash L/R to escape
   if (bot.stompedBy >= 0) {
@@ -454,7 +472,10 @@ export function botThink(
               // Opponent below — walk off platform edge to drop down
               const dd = dropDownDir(bot, opp, map);
               if (dd) buttons |= dd;
-              else { if (dx < -20) buttons |= Button.Left; else if (dx > 20) buttons |= Button.Right; }
+              else {
+                if (dx < -20) buttons |= Button.Left;
+                else if (dx > 20) buttons |= Button.Right;
+              }
             } else {
               if (dx < -20) buttons |= Button.Left;
               else if (dx > 20) buttons |= Button.Right;
@@ -486,7 +507,10 @@ export function botThink(
             // Opponent below — walk off platform edge to drop down
             const dd = dropDownDir(bot, opp, map);
             if (dd) buttons |= dd;
-            else { if (dx < -ENGAGE_DIST) buttons |= Button.Left; else if (dx > ENGAGE_DIST) buttons |= Button.Right; }
+            else {
+              if (dx < -ENGAGE_DIST) buttons |= Button.Left;
+              else if (dx > ENGAGE_DIST) buttons |= Button.Right;
+            }
           } else {
             if (dx < -ENGAGE_DIST) buttons |= Button.Left;
             else if (dx > ENGAGE_DIST) buttons |= Button.Right;
@@ -502,10 +526,9 @@ export function botThink(
         const movingRight = !!(buttons & Button.Right);
         if (movingLeft || movingRight) {
           const botPlat = findPlatformAt(map, bot.x + PLAYER_WIDTH / 2, bot.y + PLAYER_HEIGHT);
-          if (botPlat && botPlat.y < map.height - 40) { // not the ground
-            const distToEdge = movingLeft
-              ? bot.x - botPlat.x
-              : (botPlat.x + botPlat.width) - (bot.x + PLAYER_WIDTH);
+          if (botPlat && botPlat.y < map.height - 40) {
+            // not the ground
+            const distToEdge = movingLeft ? bot.x - botPlat.x : botPlat.x + botPlat.width - (bot.x + PLAYER_WIDTH);
             if (distToEdge < 12 && distToEdge >= 0) {
               buttons |= Button.Jump;
               botState.jumpCooldown = 8;
@@ -572,9 +595,11 @@ export function botThink(
     // 6. Shoot (difficulty-gated accuracy and reaction)
     if (oppAlive && hasWeapon && bot.shootCooldown <= 0) {
       let maxRange = 300;
-      if (bot.weapon === 1) maxRange = 180;       // shotgun
-      else if (bot.weapon === 2) maxRange = 600;   // sniper (3 = rocket via weapon rotation)
-      else if (bot.weapon === 4) maxRange = 280;   // smg
+      if (bot.weapon === 1)
+        maxRange = 180; // shotgun
+      else if (bot.weapon === 2)
+        maxRange = 600; // sniper (3 = rocket via weapon rotation)
+      else if (bot.weapon === 4) maxRange = 280; // smg
 
       if (dist < maxRange) {
         if (state.tick >= botState.decisionTick) {

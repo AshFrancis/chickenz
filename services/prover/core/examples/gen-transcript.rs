@@ -64,15 +64,9 @@ fn main() {
     eprintln!("Match over: {}", state.match_over);
     eprintln!("Winner: {}", state.winner);
     eprintln!("Scores: P0={}, P1={}", state.score[0], state.score[1]);
-    eprintln!(
-        "Lives: P0={}, P1={}",
-        state.players[0].lives, state.players[1].lives
-    );
+    eprintln!("Lives: P0={}, P1={}", state.players[0].lives, state.players[1].lives);
 
-    let input = ProverInput {
-        config,
-        transcript,
-    };
+    let input = ProverInput { config, transcript };
 
     println!("{}", serde_json::to_string(&input).unwrap());
 }

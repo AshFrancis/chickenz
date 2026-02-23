@@ -14,7 +14,7 @@ fn main() {
     let mut input_len = [0u32; 1];
     risc0_zkvm::guest::env::read_slice(&mut input_len);
     let byte_len = input_len[0] as usize;
-    let word_len = (byte_len + 3) / 4;
+    let word_len = byte_len.div_ceil(4);
 
     let mut raw_words = [0u32; MAX_INPUT_WORDS];
     risc0_zkvm::guest::env::read_slice(&mut raw_words[..word_len]);

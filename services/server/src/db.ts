@@ -96,7 +96,11 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN boundless_request_id TEXT",
 ];
 for (const sql of migrations) {
-  try { db.exec(sql); } catch { /* column already exists */ }
+  try {
+    db.exec(sql);
+  } catch {
+    /* column already exists */
+  }
 }
 
 // ── Prepared statements ───────────────────────────────────
@@ -136,9 +140,53 @@ const stmtLeaderboard = db.prepare(`
   SELECT * FROM player_stats ORDER BY elo DESC LIMIT $limit
 `);
 
+// ── SQLite row shapes ─────────────────────────────────────
+
+interface MatchRow {
+  id: string;
+  session_id: number;
+  room_name: string;
+  player1: string;
+  player2: string;
+  wallet1: string;
+  wallet2: string;
+  winner: number;
+  score1: number;
+  score2: number;
+  timestamp: number;
+  proof_status: string;
+  proof_seal: string | null;
+  proof_journal: string | null;
+  proof_image_id: string | null;
+  room_id: string;
+  mode: string;
+  match_start_time: number | null;
+  proof_requested_at: number | null;
+  proof_completed_at: number | null;
+  proof_source: string | null;
+  start_tx_hash: string | null;
+  settle_tx_hash: string | null;
+  wallet1_verified: number;
+  wallet2_verified: number;
+  transcript_data: string | null;
+  transcript_cid: string | null;
+  boundless_request_id: string | null;
+}
+
+interface PlayerRow {
+  username: string;
+  elo: number;
+  wins: number;
+  losses: number;
+}
+
+interface TranscriptRow {
+  transcript_data: string | null;
+}
+
 // ── Helpers ───────────────────────────────────────────────
 
-function rowToMatch(row: any): MatchRecord {
+function rowToMatch(row: MatchRow): MatchRecord {
   const record: MatchRecord = {
     id: row.id,
     sessionId: row.session_id,
@@ -214,12 +262,12 @@ export function updateProofStatus(matchId: string, status: string, artifacts?: P
 }
 
 export function getRecentMatches(limit: number = 50): MatchRecord[] {
-  const rows = stmtGetRecent.all({ $limit: limit }) as any[];
+  const rows = stmtGetRecent.all({ $limit: limit }) as MatchRow[];
   return rows.map(rowToMatch);
 }
 
 export function getMatchById(id: string): MatchRecord | null {
-  const row = stmtGetById.get({ $id: id }) as any;
+  const row = stmtGetById.get({ $id: id }) as MatchRow | null;
   if (!row) return null;
   return rowToMatch(row);
 }
@@ -234,7 +282,7 @@ function expectedScore(ratingA: number, ratingB: number): number {
 }
 
 function getOrCreatePlayer(username: string): { elo: number; wins: number; losses: number } {
-  const row = stmtGetPlayer.get({ $username: username }) as any;
+  const row = stmtGetPlayer.get({ $username: username }) as PlayerRow | null;
   if (row) return { elo: row.elo, wins: row.wins, losses: row.losses };
   return { elo: DEFAULT_ELO, wins: 0, losses: 0 };
 }
@@ -247,7 +295,7 @@ export function updateElo(winnerName: string, loserName: string): { winnerElo: n
   const expectedL = expectedScore(loser.elo, winner.elo);
 
   winner.elo = Math.round(winner.elo + K * (1 - expectedW));
-  loser.elo = Math.round(loser.elo + K * (0 - expectedL));
+  loser.elo = Math.max(0, Math.round(loser.elo + K * (0 - expectedL)));
   winner.wins++;
   loser.losses++;
 
@@ -258,12 +306,12 @@ export function updateElo(winnerName: string, loserName: string): { winnerElo: n
 }
 
 export function getLeaderboard(limit: number = 20): LeaderboardEntry[] {
-  const rows = stmtLeaderboard.all({ $limit: limit }) as any[];
+  const rows = stmtLeaderboard.all({ $limit: limit }) as PlayerRow[];
   return rows.map((r) => ({ name: r.username, elo: r.elo, wins: r.wins, losses: r.losses }));
 }
 
 export function getPlayerStats(name: string): LeaderboardEntry | null {
-  const row = stmtGetPlayer.get({ $username: name }) as any;
+  const row = stmtGetPlayer.get({ $username: name }) as PlayerRow | null;
   if (!row) return null;
   return { name: row.username, elo: row.elo, wins: row.wins, losses: row.losses };
 }
@@ -290,7 +338,12 @@ export function updateSettleTxHash(matchId: string, hash: string) {
 }
 
 export function updateProofTimestamps(matchId: string, requestedAt: number, completedAt: number, source: string) {
-  stmtUpdateProofTimestamps.run({ $id: matchId, $requestedAt: requestedAt, $completedAt: completedAt, $source: source });
+  stmtUpdateProofTimestamps.run({
+    $id: matchId,
+    $requestedAt: requestedAt,
+    $completedAt: completedAt,
+    $source: source,
+  });
 }
 
 export function updateMatchStartTime(matchId: string, time: number) {
@@ -304,16 +357,29 @@ export function updateWalletVerified(matchId: string, w1: boolean, w2: boolean) 
 // ── Transcript storage ──────────────────────────────────
 
 const stmtSaveTranscript = db.prepare(`UPDATE matches SET transcript_data = $data WHERE id = $id`);
-const stmtGetTranscript = db.prepare(`SELECT transcript_data FROM matches WHERE room_id = $roomId ORDER BY timestamp DESC LIMIT 1`);
+const stmtGetTranscript = db.prepare(
+  `SELECT transcript_data FROM matches WHERE room_id = $roomId ORDER BY timestamp DESC LIMIT 1`,
+);
+
+// Index for fast transcript lookup by room_id
+try {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_matches_room_id ON matches(room_id)`);
+} catch {
+  /* already exists */
+}
 
 export function saveTranscript(matchId: string, data: object) {
   stmtSaveTranscript.run({ $id: matchId, $data: JSON.stringify(data) });
 }
 
 export function getTranscriptByRoomId(roomId: string): object | null {
-  const row = stmtGetTranscript.get({ $roomId: roomId }) as any;
+  const row = stmtGetTranscript.get({ $roomId: roomId }) as TranscriptRow | null;
   if (!row?.transcript_data) return null;
-  try { return JSON.parse(row.transcript_data); } catch { return null; }
+  try {
+    return JSON.parse(row.transcript_data);
+  } catch {
+    return null;
+  }
 }
 
 // ── IPFS transcript CID ─────────────────────────────────

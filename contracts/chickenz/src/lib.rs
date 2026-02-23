@@ -1,9 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, contractclient,
-    Address, Bytes, BytesN, Env,
-    crypto::Hash,
+    contract, contractclient, contracterror, contractimpl, contracttype, crypto::Hash, symbol_short, Address, Bytes,
+    BytesN, Env,
 };
 
 // ── Cross-contract clients ───────────────────────────────────────────────────
@@ -64,6 +63,7 @@ pub enum Error {
     InvalidJournal = 7,
     SeedMismatch = 8,
     InvalidWinner = 9,
+    InvalidSeal = 10,
 }
 
 // ── Journal layout ───────────────────────────────────────────────────────────
@@ -86,8 +86,8 @@ fn decode_winner(journal: &Bytes) -> i32 {
 
 fn extract_seed_commit(env: &Env, journal: &Bytes) -> BytesN<32> {
     let mut buf = [0u8; 32];
-    for i in 0..32 {
-        buf[i] = journal.get(44 + i as u32).unwrap();
+    for (i, byte) in buf.iter_mut().enumerate() {
+        *byte = journal.get(44 + i as u32).unwrap();
     }
     BytesN::from_array(env, &buf)
 }
@@ -110,10 +110,13 @@ impl ChickenzContract {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::GameHub, &game_hub);
         env.storage().instance().set(&DataKey::Verifier, &verifier);
         env.storage().instance().set(&DataKey::ImageId, &image_id);
+        env.events()
+            .publish((symbol_short!("init"),), (&admin, &game_hub, &verifier));
         Ok(())
     }
 
@@ -126,6 +129,50 @@ impl ChickenzContract {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::ImageId, &image_id);
+        env.events().publish((symbol_short!("img_id"),), &image_id);
+        Ok(())
+    }
+
+    /// Admin can rotate the admin key.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish((symbol_short!("set_adm"),), (&admin, &new_admin));
+        Ok(())
+    }
+
+    /// Admin can cancel/remove an abandoned match.
+    pub fn cancel_match(env: Env, session_id: u32) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let key = DataKey::Match(session_id);
+        if !env.storage().temporary().has(&key) {
+            return Err(Error::MatchNotFound);
+        }
+        env.storage().temporary().remove(&key);
+        env.events().publish((symbol_short!("cancel"),), session_id);
+        Ok(())
+    }
+
+    /// Upgrade the contract WASM. Admin-gated.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
 
@@ -167,8 +214,8 @@ impl ChickenzContract {
 
         // Store match data after Game Hub succeeds
         let match_data = MatchData {
-            player1,
-            player2,
+            player1: player1.clone(),
+            player2: player2.clone(),
             seed_commit,
             settled: false,
         };
@@ -179,6 +226,8 @@ impl ChickenzContract {
         env.storage()
             .instance()
             .extend_ttl(MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
+        env.events()
+            .publish((symbol_short!("start"),), (session_id, &player1, &player2));
 
         Ok(())
     }
@@ -187,26 +236,22 @@ impl ChickenzContract {
     ///
     /// `seal`: 260-byte Groth16 seal from RISC Zero
     /// `journal`: 76-byte raw journal (ProverOutput in fixed word layout)
-    pub fn settle_match(
-        env: Env,
-        session_id: u32,
-        seal: Bytes,
-        journal: Bytes,
-    ) -> Result<(), Error> {
+    pub fn settle_match(env: Env, session_id: u32, seal: Bytes, journal: Bytes) -> Result<(), Error> {
         let key = DataKey::Match(session_id);
 
         // 1. Load and validate match
-        let mut match_data: MatchData = env
-            .storage()
-            .temporary()
-            .get(&key)
-            .ok_or(Error::MatchNotFound)?;
+        let mut match_data: MatchData = env.storage().temporary().get(&key).ok_or(Error::MatchNotFound)?;
 
         if match_data.settled {
             return Err(Error::MatchAlreadySettled);
         }
 
-        // 2. Validate journal size
+        // 2. Validate seal size (4-byte selector + 256-byte Groth16 proof)
+        if seal.len() != 260 {
+            return Err(Error::InvalidSeal);
+        }
+
+        // 3. Validate journal size
         if journal.len() != JOURNAL_SIZE as u32 {
             return Err(Error::InvalidJournal);
         }
@@ -216,10 +261,10 @@ impl ChickenzContract {
             .instance()
             .extend_ttl(MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
 
-        // 3. Compute journal digest = SHA-256(journal)
+        // 4. Compute journal digest = SHA-256(journal)
         let journal_digest: Hash<32> = env.crypto().sha256(&journal);
 
-        // 4. Load image_id and verifier
+        // 5. Load image_id and verifier
         let image_id: BytesN<32> = env
             .storage()
             .instance()
@@ -231,30 +276,26 @@ impl ChickenzContract {
             .get(&DataKey::Verifier)
             .ok_or(Error::NotInitialized)?;
 
-        // 5. Verify ZK proof — panics on failure, reverting the entire tx
+        // 6. Verify ZK proof — panics on failure, reverting the entire tx
         let verifier = VerifierClient::new(&env, &verifier_addr);
-        verifier.verify(
-            &seal,
-            &image_id,
-            &BytesN::from_array(&env, &journal_digest.to_array()),
-        );
+        verifier.verify(&seal, &image_id, &BytesN::from_array(&env, &journal_digest.to_array()));
 
-        // 6. Decode journal: extract winner and seed_commit
+        // 7. Decode journal: extract winner and seed_commit
         let winner = decode_winner(&journal);
         if winner != 0 && winner != 1 {
             return Err(Error::InvalidWinner);
         }
         let proof_seed_commit = extract_seed_commit(&env, &journal);
 
-        // 7. Verify seed_commit matches what was registered at match start
+        // 8. Verify seed_commit matches what was registered at match start
         if proof_seed_commit != match_data.seed_commit {
             return Err(Error::SeedMismatch);
         }
 
-        // 8. Determine player1_won (draws are impossible — sim always picks a winner)
+        // 9. Determine player1_won (draws are impossible — sim always picks a winner)
         let player1_won = winner == 0;
 
-        // 9. Call Game Hub end_game FIRST (before updating state)
+        // 10. Call Game Hub end_game FIRST (before updating state)
         let game_hub_addr: Address = env
             .storage()
             .instance()
@@ -263,12 +304,14 @@ impl ChickenzContract {
         let game_hub = GameHubClient::new(&env, &game_hub_addr);
         game_hub.end_game(&session_id, &player1_won);
 
-        // 10. Mark settled after Game Hub succeeds
+        // 11. Mark settled after Game Hub succeeds
         match_data.settled = true;
         env.storage().temporary().set(&key, &match_data);
         env.storage()
             .temporary()
             .extend_ttl(&key, MATCH_TTL_LEDGERS, MATCH_TTL_LEDGERS);
+        env.events()
+            .publish((symbol_short!("settle"),), (session_id, player1_won));
 
         Ok(())
     }

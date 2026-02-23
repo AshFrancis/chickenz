@@ -1,13 +1,6 @@
 import type { ServerWebSocket } from "bun";
-import {
-  MAP_POOL,
-  TICK_RATE,
-  NULL_INPUT,
-} from "@chickenz/sim";
-import type {
-  GameMap,
-  PlayerInput,
-} from "@chickenz/sim";
+import { MAP_POOL, TICK_RATE, NULL_INPUT } from "@chickenz/sim";
+import type { GameMap, PlayerInput } from "@chickenz/sim";
 import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol";
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
 import { WasmState } from "./wasm";
@@ -36,7 +29,7 @@ const ROUND_TRANSITION_MS = 750; // brief pause between taunt end and next round
 export class GameRoom {
   readonly id: string;
   readonly name: string;
-  readonly joinCode: string;
+  joinCode: string;
   readonly isPrivate: boolean;
   readonly mode: GameMode;
   private sockets: GameSocket[] = [];
@@ -54,7 +47,14 @@ export class GameRoom {
   private seed = 0;
   private loopStartTime = 0; // wall-clock time when game loop started
   private _status: "waiting" | "playing" | "ended" = "waiting";
-  onEnded?: (sockets: GameSocket[], winner: number, roomId: string, roomName: string, scores: [number, number], mode: GameMode) => void;
+  onEnded?: (
+    sockets: GameSocket[],
+    winner: number,
+    roomId: string,
+    roomName: string,
+    scores: [number, number],
+    mode: GameMode,
+  ) => void;
   onStarted?: (room: GameRoom) => void;
 
   // Round system
@@ -71,6 +71,8 @@ export class GameRoom {
   private _isBotMatch = false;
   private _sessionId = 0;
   private _startTxHash: string | null = null;
+  /** DB match ID — set once match record is created, used for late async updates */
+  matchRecordId: string | null = null;
 
   constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
     this.id = id;
@@ -123,16 +125,23 @@ export class GameRoom {
     return this._isBotMatch;
   }
 
-  get sessionId() { return this._sessionId; }
+  get sessionId() {
+    return this._sessionId;
+  }
 
-  get startTxHash() { return this._startTxHash; }
-  set startTxHash(h: string | null) { this._startTxHash = h; }
+  get startTxHash() {
+    return this._startTxHash;
+  }
+  set startTxHash(h: string | null) {
+    this._startTxHash = h;
+  }
+
+  get roundWinsSnapshot(): [number, number] {
+    return [...this.roundWins] as [number, number];
+  }
 
   get walletAddresses(): [string, string] {
-    return [
-      this.sockets[0]?.data.walletAddress || "",
-      this.sockets[1]?.data.walletAddress || "",
-    ];
+    return [this.sockets[0]?.data.walletAddress || "", this.sockets[1]?.data.walletAddress || ""];
   }
 
   /** Add a bot opponent to this room. */
@@ -186,7 +195,7 @@ export class GameRoom {
   /** Player voluntarily leaves while waiting. Returns the socket if removed. */
   handleLeave(playerId: number): GameSocket | null {
     if (this._status !== "waiting") return null;
-    const idx = this.sockets.findIndex(ws => ws.data.playerId === playerId);
+    const idx = this.sockets.findIndex((ws) => ws.data.playerId === playerId);
     if (idx < 0) return null;
     const ws = this.sockets[idx]!;
     ws.data.roomId = null;
@@ -255,7 +264,7 @@ export class GameRoom {
     const matchWinner = this.roundWins[0] >= WINS_NEEDED ? 0 : 1;
 
     // Extract transcripts from rounds the match winner won
-    const winningRounds = this.roundTranscripts.filter(r => r.winner === matchWinner);
+    const winningRounds = this.roundTranscripts.filter((r) => r.winner === matchWinner);
 
     return {
       config: {
@@ -267,7 +276,7 @@ export class GameRoom {
         match_duration_ticks: 1800,
         sudden_death_start_tick: 1200,
       },
-      rounds: winningRounds.map(r => r.transcript),
+      rounds: winningRounds.map((r) => r.transcript),
     };
   }
 
@@ -330,14 +339,10 @@ export class GameRoom {
     this.characterSlots = [p1Char, p2Char];
 
     // Notify both players with initial round info
-    const usernames: [string, string] = [
-      this.sockets[0]?.data.username || "",
-      this.sockets[1]?.data.username || "",
-    ];
+    const usernames: [string, string] = [this.sockets[0]?.data.username || "", this.sockets[1]?.data.username || ""];
     this.seed = Date.now() >>> 0;
-    // Unique session ID: combine timestamp with random bits to avoid collisions
-    const randomBits = crypto.getRandomValues(new Uint16Array(1))[0]!;
-    this._sessionId = ((Date.now() & 0xFFFF0000) | randomBits) >>> 0;
+    // Unique session ID: full 32 random bits for collision resistance
+    this._sessionId = crypto.getRandomValues(new Uint32Array(1))[0]!;
 
     for (const ws of this.sockets) {
       this.send(ws, {
@@ -367,7 +372,11 @@ export class GameRoom {
 
     // Free previous WASM state if any
     if (this.wasmState) {
-      try { this.wasmState.free(); } catch { /* already freed */ }
+      try {
+        this.wasmState.free();
+      } catch {
+        /* already freed */
+      }
     }
     this.wasmState = new WasmState(this.seed, JSON.stringify(map));
     this.lastAppliedButtons = [0, 0];
@@ -426,7 +435,7 @@ export class GameRoom {
 
     // Inject bot input before transcript recording
     if (this.botState !== null) {
-      const exported = this.wasmState.export_state() as any;
+      const exported = this.wasmState.export_state() as StateMessage;
       const input = botThink(1, exported, this.currentMap, this.botState);
       this.rawInput[1] = input;
       this.accInput[1] = { ...input };
@@ -443,10 +452,20 @@ export class GameRoom {
     this.lastAppliedButtons = [this.accInput[0].buttons, this.accInput[1].buttons];
 
     // Step WASM sim
-    this.wasmState.step(
-      this.accInput[0].buttons, this.accInput[0].aimX, this.accInput[0].aimY,
-      this.accInput[1].buttons, this.accInput[1].aimX, this.accInput[1].aimY,
-    );
+    try {
+      this.wasmState.step(
+        this.accInput[0].buttons,
+        this.accInput[0].aimX,
+        this.accInput[0].aimY,
+        this.accInput[1].buttons,
+        this.accInput[1].aimX,
+        this.accInput[1].aimY,
+      );
+    } catch (err) {
+      console.error(`[GameRoom ${this.id}] WASM step() panic:`, err);
+      this.endMatch(-1);
+      return;
+    }
 
     // Reset accumulated to last raw input so held keys persist
     this.accInput[0] = { ...this.rawInput[0] };
@@ -488,7 +507,7 @@ export class GameRoom {
 
   private broadcastState() {
     // Export WASM state (fp→f64, all fields camelCase)
-    const exported = this.wasmState.export_state() as any;
+    const exported = this.wasmState.export_state() as StateMessage;
 
     const msg: StateMessage = {
       type: "state",
@@ -519,17 +538,18 @@ export class GameRoom {
     // Relay to spectators with different message type
     if (this.spectatorSockets.length > 0) {
       const spectateJson = JSON.stringify({ ...msg, type: "spectate_state" });
-      for (const ws of this.spectatorSockets) {
+      for (let i = this.spectatorSockets.length - 1; i >= 0; i--) {
         try {
-          ws.send(spectateJson);
+          this.spectatorSockets[i]!.send(spectateJson);
         } catch {
-          // socket already closed
+          this.spectatorSockets.splice(i, 1);
         }
       }
     }
   }
 
   private endRound(winner: number) {
+    if (this._status !== "playing") return; // guard against double-call from catch-up loop
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -557,19 +577,21 @@ export class GameRoom {
       // Start next round after delay
       this.currentRound++;
       const nextMapIndex = this.mapOrder[this.currentRound % this.mapOrder.length];
-      this.pendingTimeouts.push(setTimeout(() => {
-        if (this._status !== "playing") return;
-        // Ranked: keep same seed across rounds so on-chain seedCommit matches the proof
-        if (this.mode !== "ranked") this.seed = Date.now() >>> 0;
-        const roundStartMsg = {
-          round: this.currentRound,
-          seed: this.seed,
-          mapIndex: nextMapIndex,
-        };
-        this.broadcast({ type: "round_start", ...roundStartMsg });
-        this.broadcastSpectators({ type: "spectate_round_start", ...roundStartMsg });
-        this.startRound();
-      }, ROUND_TRANSITION_MS));
+      this.pendingTimeouts.push(
+        setTimeout(() => {
+          if (this._status !== "playing") return;
+          // Ranked: keep same seed across rounds so on-chain seedCommit matches the proof
+          if (this.mode !== "ranked") this.seed = Date.now() >>> 0;
+          const roundStartMsg = {
+            round: this.currentRound,
+            seed: this.seed,
+            mapIndex: nextMapIndex,
+          };
+          this.broadcast({ type: "round_start", ...roundStartMsg });
+          this.broadcastSpectators({ type: "spectate_round_start", ...roundStartMsg });
+          this.startRound();
+        }, ROUND_TRANSITION_MS),
+      );
     }
   }
 
@@ -586,7 +608,11 @@ export class GameRoom {
 
     // Free WASM state
     if (this.wasmState) {
-      try { this.wasmState.free(); } catch { /* already freed */ }
+      try {
+        this.wasmState.free();
+      } catch {
+        /* already freed */
+      }
     }
 
     const scores: [number, number] = [...this.roundWins] as [number, number];
@@ -630,11 +656,11 @@ export class GameRoom {
   private broadcastSpectators(msg: object) {
     if (this.spectatorSockets.length === 0) return;
     const json = JSON.stringify(msg);
-    for (const ws of this.spectatorSockets) {
+    for (let i = this.spectatorSockets.length - 1; i >= 0; i--) {
       try {
-        ws.send(json);
+        this.spectatorSockets[i]!.send(json);
       } catch {
-        // socket already closed
+        this.spectatorSockets.splice(i, 1);
       }
     }
   }

@@ -52,7 +52,7 @@ export class InterpolationBuffer {
     const last = buf[buf.length - 1]!;
     const dt = renderTime - last.time;
     if (dt > 0 && dt <= MAX_EXTRAPOLATION_MS) {
-      const ticks = dt / 1000 * 60; // convert ms to tick-fractions (60Hz)
+      const ticks = (dt / 1000) * 60; // convert ms to tick-fractions (60Hz)
       return {
         time: renderTime,
         x: last.x + last.vx * ticks,

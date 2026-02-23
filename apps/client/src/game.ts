@@ -12,7 +12,7 @@ const canvasH = Math.round(window.innerHeight * dpr);
 
 export let DPR = canvasH / 540;
 export let VIEW_W = canvasW / DPR; // 960 at 16:9, wider on ultrawide
-export const VIEW_H = 540;           // always 540
+export const VIEW_H = 540; // always 540
 
 /** Recalculate DPR and VIEW_W from current window size. Returns new canvas pixel dimensions. */
 export function recalcDimensions(): { canvasW: number; canvasH: number } {

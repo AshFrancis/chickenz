@@ -187,7 +187,7 @@
       }
       #gate-card .logo {
         width: 280px;
-        height: auto;
+        height: 79px;
         margin-bottom: 12px;
       }
       #gate-card p {
@@ -257,7 +257,8 @@
       }
       #lobby-header .logo {
         height: 48px;
-        width: auto;
+        width: 170px;
+        margin-bottom: 6px;
       }
       #lobby-actions {
         display: flex;
@@ -1166,9 +1167,9 @@
           <div></div>
           <div id="top-bar-right">
             <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
-            <button id="btn-mute" title="Toggle sound" style="background:none;border:none;cursor:pointer;padding:2px 6px;line-height:1;display:flex;align-items:center"><svg id="mute-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/></svg></button>
+            <button id="btn-mute" title="Unmute" style="background:none;border:none;cursor:pointer;padding:2px 6px;line-height:1;display:flex;align-items:center"><svg id="mute-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
             <button id="btn-settings" title="Settings">&#9881;</button>
-            <button id="btn-wallet" class="btn btn-sm" title="Connect Stellar wallet">Connect Stellar Wallet</button>
+            <button id="btn-wallet" class="btn btn-sm btn-primary" title="Connect Stellar wallet">Connect Stellar Wallet</button>
             <span id="top-bar-address"></span>
             <span id="top-bar-username"></span>
           </div>
@@ -1176,7 +1177,7 @@
         <!-- Gate overlay: wallet + username before playing -->
         <div id="gate-overlay">
           <div id="gate-card">
-            <img src="/sprites/logo.png" alt="Chickenz" class="logo" />
+            <img src="/sprites/logo.png" alt="Chickenz" class="logo" width="280" height="79" />
             <p id="gate-subtitle">Connecting...</p>
             <div id="gate-wallet-section"></div>
             <div id="gate-step2">
@@ -1378,7 +1379,7 @@
         <!-- Lobby overlay (starts visible so users see it immediately, no dark flash) -->
         <div id="lobby-overlay" class="visible">
           <div id="lobby-header">
-            <img src="/sprites/logo.png" alt="Chickenz" class="logo" />
+            <img src="/sprites/logo.png" alt="Chickenz" class="logo" width="170" height="48" />
           </div>
           <div id="lobby-actions">
             <div class="mode-toggle">
@@ -1401,7 +1402,7 @@
             <button class="lobby-tab" data-tab="leaderboard" role="tab" aria-selected="false">Leaderboard</button>
           </div>
           <div id="tab-rooms" class="tab-content visible" role="tabpanel">
-            <div id="room-list"></div>
+            <div id="room-list"><div id="lobby-empty">No public rooms yet. Create one or hit Quick Play!</div></div>
           </div>
           <div id="tab-history" class="tab-content" role="tabpanel">
             <div id="match-history-list"></div>
@@ -1409,12 +1410,50 @@
           <div id="tab-leaderboard" class="tab-content" role="tabpanel">
             <div id="leaderboard-content"></div>
           </div>
-          <div id="lobby-status">Connecting...</div>
+          <div id="lobby-status"></div>
         </div>
       </div>
     </div>
 
-    <script>window.global = window;</script>
+    <script>
+      window.global = window;
+      // Hydrate localStorage-driven UI before module loads to prevent flash
+      (function() {
+        // Username
+        var name = localStorage.getItem("chickenz-username");
+        if (name) document.getElementById("top-bar-username").textContent = name;
+
+        // Mute icon (default is muted)
+        var muted = localStorage.getItem("chickenz-muted");
+        if (muted === "false") {
+          var svg = document.getElementById("mute-icon");
+          if (svg) svg.innerHTML = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/>';
+          document.getElementById("btn-mute").title = "Mute";
+        }
+
+        // Mode toggle (default is casual)
+        var mode = localStorage.getItem("chickenz-mode");
+        if (mode === "ranked") {
+          document.getElementById("btn-mode-casual").classList.remove("active");
+          document.getElementById("btn-mode-ranked").classList.add("active");
+        }
+
+        // Wallet — optimistically show if previously connected (reverts if reconnect fails)
+        var walletAddr = localStorage.getItem("chickenz-wallet-address");
+        var walletDisconnected = localStorage.getItem("chickenz-wallet-disconnected");
+        if (walletAddr && !walletDisconnected) {
+          var short = walletAddr.slice(0, 6) + "..." + walletAddr.slice(-4);
+          document.getElementById("top-bar-address").textContent = short;
+          var btn = document.getElementById("btn-wallet");
+          btn.textContent = "Disconnect";
+          btn.classList.remove("btn-primary");
+          btn.classList.add("btn-warn");
+          if (mode === "ranked") {
+            document.getElementById("btn-mode-ranked").classList.remove("locked");
+          }
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

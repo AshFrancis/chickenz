@@ -81,9 +81,7 @@ pub fn step(
     players = players
         .iter()
         .map(|p| {
-            if p.state_flags & player_state_flag::ALIVE != 0
-                && p.state_flags & player_state_flag::INVINCIBLE != 0
-            {
+            if p.state_flags & player_state_flag::ALIVE != 0 && p.state_flags & player_state_flag::INVINCIBLE != 0 {
                 let new_timer = p.respawn_timer - 1;
                 if new_timer <= 0 {
                     return PlayerState {
@@ -134,13 +132,8 @@ pub fn step(
             let stats = weapon_stats(weapon);
             // Copy player to avoid borrow conflict with mutation below
             let player_copy = players[i];
-            let (projs, new_id, new_rng) = create_weapon_projectiles(
-                &player_copy,
-                input.aim_x,
-                input.aim_y,
-                next_projectile_id,
-                rng_state,
-            );
+            let (projs, new_id, new_rng) =
+                create_weapon_projectiles(&player_copy, input.aim_x, input.aim_y, next_projectile_id, rng_state);
             next_projectile_id = new_id;
             rng_state = new_rng;
             new_projectiles.extend(projs);
@@ -169,8 +162,7 @@ pub fn step(
     players = hit_result.updated_players;
 
     // 10. Deaths + lives — decrement lives for players killed by projectiles
-    let killed_ids: Vec<PlayerId> =
-        hit_result.kills.iter().map(|k| k.victim_id).collect();
+    let killed_ids: Vec<PlayerId> = hit_result.kills.iter().map(|k| k.victim_id).collect();
 
     players = players
         .iter()
@@ -190,8 +182,7 @@ pub fn step(
         .collect();
 
     // Check elimination: if only one player has lives remaining → start linger
-    let players_with_lives: Vec<&PlayerState> =
-        players.iter().filter(|p| p.lives > 0).collect();
+    let players_with_lives: Vec<&PlayerState> = players.iter().filter(|p| p.lives > 0).collect();
     if players_with_lives.len() == 1 {
         death_linger_timer = DEATH_LINGER_TICKS;
         winner = players_with_lives[0].id;
@@ -208,24 +199,18 @@ pub fn step(
                 if p.state_flags & player_state_flag::ALIVE == 0 && p.lives > 0 {
                     let new_timer = p.respawn_timer + 1;
                     if new_timer >= RESPAWN_TICKS {
-                        let (spawn_idx, new_rng) = prng_int_range(
-                            rng_state,
-                            0,
-                            map.spawn_points.len() as i32 - 1,
-                        );
+                        let (spawn_idx, new_rng) = prng_int_range(rng_state, 0, map.spawn_points.len() as i32 - 1);
                         rng_state = new_rng;
                         let spawn = &map.spawn_points[spawn_idx as usize];
                         // Clamp spawn to arena bounds (important during sudden death)
-                        let spawn_x =
-                            arena_left.max(spawn.x.min(arena_right - PLAYER_WIDTH));
+                        let spawn_x = arena_left.max(spawn.x.min(arena_right - PLAYER_WIDTH));
                         return PlayerState {
                             x: spawn_x,
                             y: spawn.y,
                             vx: 0.0,
                             vy: 0.0,
                             health: MAX_HEALTH,
-                            state_flags: player_state_flag::ALIVE
-                                | player_state_flag::INVINCIBLE,
+                            state_flags: player_state_flag::ALIVE | player_state_flag::INVINCIBLE,
                             respawn_timer: INVINCIBLE_TICKS,
                             shoot_cooldown: 0,
                             grounded: false,
@@ -247,8 +232,7 @@ pub fn step(
     // 12. Sudden death — arena walls close inward
     let current_tick = prev.tick + 1;
     if !match_over && death_linger_timer == 0 && current_tick >= config.sudden_death_start_tick {
-        let duration =
-            (config.match_duration_ticks - config.sudden_death_start_tick) as f64;
+        let duration = (config.match_duration_ticks - config.sudden_death_start_tick) as f64;
         let elapsed = (current_tick - config.sudden_death_start_tick) as f64;
         let progress = (elapsed / duration).min(1.0);
         let half_width = map.width / 2.0;
@@ -280,8 +264,7 @@ pub fn step(
             .collect();
 
         // Check elimination after wall kills
-        let alive_after_sd: Vec<&PlayerState> =
-            players.iter().filter(|p| p.lives > 0).collect();
+        let alive_after_sd: Vec<&PlayerState> = players.iter().filter(|p| p.lives > 0).collect();
         if alive_after_sd.len() == 1 {
             death_linger_timer = DEATH_LINGER_TICKS;
             winner = alive_after_sd[0].id;

@@ -12,6 +12,9 @@ soroban-sdk = "22.0.6"
 [dev-dependencies]
 soroban-sdk = { version = "22.0.6", features = ["testutils"] }
 
+[lints.clippy]
+all = "warn"
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true

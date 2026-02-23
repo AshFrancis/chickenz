@@ -94,14 +94,19 @@ mod tests {
     fn prng_int_range_cross_validated_with_ts() {
         // From TS: intRange sequence starting at seed=42, range [0,3]
         let (v, s) = prng_int_range(42, 0, 3);
-        assert_eq!(v, 2); assert_eq!(s, 1831565855);
+        assert_eq!(v, 2);
+        assert_eq!(s, 1831565855);
         let (v, s) = prng_int_range(s, 0, 3);
-        assert_eq!(v, 1); assert_eq!(s, 3663131668);
+        assert_eq!(v, 1);
+        assert_eq!(s, 3663131668);
         let (v, s) = prng_int_range(s, 0, 3);
-        assert_eq!(v, 3); assert_eq!(s, 1199730185);
+        assert_eq!(v, 3);
+        assert_eq!(s, 1199730185);
         let (v, s) = prng_int_range(s, 0, 3);
-        assert_eq!(v, 2); assert_eq!(s, 3031295998);
+        assert_eq!(v, 2);
+        assert_eq!(s, 3031295998);
         let (v, s) = prng_int_range(s, 0, 3);
-        assert_eq!(v, 0); assert_eq!(s, 567894515);
+        assert_eq!(v, 0);
+        assert_eq!(s, 567894515);
     }
 }

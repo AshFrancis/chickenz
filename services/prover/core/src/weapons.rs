@@ -44,10 +44,7 @@ fn player_overlaps_pickup(p: &PlayerState, pickup: &WeaponPickup) -> bool {
 }
 
 /// Resolve weapon pickups — players touching active pickups equip them.
-pub fn resolve_weapon_pickups(
-    players: &mut [PlayerState],
-    pickups: &mut [WeaponPickup],
-) {
+pub fn resolve_weapon_pickups(players: &mut [PlayerState], pickups: &mut [WeaponPickup]) {
     for pi in 0..pickups.len() {
         if pickups[pi].respawn_timer > 0 {
             continue;

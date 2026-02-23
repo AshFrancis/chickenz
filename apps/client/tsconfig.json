@@ -1,12 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
     "outDir": "dist",
-    "composite": true,
     "noEmit": true
   },
-  "include": ["src"],
+  "include": ["src", "../../services/server/src/protocol.ts"],
   "references": [
     { "path": "../../packages/sim" }
   ]

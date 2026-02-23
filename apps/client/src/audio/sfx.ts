@@ -193,7 +193,7 @@ export function playSFX(key: string, volume: number) {
   if (!fn) return;
   try {
     const c = getCtx();
-    if (c.state === "suspended") c.resume();
+    if (c.state === "suspended") void c.resume();
     fn(c, volume);
   } catch {
     // Web Audio not available

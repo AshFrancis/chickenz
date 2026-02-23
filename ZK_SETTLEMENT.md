@@ -58,23 +58,6 @@ Guest:
 Output: Groth16 seal (260 bytes) + journal (76 bytes)
 ```
 
-### Chunked Mode (single-round only, experimental)
-
-10 chunks of 360 ticks per round, composed via proof recursion. Does not support multi-round proofs — use monolithic mode for match settlement.
-
-```
-Chunk Guest (×10):
-  Input:  chunk_index, seed, transcript_slice, prev_state_hash
-  Verify: env::verify(prev_chunk_proof) if chunk > 0
-  Exec:   step_mut() × 360
-  Output: chunk proof with state hash chain
-
-Match Composer:
-  Input:  10 chunk proofs
-  Verify: env::verify() for each chunk (zero execution cycles)
-  Output: Final journal (winner, scores, hashes)
-```
-
 ---
 
 ## Optimizations
@@ -145,7 +128,7 @@ fn settle_match(
 | Groth16 Verifier | `CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH` |
 | Game Hub | `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG` |
 
-Match-guest image ID: `c48f7169630d597526348ba1f9375186bfd1e821b52a6ec75957aabe179713d3`
+Monolithic guest image ID: `8dd539f16c344186c2a93bb3c40f37b911ed182dbad86ff9517b3619c18b572b`
 
 ---
 
@@ -163,12 +146,12 @@ Match-guest image ID: `c48f7169630d597526348ba1f9375186bfd1e821b52a6ec75957aabe1
 
 **Why `transcript_hash` is not checked separately on-chain:** The on-chain contract does not independently store or verify `transcript_hash` because it is already embedded in the journal and covered by the Groth16 proof. The `image_id` pins the exact guest code, which guarantees the hash was computed honestly. Storing the transcript hash on-chain would add gas cost without increasing security, since the proof already covers it. However, `transcript_hash` is available in the journal for off-chain auditing — anyone can download a match transcript, recompute the hash, and verify it matches the journal value.
 
-**Hackathon (current):**
+**Current:**
 - Server runs authoritative sim, records transcript
 - Any party with the transcript can generate the ZK proof
 - Contract trusts only the cryptographic proof — not the server
 
-**Production (future):**
+**Planned:**
 - Players sign input batches (non-repudiation)
 - Anyone-can-settle: any third party can prove and submit
 - Boundless proving marketplace for trustless proof generation
