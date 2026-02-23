@@ -161,7 +161,7 @@ export class GameScene extends Phaser.Scene {
   // winText + roundPopupText are DOM-based (see #announce-overlay)
   private controlsText!: Phaser.GameObjects.Text;
   private weaponText!: Phaser.GameObjects.Text;
-  private highPingText!: Phaser.GameObjects.Text;
+  private highPingShown = false;
   private nameTexts: Phaser.GameObjects.Text[] = [];
 
   // Rocket explosion effects
@@ -425,18 +425,6 @@ export class GameScene extends Phaser.Scene {
       .setResolution(DPR)
       .setDepth(100);
 
-    this.highPingText = this.add
-      .text(VIEW_W / 2, VIEW_H - 8, "High ping detected >180ms - You may experience stutters", {
-        fontSize: "7px",
-        color: "#ff8800",
-        fontFamily: PIXEL_FONT,
-        align: "center",
-      })
-      .setOrigin(0.5, 1)
-      .setResolution(DPR)
-      .setVisible(false)
-      .setDepth(100);
-
     // Player name texts (rendered on main camera, move with players)
     for (let i = 0; i < 2; i++) {
       const text = this.add
@@ -515,7 +503,6 @@ export class GameScene extends Phaser.Scene {
       this.suddenDeathText,
       this.controlsText,
       this.weaponText,
-      this.highPingText,
       this.roundText,
       this.replayInfoText,
     ];
@@ -1669,7 +1656,11 @@ export class GameScene extends Phaser.Scene {
         this.diagMaxErrY = 0;
         this.diagTeleports = 0;
         this.diagMaxVisualJump = 0;
-        this.highPingText.setVisible(rttMs > 180);
+        const showHighPing = rttMs > 180;
+        if (showHighPing !== this.highPingShown) {
+          this.highPingShown = showHighPing;
+          document.getElementById("high-ping-overlay")?.classList.toggle("visible", showHighPing);
+        }
       }
     }
 

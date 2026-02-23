@@ -554,6 +554,23 @@
         font-family: 'Press Start 2P', 'Courier New', monospace;
       }
 
+      #high-ping-overlay {
+        display: none;
+        position: absolute;
+        bottom: 8px; left: 0;
+        width: 100%;
+        z-index: 160;
+        pointer-events: none;
+        text-align: center;
+      }
+      #high-ping-overlay.visible { display: block; }
+      #high-ping-text {
+        font-size: 10px;
+        color: #ff8800;
+        font-family: 'Press Start 2P', 'Courier New', monospace;
+        text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+      }
+
       /* Warmup overlay (DOM, over canvas) */
       #warmup-overlay {
         display: none;
@@ -1217,6 +1234,11 @@
         <!-- Sudden death countdown -->
         <div id="sudden-death-overlay">
           <span id="sudden-death-text"></span>
+        </div>
+
+        <!-- High ping warning -->
+        <div id="high-ping-overlay">
+          <span id="high-ping-text">High ping detected &gt;180ms — You may experience stutters</span>
         </div>
 
         <!-- Warmup overlay (DOM, crisp at any scale) -->
