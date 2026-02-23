@@ -1866,15 +1866,13 @@ export class GameScene extends Phaser.Scene {
         } else {
           // Variable blend: tight for small errors (<10px), gradual for large errors
           // Small error: 0.6 → moves 60%/frame (snappy, responsive)
-          // Large error (80px): 0.15 → moves 15%/frame (spreads over ~10 frames, no visible snap)
-          const blend = errMag < 10 ? 0.6 : Math.max(0.15, 0.6 - errMag * 0.006);
+          // Large error (60px+): 0.08 → moves 8%/frame (spreads over ~20 frames, no visible snap)
+          const blend = errMag < 10 ? 0.6 : Math.max(0.08, 0.6 - errMag * 0.006);
           ls.x = smoothLerp(ls.x, cp.x, blend, dt);
           if (cp.grounded) {
             ls.y = cp.y;
           } else {
-            const ticks = dt / TICK_DT_MS;
-            const gravityHint = 0.5 * GRAVITY * ticks * ticks;
-            ls.y = smoothLerp(ls.y, cp.y, blend, dt) + gravityHint;
+            ls.y = smoothLerp(ls.y, cp.y, blend, dt);
           }
         }
         drawX = Math.round(ls.x);
