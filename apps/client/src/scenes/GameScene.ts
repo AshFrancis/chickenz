@@ -264,6 +264,7 @@ export class GameScene extends Phaser.Scene {
   // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
   private pendingServerState: GameStateData | null = null;
   private pendingServerButtons: [number, number] | undefined = undefined;
+  private pendingServerInputs: [PlayerInput, PlayerInput] | undefined = undefined;
 
   // Netcode diagnostics
   private diagTimer = 0;
@@ -730,8 +731,7 @@ export class GameScene extends Phaser.Scene {
     this.currentZoom = 1.0;
     this.cameraX = 480;
     this.cameraY = 270;
-    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
-    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.resetSmoothingState();
     this.explosions = [];
 
     const warmupEl = document.getElementById("warmup-overlay");
@@ -835,6 +835,7 @@ export class GameScene extends Phaser.Scene {
     this.playing = false; // freeze input/prediction during transition + countdown
     this.pendingServerState = null;
     this.pendingServerButtons = undefined;
+    this.pendingServerInputs = undefined;
     this.lastServerTick = 0;
 
     // Transition covers screen, swap map at midpoint (fully black), then reveal
@@ -990,6 +991,15 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** Reset smoothing and visual-jump diagnostics used by netcode tuning logs. */
+  private resetSmoothingState() {
+    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
+    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.diagPrevVisualX = 0;
+    this.diagPrevVisualY = 0;
+    this.diagMaxVisualJump = 0;
+  }
+
   private initRound(seed: number, mapIndex: number) {
     const map = MAP_POOL[mapIndex] ?? MAP_POOL[0] ?? ARENA;
     const mapJson = JSON.stringify(map);
@@ -1043,8 +1053,7 @@ export class GameScene extends Phaser.Scene {
       this.cameraY = 270;
       this.currentZoom = 1.0;
     }
-    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
-    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.resetSmoothingState();
     this.lastServerTick = 0;
     this.resetRagdolls();
   }
@@ -1214,8 +1223,7 @@ export class GameScene extends Phaser.Scene {
     this.currentZoom = 1.0;
     this.cameraX = 480;
     this.cameraY = 270;
-    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
-    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.resetSmoothingState();
     this.resetRagdolls();
     this.replayInfoText.setVisible(true);
 
@@ -1316,7 +1324,7 @@ export class GameScene extends Phaser.Scene {
     this.networkRtt = ms;
   }
 
-  receiveState(state: StateMessage, lastButtons?: [number, number]) {
+  receiveState(state: StateMessage, lastButtons?: [number, number], lastInputs?: [PlayerInput, PlayerInput]) {
     // Drop out-of-order packets — prevents old states from overwriting newer ones
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
@@ -1326,6 +1334,7 @@ export class GameScene extends Phaser.Scene {
     // states queue up → processing all of them makes the next frame even slower.
     this.pendingServerState = state;
     this.pendingServerButtons = lastButtons as [number, number] | undefined;
+    this.pendingServerInputs = lastInputs as [PlayerInput, PlayerInput] | undefined;
   }
 
   endOnlineMatch(winner: number) {
@@ -1340,6 +1349,7 @@ export class GameScene extends Phaser.Scene {
     this.playSound("match-end");
     this.pendingServerState = null;
     this.pendingServerButtons = undefined;
+    this.pendingServerInputs = undefined;
     this.lastServerTick = 0;
     this.explosions = [];
     this.resetRagdolls();
@@ -1380,7 +1390,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  receiveSpectateState(state: GameStateData, lastButtons?: [number, number]) {
+  receiveSpectateState(state: GameStateData, lastButtons?: [number, number], _lastInputs?: [PlayerInput, PlayerInput]) {
     // Same as receiveState but skip prediction
     if (state.tick <= this.lastServerTick) return;
     this.lastServerTick = state.tick;
@@ -1472,8 +1482,10 @@ export class GameScene extends Phaser.Scene {
     if (this.pendingServerState) {
       const state = this.pendingServerState;
       const lastButtons = this.pendingServerButtons;
+      const lastInputs = this.pendingServerInputs;
       this.pendingServerState = null;
       this.pendingServerButtons = undefined;
+      this.pendingServerInputs = undefined;
 
       if (lastButtons) {
         this.lastReceivedButtons = [...lastButtons] as [number, number];
@@ -1484,7 +1496,7 @@ export class GameScene extends Phaser.Scene {
       this.prevState = this.currState;
       this.currState = state;
       if (this.prediction) {
-        this.prediction.applyServerState(state, state.tick, lastButtons);
+        this.prediction.applyServerState(state, state.tick, lastButtons, lastInputs);
       }
     }
 

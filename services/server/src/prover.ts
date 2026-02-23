@@ -180,7 +180,7 @@ export async function proveBoundless(
       proc.on("close", (code) => {
         if (code !== 0) {
           console.error(`[prover] Boundless exited with code ${code} for ${matchId}`);
-          if (stderr) console.error(`[prover] stderr: ${stderr.slice(0, 500)}`);
+          if (stderr) console.error(`[prover] stderr: ${stderr.slice(-2000)}`);
           if (stdout) console.log(`[prover] stdout: ${stdout.slice(0, 500)}`);
         }
         resolve(code ?? 1);

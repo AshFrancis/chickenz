@@ -86,13 +86,28 @@ export class PredictionManager {
    * from T+1..predictedTick. Capped at MAX_REPLAY to prevent runaway if
    * client prediction drifts ahead of server.
    */
-  applyServerState(serverState: GameStateData, serverTick: number, serverLastButtons?: [number, number]): void {
+  applyServerState(
+    serverState: GameStateData,
+    serverTick: number,
+    serverLastButtons?: [number, number],
+    serverLastInputs?: [PlayerInput, PlayerInput],
+  ): void {
     const MAX_REPLAY = 16; // cap replay to prevent progressive slowdown
 
     // Extract remote player's last input from server state for prediction
     // This mirrors the server's missing-input rule (reuse T-1) and dramatically
     // reduces divergence between prediction and server reality
-    if (serverLastButtons) {
+    if (serverLastInputs) {
+      const remoteId = 1 - this.localPlayerId;
+      const remote = serverLastInputs[remoteId];
+      if (remote) {
+        this.lastRemoteInput = {
+          buttons: remote.buttons,
+          aimX: remote.aimX,
+          aimY: remote.aimY,
+        };
+      }
+    } else if (serverLastButtons) {
       const remoteId = 1 - this.localPlayerId;
       const remoteBtns = serverLastButtons[remoteId] ?? 0;
       this.lastRemoteInput = { buttons: remoteBtns, aimX: 0, aimY: 0 };

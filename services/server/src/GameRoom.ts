@@ -37,6 +37,7 @@ export class GameRoom {
   private wasmState!: WasmState;
   private currentMap!: GameMap;
   private lastAppliedButtons: [number, number] = [0, 0];
+  private lastAppliedInputs: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
   private rawInput: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
   private accInput: [PlayerInput, PlayerInput] = [NULL_INPUT, NULL_INPUT];
   private inputQueues: [Map<number, PlayerInput>, Map<number, PlayerInput>] = [new Map(), new Map()];
@@ -380,6 +381,7 @@ export class GameRoom {
     }
     this.wasmState = new WasmState(this.seed, JSON.stringify(map));
     this.lastAppliedButtons = [0, 0];
+    this.lastAppliedInputs = [NULL_INPUT, NULL_INPUT];
     this.rawInput = [NULL_INPUT, NULL_INPUT];
     this.accInput = [NULL_INPUT, NULL_INPUT];
     this.inputQueues = [new Map(), new Map()];
@@ -450,6 +452,7 @@ export class GameRoom {
 
     // Track last buttons for broadcast (WASM handles prev_buttons internally)
     this.lastAppliedButtons = [this.accInput[0].buttons, this.accInput[1].buttons];
+    this.lastAppliedInputs = [{ ...this.accInput[0] }, { ...this.accInput[1] }];
 
     // Step WASM sim
     try {
@@ -518,6 +521,7 @@ export class GameRoom {
       type: "state",
       tick: exported.tick,
       lastButtons: this.lastAppliedButtons,
+      lastInputs: this.lastAppliedInputs,
       players: exported.players,
       projectiles: exported.projectiles,
       weaponPickups: exported.weaponPickups,

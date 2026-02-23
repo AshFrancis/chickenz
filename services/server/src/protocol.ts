@@ -143,6 +143,8 @@ export interface StateMessage {
   nextProjectileId: number;
   /** Last input buttons the server used for each player this tick (for reconciliation edge detection) */
   lastButtons: [number, number];
+  /** Full inputs the server used for each player this tick (for client prediction replay parity) */
+  lastInputs: [PlayerInput, PlayerInput];
 }
 
 export interface EndedMessage {
@@ -224,6 +226,7 @@ export interface SpectateStateMessage {
   rngState: number;
   nextProjectileId: number;
   lastButtons: [number, number];
+  lastInputs: [PlayerInput, PlayerInput];
 }
 
 export interface SpectateRoundEndMessage {

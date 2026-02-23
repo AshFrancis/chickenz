@@ -1579,11 +1579,11 @@ function connectToServer(url: string) {
       };
     },
 
-    onState(state, lastButtons) {
+    onState(state, lastButtons, lastInputs) {
       const scene = getGameScene();
       if (scene) {
         if (networkManager) scene.setNetworkRtt(networkManager.rtt);
-        scene.receiveState(state, lastButtons);
+        scene.receiveState(state, lastButtons, lastInputs);
       }
     },
 
@@ -1676,9 +1676,9 @@ function connectToServer(url: string) {
       }
     },
 
-    onSpectateState(state, lastButtons) {
+    onSpectateState(state, lastButtons, lastInputs) {
       const scene = getGameScene();
-      if (scene) scene.receiveSpectateState(state, lastButtons);
+      if (scene) scene.receiveSpectateState(state, lastButtons, lastInputs);
     },
 
     onSpectateRoundEnd(round, winner, roundWins) {
