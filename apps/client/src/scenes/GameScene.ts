@@ -1935,16 +1935,19 @@ export class GameScene extends Phaser.Scene {
         // Detect fresh death (was alive last frame, now dead)
         if (ragdoll.wasAlive && !ragdoll.active && !ragdoll.settled) {
           ragdoll.active = true;
-          ragdoll.x = drawX;
-          ragdoll.y = drawY;
+          // Use server-authoritative position/velocity — prediction and smoothing can diverge significantly
+          const serverP = curr.players[i]!;
+          ragdoll.x = serverP.x;
+          ragdoll.y = serverP.y;
           // Preserve momentum — exaggerate for comedy
-          ragdoll.vx = (cp.vx ?? 0) * 1.5;
-          ragdoll.vy = Math.min(cp.vy ?? 0, -2) * 1.2 - 3; // always pop up a bit
+          const svx = serverP.vx ?? 0;
+          ragdoll.vx = svx * 1.5;
+          ragdoll.vy = Math.min(serverP.vy ?? 0, -2) * 1.2 - 3; // always pop up a bit
           // Spin direction: if moving, topple in movement direction; if still, fall backward (away from facing)
-          if (Math.abs(cp.vx) > 0.5) {
-            ragdoll.angularVel = cp.vx > 0 ? 6 : -6;
+          if (Math.abs(svx) > 0.5) {
+            ragdoll.angularVel = svx > 0 ? 6 : -6;
           } else {
-            ragdoll.angularVel = cp.facing === Facing.Right ? -5 : 5; // fall backward
+            ragdoll.angularVel = serverP.facing === Facing.Right ? -5 : 5; // fall backward
           }
           ragdoll.rotation = 0;
           ragdoll.bounces = 0;
