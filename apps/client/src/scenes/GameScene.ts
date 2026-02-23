@@ -2053,20 +2053,35 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
 
-      // Player is alive — reset ragdoll state if they just respawned
-      if (!this.deathRagdoll[i]!.wasAlive) {
+      // Player is alive — reset ragdoll on genuine respawn, ignore prediction flicker
+      {
         const ragdoll = this.deathRagdoll[i]!;
-        ragdoll.active = false;
-        ragdoll.settled = false;
-        ragdoll.rotation = 0;
-        ragdoll.angularVel = 0;
-        ragdoll.bounces = 0;
-        ragdoll.wasAlive = true;
-        if (sprite) {
-          sprite.setOrigin(0.5, 0.5);
-          sprite.setRotation(0);
-          sprite.setAlpha(1);
+        const hasActiveRagdoll = ragdoll.active || ragdoll.settled;
+        if (hasActiveRagdoll) {
+          // Ragdoll in progress — only reset on genuine respawn (invincible flag)
+          const invincibleNow = !!(cp.stateFlags & PlayerStateFlag.Invincible);
+          if (invincibleNow) {
+            ragdoll.active = false;
+            ragdoll.settled = false;
+            ragdoll.rotation = 0;
+            ragdoll.angularVel = 0;
+            ragdoll.bounces = 0;
+            ragdoll.wasAlive = true;
+            if (sprite) {
+              sprite.setOrigin(0.5, 0.5);
+              sprite.setRotation(0);
+              sprite.setAlpha(1);
+            }
+          }
+          // Otherwise: prediction flicker — don't touch ragdoll, don't set wasAlive
+        } else {
+          ragdoll.wasAlive = true;
         }
+      }
+
+      // If ragdoll is still active (prediction flicker — briefly "alive"), skip alive rendering
+      if (this.deathRagdoll[i]!.active || this.deathRagdoll[i]!.settled) {
+        continue;
       }
 
       const invincible = !!(cp.stateFlags & PlayerStateFlag.Invincible);
