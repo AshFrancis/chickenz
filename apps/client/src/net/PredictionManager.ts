@@ -21,6 +21,7 @@ export class PredictionManager {
   private inputBuffer = new InputBuffer();
   private predictedTick: number;
   private lastLocalInput: PlayerInput = NULL_INPUT;
+  private lastRemoteInput: PlayerInput = NULL_INPUT;
   private seed: number;
   private mapJson: string;
   private _cachedState: GameStateData | null = null;
@@ -28,6 +29,8 @@ export class PredictionManager {
 
   // Diagnostics
   private _lastReplayCount = 0;
+  private _lastReconcileErrorX = 0;
+  private _lastReconcileErrorY = 0;
 
   constructor(seed: number, mapJson: string, localPlayerId: number) {
     this.wasmState = new WasmState(seed, mapJson);
@@ -51,6 +54,11 @@ export class PredictionManager {
     return this._lastReplayCount;
   }
 
+  /** Position error from last reconciliation (for diagnostics). */
+  get lastReconcileError(): { x: number; y: number } {
+    return { x: this._lastReconcileErrorX, y: this._lastReconcileErrorY };
+  }
+
   /**
    * Run one prediction tick with the local player's input.
    * Stores the input for potential replay during reconciliation.
@@ -60,8 +68,11 @@ export class PredictionManager {
     this.inputBuffer.store(this.predictedTick, localInput);
     this.lastLocalInput = localInput;
 
-    const p0 = this.localPlayerId === 0 ? localInput : NULL_INPUT;
-    const p1 = this.localPlayerId === 1 ? localInput : NULL_INPUT;
+    // Use last known remote input (mirrors server's missing-input rule: reuse T-1)
+    // This dramatically reduces prediction divergence vs NULL_INPUT
+    const remote = this.lastRemoteInput;
+    const p0 = this.localPlayerId === 0 ? localInput : remote;
+    const p1 = this.localPlayerId === 1 ? localInput : remote;
 
     this.wasmState.step(p0.buttons, p0.aimX, p0.aimY, p1.buttons, p1.aimX, p1.aimY);
 
@@ -75,8 +86,21 @@ export class PredictionManager {
    * from T+1..predictedTick. Capped at MAX_REPLAY to prevent runaway if
    * client prediction drifts ahead of server.
    */
-  applyServerState(serverState: GameStateData, serverTick: number, _serverLastButtons?: [number, number]): void {
+  applyServerState(serverState: GameStateData, serverTick: number, serverLastButtons?: [number, number]): void {
     const MAX_REPLAY = 16; // cap replay to prevent progressive slowdown
+
+    // Extract remote player's last input from server state for prediction
+    // This mirrors the server's missing-input rule (reuse T-1) and dramatically
+    // reduces divergence between prediction and server reality
+    if (serverLastButtons) {
+      const remoteId = 1 - this.localPlayerId;
+      const remoteBtns = serverLastButtons[remoteId] ?? 0;
+      this.lastRemoteInput = { buttons: remoteBtns, aimX: 0, aimY: 0 };
+    }
+
+    // Track pre-reconciliation position for diagnostics
+    const prevPredicted = this.predictedState;
+    const localPlayer = prevPredicted?.players[this.localPlayerId];
 
     if (serverTick >= this.predictedTick) {
       // Server is ahead or caught up — no replay needed
@@ -87,6 +111,8 @@ export class PredictionManager {
       this.predictedTick = serverTick;
       this.inputBuffer.prune(serverTick);
       this._lastReplayCount = 0;
+      this._lastReconcileErrorX = 0;
+      this._lastReconcileErrorY = 0;
       this._cacheValid = false;
       return;
     }
@@ -94,8 +120,6 @@ export class PredictionManager {
     // If prediction is WAY ahead, snap it back to prevent huge replay
     const gap = this.predictedTick - serverTick;
     if (gap > MAX_REPLAY) {
-      // Normal during round transitions; only log for debugging
-      // console.log(`[Prediction] gap ${gap} ticks, snapping to server tick ${serverTick}`);
       this.wasmState.import_state(serverState);
       if (this.wasmState.tick() !== serverTick) {
         this.recreateFromState(serverState, serverTick);
@@ -103,6 +127,8 @@ export class PredictionManager {
       this.predictedTick = serverTick;
       this.inputBuffer.prune(serverTick);
       this._lastReplayCount = 0;
+      this._lastReconcileErrorX = 0;
+      this._lastReconcileErrorY = 0;
       this._cacheValid = false;
       return;
     }
@@ -121,11 +147,22 @@ export class PredictionManager {
 
     this._lastReplayCount = this.predictedTick - serverTick;
 
+    // Replay with last known remote input (matches server's missing-input rule)
+    const remote = this.lastRemoteInput;
     for (let tick = serverTick + 1; tick <= this.predictedTick; tick++) {
       const localInput = this.inputBuffer.get(tick);
-      const p0 = this.localPlayerId === 0 ? localInput : NULL_INPUT;
-      const p1 = this.localPlayerId === 1 ? localInput : NULL_INPUT;
+      const p0 = this.localPlayerId === 0 ? localInput : remote;
+      const p1 = this.localPlayerId === 1 ? localInput : remote;
       this.wasmState.step(p0.buttons, p0.aimX, p0.aimY, p1.buttons, p1.aimX, p1.aimY);
+    }
+
+    // Measure reconciliation error (how much the position shifted)
+    this._cacheValid = false;
+    const newPredicted = this.predictedState;
+    const newLocalPlayer = newPredicted?.players[this.localPlayerId];
+    if (localPlayer && newLocalPlayer) {
+      this._lastReconcileErrorX = Math.abs(newLocalPlayer.x - localPlayer.x);
+      this._lastReconcileErrorY = Math.abs(newLocalPlayer.y - localPlayer.y);
     }
 
     this.inputBuffer.prune(serverTick);
@@ -160,6 +197,7 @@ export class PredictionManager {
     this.wasmState = new WasmState(seed, mapJson);
     this.predictedTick = 0;
     this.inputBuffer.clear();
+    this.lastRemoteInput = NULL_INPUT;
     this._cacheValid = false;
   }
 

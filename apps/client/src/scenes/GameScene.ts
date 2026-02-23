@@ -1609,13 +1609,13 @@ export class GameScene extends Phaser.Scene {
       }
 
       // Adaptive prediction lead based on RTT
-      // One-way latency in ticks + 1 tick buffer, clamped to [2, 8]
+      // One-way latency in ticks + 1 tick buffer, clamped to [2, 12]
       const rttMs = this.networkRtt;
-      const PRED_LEAD = Math.max(2, Math.min(8, Math.ceil(rttMs / (2 * TICK_DT_MS)) + 1));
+      const PRED_LEAD = Math.max(2, Math.min(12, Math.ceil(rttMs / (2 * TICK_DT_MS)) + 1));
       if (this.lastServerTick > 0) {
         const targetTick = this.lastServerTick + PRED_LEAD;
         let extraTicks = 0;
-        while (this.prediction.currentTick < targetTick && extraTicks < 4) {
+        while (this.prediction.currentTick < targetTick && extraTicks < PRED_LEAD) {
           const predState2 = this.prediction.predictedState;
           if (!predState2) break;
           const player = predState2.players[this.localPlayerId];
@@ -1631,6 +1631,13 @@ export class GameScene extends Phaser.Scene {
       this.diagTimer += delta;
       if (this.diagTimer > 2000) {
         this.diagTimer = 0;
+        if (this.prediction) {
+          const err = this.prediction.lastReconcileError;
+          console.log(
+            `[netcode] RTT=${Math.round(rttMs)}ms PRED_LEAD=${PRED_LEAD} replay=${this.prediction.lastReplayCount} ` +
+              `errX=${err.x.toFixed(1)} errY=${err.y.toFixed(1)} gap=${this.prediction.currentTick - this.lastServerTick}`,
+          );
+        }
       }
     }
 
