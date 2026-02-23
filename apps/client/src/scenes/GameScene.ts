@@ -1830,6 +1830,7 @@ export class GameScene extends Phaser.Scene {
           : raw;
         // Exponential smoothing: frame-rate-independent blend toward predicted position
         // Uses smoothLerp (exponential decay) which is unconditionally stable at any dt
+        // Blend rate scales down for larger errors to prevent visible teleporting
         const ls = this.localSmooth;
         const dt = delta ?? 16.667;
         if (!ls.initialized) {
@@ -1839,22 +1840,24 @@ export class GameScene extends Phaser.Scene {
           ls.velY = 0;
           ls.initialized = true;
         }
-        const teleported = Math.abs(ls.x - cp.x) > 160 || Math.abs(ls.y - cp.y) > 160;
+        const errMag = Math.max(Math.abs(ls.x - cp.x), Math.abs(ls.y - cp.y));
+        const teleported = errMag > 200;
         if (teleported) {
           ls.x = cp.x;
           ls.y = cp.y;
-        } else if (cp.grounded) {
-          // On ground: snap X tightly, snap Y exactly (no float)
-          ls.x = smoothLerp(ls.x, cp.x, 0.8, dt);
-          ls.y = cp.y;
         } else {
-          // Airborne: exponential blend toward predicted position
-          // ~85% convergence per frame, ~98% in 2 frames — fast but smooth
-          ls.x = smoothLerp(ls.x, cp.x, 0.85, dt);
-          // Y: blend + gravity hint so visual follows the jump arc naturally
-          const ticks = dt / TICK_DT_MS;
-          const gravityHint = 0.5 * GRAVITY * ticks * ticks;
-          ls.y = smoothLerp(ls.y, cp.y, 0.85, dt) + gravityHint;
+          // Variable blend: tight for small errors (<10px), gradual for large errors
+          // Small error: 0.6 → moves 60%/frame (snappy, responsive)
+          // Large error (80px): 0.15 → moves 15%/frame (spreads over ~10 frames, no visible snap)
+          const blend = errMag < 10 ? 0.6 : Math.max(0.15, 0.6 - errMag * 0.006);
+          ls.x = smoothLerp(ls.x, cp.x, blend, dt);
+          if (cp.grounded) {
+            ls.y = cp.y;
+          } else {
+            const ticks = dt / TICK_DT_MS;
+            const gravityHint = 0.5 * GRAVITY * ticks * ticks;
+            ls.y = smoothLerp(ls.y, cp.y, blend, dt) + gravityHint;
+          }
         }
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);

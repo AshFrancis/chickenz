@@ -106,7 +106,10 @@ export class NetworkManager {
       switch (msg.type) {
         case "pong": {
           const sample = Date.now() - (msg as { t: number }).t;
-          this.rttMs = this.rttMs === 0 ? sample : this.rttMs * 0.8 + sample * 0.2;
+          if (sample > 2000) break; // discard outliers (>2s = broken connection, not real RTT)
+          // Asymmetric EWMA: recover quickly from spikes (alpha=0.5 down, 0.2 up)
+          const alpha = sample < this.rttMs ? 0.5 : 0.2;
+          this.rttMs = this.rttMs === 0 ? sample : this.rttMs * (1 - alpha) + sample * alpha;
           break;
         }
         case "lobby":
