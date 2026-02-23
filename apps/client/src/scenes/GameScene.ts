@@ -244,6 +244,23 @@ export class GameScene extends Phaser.Scene {
   private lastReceivedButtons: [number, number] = [0, 0];
   private prevFrameButtons: [number, number] = [0, 0];
 
+  // Death ragdoll physics (per player)
+  private deathRagdoll: {
+    active: boolean;
+    settled: boolean;
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    rotation: number;
+    angularVel: number;
+    bounces: number;
+    wasAlive: boolean; // track alive→dead transition
+  }[] = [
+    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
+    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
+  ];
+
   // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
   private pendingServerState: GameStateData | null = null;
   private pendingServerButtons: [number, number] | undefined = undefined;
@@ -1000,6 +1017,14 @@ export class GameScene extends Phaser.Scene {
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.lastServerTick = 0;
+    for (const r of this.deathRagdoll) {
+      r.active = false;
+      r.settled = false;
+      r.rotation = 0;
+      r.angularVel = 0;
+      r.bounces = 0;
+      r.wasAlive = true;
+    }
   }
 
   /** Create tile sprites for all platforms in the map using 9-slice terrain tiles. */
@@ -1169,6 +1194,14 @@ export class GameScene extends Phaser.Scene {
     this.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    for (const r of this.deathRagdoll) {
+      r.active = false;
+      r.settled = false;
+      r.rotation = 0;
+      r.angularVel = 0;
+      r.bounces = 0;
+      r.wasAlive = true;
+    }
     this.replayInfoText.setVisible(true);
 
     // Remove previous replay listeners to prevent stacking
@@ -1240,6 +1273,14 @@ export class GameScene extends Phaser.Scene {
     hideAnnounce();
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
+    for (const r of this.deathRagdoll) {
+      r.active = false;
+      r.settled = false;
+      r.rotation = 0;
+      r.angularVel = 0;
+      r.bounces = 0;
+      r.wasAlive = true;
+    }
   }
 
   private exitReplay() {
@@ -1880,11 +1921,128 @@ export class GameScene extends Phaser.Scene {
       const alive = !!(cp.stateFlags & PlayerStateFlag.Alive);
 
       if (!alive) {
-        sprite?.setVisible(false);
+        // Always hide gun, stomp alert, name immediately
         this.gunSprites[i]?.setVisible(false);
         this.stompAlertTexts[i]?.setAlpha(0);
+        this.nameTexts[i]?.setVisible(false);
+
+        const ragdoll = this.deathRagdoll[i]!;
+        const dt = (delta ?? 16.667) / 1000; // seconds
+        const currentMap = this.config?.map ?? ARENA;
+
+        // Detect fresh death (was alive last frame, now dead)
+        if (ragdoll.wasAlive && !ragdoll.active && !ragdoll.settled) {
+          ragdoll.active = true;
+          ragdoll.x = drawX;
+          ragdoll.y = drawY;
+          // Preserve momentum — exaggerate for comedy
+          ragdoll.vx = (cp.vx ?? 0) * 1.5;
+          ragdoll.vy = Math.min(cp.vy ?? 0, -2) * 1.2 - 3; // always pop up a bit
+          // Spin direction: if moving, topple in movement direction; if still, fall backward (away from facing)
+          if (Math.abs(cp.vx) > 0.5) {
+            ragdoll.angularVel = cp.vx > 0 ? 6 : -6;
+          } else {
+            ragdoll.angularVel = cp.facing === Facing.Right ? -5 : 5; // fall backward
+          }
+          ragdoll.rotation = 0;
+          ragdoll.bounces = 0;
+          // Play hit animation
+          if (sprite) {
+            const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
+            sprite.play(`${slug}-hit`);
+          }
+        }
+        ragdoll.wasAlive = false;
+
+        // Ragdoll physics simulation
+        if (ragdoll.active && sprite) {
+          const prevBottom = ragdoll.y + PLAYER_HEIGHT;
+
+          // Gravity + movement
+          ragdoll.vy += GRAVITY * 60 * dt;
+          ragdoll.x += ragdoll.vx * 60 * dt;
+          ragdoll.y += ragdoll.vy * 60 * dt;
+
+          // Rotation: spin until lying flat (±PI/2), then stop
+          if (Math.abs(ragdoll.rotation) < Math.PI / 2) {
+            ragdoll.rotation += ragdoll.angularVel * dt;
+            // Clamp to ±PI/2 — body topples flat and stays
+            if (Math.abs(ragdoll.rotation) >= Math.PI / 2) {
+              ragdoll.rotation = Math.sign(ragdoll.rotation) * Math.PI / 2;
+              ragdoll.angularVel = 0;
+            }
+          }
+
+          // Ground collision: only catch surfaces the body falls ONTO from above
+          const bodyBottom = ragdoll.y + PLAYER_HEIGHT;
+          let floorY = currentMap.height; // map floor
+          for (const plat of currentMap.platforms) {
+            if (
+              ragdoll.x + PLAYER_WIDTH > plat.x &&
+              ragdoll.x < plat.x + plat.width &&
+              bodyBottom >= plat.y &&
+              prevBottom <= plat.y + 4 && // was above (or near top of) this platform last frame
+              ragdoll.vy > 0
+            ) {
+              floorY = Math.min(floorY, plat.y);
+            }
+          }
+
+          if (bodyBottom >= floorY && ragdoll.vy > 0) {
+            ragdoll.y = floorY - PLAYER_HEIGHT;
+            ragdoll.bounces++;
+            if (ragdoll.bounces >= 3 || Math.abs(ragdoll.vy) < 1.5) {
+              // Settle
+              ragdoll.active = false;
+              ragdoll.settled = true;
+              ragdoll.vx = 0;
+              ragdoll.vy = 0;
+              ragdoll.angularVel = 0;
+            } else {
+              // Bounce! Dampen and reverse
+              ragdoll.vy *= -0.45;
+              ragdoll.vx *= 0.7;
+            }
+          }
+
+          // Wall collision: clamp to arena bounds
+          const arenaL = curr.arenaLeft ?? 0;
+          const arenaR = curr.arenaRight ?? currentMap.width;
+          if (ragdoll.x < arenaL) {
+            ragdoll.x = arenaL;
+            ragdoll.vx = Math.abs(ragdoll.vx) * 0.4;
+          } else if (ragdoll.x + PLAYER_WIDTH > arenaR) {
+            ragdoll.x = arenaR - PLAYER_WIDTH;
+            ragdoll.vx = -Math.abs(ragdoll.vx) * 0.4;
+          }
+
+          // Render: center pivot, position at hitbox center
+          sprite.setOrigin(0.5, 0.5);
+          sprite.setPosition(
+            Math.round(ragdoll.x + PLAYER_WIDTH / 2),
+            Math.round(ragdoll.y + PLAYER_HEIGHT / 2),
+          );
+          sprite.setRotation(ragdoll.rotation);
+          sprite.setAlpha(0.9);
+          sprite.setVisible(true);
+          sprite.setDepth(15); // behind living players
+        } else if (ragdoll.settled && sprite) {
+          // Settled: corpse lying flat on the ground, nudge down so body rests on surface
+          sprite.setOrigin(0.5, 0.5);
+          sprite.setPosition(
+            Math.round(ragdoll.x + PLAYER_WIDTH / 2),
+            Math.round(ragdoll.y + PLAYER_HEIGHT / 2 + 6),
+          );
+          sprite.setRotation(ragdoll.rotation);
+          sprite.setAlpha(0.5);
+          sprite.setVisible(true);
+          sprite.setDepth(15);
+        } else {
+          sprite?.setVisible(false);
+        }
+
+        // Respawn pulse rectangle at spawn point (if lives remain)
         if (cp.lives > 0) {
-          const currentMap = this.config?.map ?? ARENA;
           const spawn = currentMap.spawnPoints[cp.id % currentMap.spawnPoints.length]!;
           const displayTick = predicted?.tick ?? curr.tick;
           const pulse = Math.sin(displayTick * 0.15) * 0.3 + 0.5;
@@ -1892,8 +2050,23 @@ export class GameScene extends Phaser.Scene {
           g.fillStyle(color, pulse);
           g.fillRect(spawn.x, spawn.y, PLAYER_WIDTH, PLAYER_HEIGHT);
         }
-        this.nameTexts[i]?.setVisible(false);
         continue;
+      }
+
+      // Player is alive — reset ragdoll state if they just respawned
+      if (!this.deathRagdoll[i]!.wasAlive) {
+        const ragdoll = this.deathRagdoll[i]!;
+        ragdoll.active = false;
+        ragdoll.settled = false;
+        ragdoll.rotation = 0;
+        ragdoll.angularVel = 0;
+        ragdoll.bounces = 0;
+        ragdoll.wasAlive = true;
+        if (sprite) {
+          sprite.setOrigin(0.5, 0.5);
+          sprite.setRotation(0);
+          sprite.setAlpha(1);
+        }
       }
 
       const invincible = !!(cp.stateFlags & PlayerStateFlag.Invincible);
@@ -1953,6 +2126,8 @@ export class GameScene extends Phaser.Scene {
         sprite.setFlipX(cp.facing === Facing.Left);
         sprite.setVisible(true);
         sprite.setAlpha(invincible ? 0.6 : 1);
+        sprite.setRotation(0);
+        sprite.setOrigin(0.5, 0.5);
         // Rider renders behind victim; victim on top so their bars are visible
         if (cp.stompingOn !== null && cp.stompingOn >= 0) {
           sprite.setDepth(18);
