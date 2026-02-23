@@ -1865,13 +1865,23 @@ export class GameScene extends Phaser.Scene {
           ls.y = cp.y;
           this.diagTeleports++;
         } else {
-          // Capped linear correction: move toward predicted position at bounded rate.
-          // 20px per tick-time per axis — fast enough to converge in <150ms even for
-          // 90px errors, but never produces a jarring single-frame jump.
-          // Eliminates the grounded Y snap that caused huge maxJump when landing with offset.
-          const maxCorr = 20 * (dt / TICK_DT_MS);
-          ls.x += Math.abs(dx) <= maxCorr ? dx : Math.sign(dx) * maxCorr;
-          ls.y += Math.abs(dy) <= maxCorr ? dy : Math.sign(dy) * maxCorr;
+          // Hybrid: exponential blend (natural deceleration) + pixel cap (prevents snaps).
+          // At 50px error, blend produces 15px correction (exactly at cap) — smooth transition.
+          // Below 50px: purely exponential. Above 50px: capped at 15px then exponential tail.
+          const maxCorr = 15 * (dt / TICK_DT_MS);
+
+          const targetX = smoothLerp(ls.x, cp.x, 0.3, dt);
+          const corrX = targetX - ls.x;
+          ls.x += Math.abs(corrX) <= maxCorr ? corrX : Math.sign(corrX) * maxCorr;
+
+          // Y: snap to ground when close (crisp ground movement), smooth when airborne or far
+          if (cp.grounded && Math.abs(dy) < 25) {
+            ls.y = cp.y;
+          } else {
+            const targetY = smoothLerp(ls.y, cp.y, 0.3, dt);
+            const corrY = targetY - ls.y;
+            ls.y += Math.abs(corrY) <= maxCorr ? corrY : Math.sign(corrY) * maxCorr;
+          }
         }
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);
