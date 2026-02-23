@@ -212,7 +212,7 @@ export async function settleMatch(
 export async function signChallenge(challenge: string): Promise<string | null> {
   if (!kit || !connectedAddress) return null;
   try {
-    const result = await (kit as any).signMessage(new TextEncoder().encode(challenge), {
+    const result = await (kit as any).signMessage(challenge, {
       address: connectedAddress,
       networkPassphrase: TESTNET_PASSPHRASE,
     });
