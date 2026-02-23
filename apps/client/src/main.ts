@@ -1581,7 +1581,10 @@ function connectToServer(url: string) {
 
     onState(state, lastButtons) {
       const scene = getGameScene();
-      if (scene) scene.receiveState(state, lastButtons);
+      if (scene) {
+        if (networkManager) scene.setNetworkRtt(networkManager.rtt);
+        scene.receiveState(state, lastButtons);
+      }
     },
 
     onRoundEnd(round, winner, roundWins) {

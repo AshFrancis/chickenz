@@ -72,6 +72,11 @@ export interface AddBotMessage {
   type: "add_bot";
 }
 
+export interface PingMessage {
+  type: "ping";
+  t: number; // client timestamp (Date.now())
+}
+
 export type ClientMessage =
   | QuickplayMessage
   | CreateRoomMessage
@@ -84,7 +89,8 @@ export type ClientMessage =
   | CreateTournamentMessage
   | JoinTournamentCodeMessage
   | LeaveMessage
-  | AddBotMessage;
+  | AddBotMessage
+  | PingMessage;
 
 // ── Server → Client ────────────────────────────────────────
 
@@ -248,6 +254,11 @@ export interface TournamentEndMessage {
   bracket: TournamentBracket;
 }
 
+export interface PongMessage {
+  type: "pong";
+  t: number; // echoed client timestamp
+}
+
 export type ServerMessage =
   | WaitingMessage
   | MatchedMessage
@@ -257,6 +268,7 @@ export type ServerMessage =
   | RoundStartMessage
   | LobbyMessage
   | ErrorMessage
+  | PongMessage
   | TournamentLobbyMessage
   | TournamentMatchStartMessage
   | SpectateStateMessage

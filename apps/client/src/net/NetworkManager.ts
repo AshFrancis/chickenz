@@ -75,6 +75,8 @@ export class NetworkManager {
   private _reconnectAttempts = 0;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _intentionalClose = false;
+  private rttMs = 0;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(callbacks: NetworkCallbacks) {
     this.callbacks = callbacks;
@@ -102,6 +104,11 @@ export class NetworkManager {
       }
 
       switch (msg.type) {
+        case "pong": {
+          const sample = Date.now() - (msg as { t: number }).t;
+          this.rttMs = this.rttMs === 0 ? sample : this.rttMs * 0.8 + sample * 0.2;
+          break;
+        }
         case "lobby":
           this.callbacks.onLobby(msg.rooms);
           break;
@@ -181,6 +188,11 @@ export class NetworkManager {
 
     this.ws.onopen = () => {
       this._reconnectAttempts = 0;
+      // Start RTT measurement pings
+      this.send({ type: "ping", t: Date.now() });
+      this.pingInterval = setInterval(() => {
+        this.send({ type: "ping", t: Date.now() });
+      }, 2000);
     };
 
     this.ws.onclose = () => {
@@ -196,6 +208,10 @@ export class NetworkManager {
 
   get connected() {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  get rtt(): number {
+    return this.rttMs;
   }
 
   get httpOrigin() {
@@ -272,6 +288,11 @@ export class NetworkManager {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+    this.rttMs = 0;
     if (this.ws) {
       this.ws.onclose = null;
       this.ws.close();

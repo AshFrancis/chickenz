@@ -862,6 +862,12 @@ const server = Bun.serve<SocketData>({
         return;
       }
 
+      // ── Ping/pong (RTT measurement) ─────────────────────
+      if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", t: msg.t }));
+        return;
+      }
+
       // ── List rooms ───────────────────────────────────────
       if (msg.type === "list_rooms") {
         sendLobby(ws);

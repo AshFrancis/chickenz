@@ -267,6 +267,8 @@ export class GameScene extends Phaser.Scene {
 
   // Netcode diagnostics
   private diagTimer = 0;
+  // RTT from NetworkManager (set externally via setter)
+  private networkRtt = 0;
 
   // Scene lifecycle — create() may not have run yet when network callbacks fire
   private sceneReady = false;
@@ -1304,6 +1306,10 @@ export class GameScene extends Phaser.Scene {
     window.dispatchEvent(new CustomEvent("replayEnded"));
   }
 
+  setNetworkRtt(ms: number) {
+    this.networkRtt = ms;
+  }
+
   receiveState(state: StateMessage, lastButtons?: [number, number]) {
     // Drop out-of-order packets — prevents old states from overwriting newer ones
     if (state.tick <= this.lastServerTick) return;
@@ -1602,8 +1608,10 @@ export class GameScene extends Phaser.Scene {
         this.predictionAccum = 0;
       }
 
-      // Maintain prediction lead over server: ensures serverTick < predictedTick
-      const PRED_LEAD = 2;
+      // Adaptive prediction lead based on RTT
+      // One-way latency in ticks + 1 tick buffer, clamped to [2, 8]
+      const rttMs = this.networkRtt;
+      const PRED_LEAD = Math.max(2, Math.min(8, Math.ceil(rttMs / (2 * TICK_DT_MS)) + 1));
       if (this.lastServerTick > 0) {
         const targetTick = this.lastServerTick + PRED_LEAD;
         let extraTicks = 0;
@@ -1824,7 +1832,7 @@ export class GameScene extends Phaser.Scene {
           ls.velY = 0;
           ls.initialized = true;
         }
-        const teleported = Math.abs(ls.x - cp.x) > 80 || Math.abs(ls.y - cp.y) > 80;
+        const teleported = Math.abs(ls.x - cp.x) > 160 || Math.abs(ls.y - cp.y) > 160;
         if (teleported) {
           ls.x = cp.x;
           ls.y = cp.y;
@@ -1832,15 +1840,15 @@ export class GameScene extends Phaser.Scene {
           ls.velY = 0;
         } else if (cp.grounded) {
           // On ground: snap X tightly, snap Y exactly (no float)
-          ls.x = ls.x + (cp.x - ls.x) * 0.5;
+          ls.x = ls.x + (cp.x - ls.x) * 0.7;
           ls.y = cp.y;
           ls.velX = 0;
           ls.velY = 0;
         } else {
           // Airborne: critically-damped spring toward predicted position
-          // Spring params tuned for ~4 frame convergence at 60fps
-          const stiffness = 0.0025; // per ms²
-          const damping = 0.1;      // per ms
+          // Spring params tuned for ~2 frame convergence at 60fps
+          const stiffness = 0.006;  // per ms²
+          const damping = 0.15;     // per ms
 
           // X: spring toward predicted
           const errX = cp.x - ls.x;
@@ -1869,7 +1877,7 @@ export class GameScene extends Phaser.Scene {
           smooth.vy = cp.vy ?? 0;
           smooth.initialized = true;
         }
-        const teleported = Math.abs(smooth.x - cp.x) > 80 || Math.abs(smooth.y - cp.y) > 80;
+        const teleported = Math.abs(smooth.x - cp.x) > 160 || Math.abs(smooth.y - cp.y) > 160;
         if (teleported) {
           smooth.x = cp.x;
           smooth.y = cp.y;
@@ -1878,9 +1886,9 @@ export class GameScene extends Phaser.Scene {
           const ticks = dt / TICK_DT_MS;
           smooth.x += smooth.vx * ticks;
           smooth.y += smooth.vy * ticks + 0.5 * GRAVITY * ticks * ticks;
-          // Gently pull toward server position
-          smooth.x = smooth.x + (cp.x - smooth.x) * 0.3;
-          smooth.y = smooth.y + (cp.y - smooth.y) * 0.3;
+          // Pull toward server position
+          smooth.x = smooth.x + (cp.x - smooth.x) * 0.4;
+          smooth.y = smooth.y + (cp.y - smooth.y) * 0.4;
         }
         // Update velocity from latest server state
         smooth.vx = cp.vx ?? 0;
