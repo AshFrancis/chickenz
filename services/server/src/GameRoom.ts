@@ -489,7 +489,12 @@ export class GameRoom {
         this.matchOverTick = currentTick;
         // Send round_end immediately so clients show the banner
         const winner = this.wasmState.winner();
-        if (winner === 0 || winner === 1) this.roundWins[winner]++;
+        if (winner === 0 || winner === 1) {
+          this.roundWins[winner]++;
+        } else {
+          console.warn(`[Room ${this.id}] round ${this.currentRound} ended with unexpected winner=${winner}, forcing to 0`);
+          this.roundWins[0]++;
+        }
         const roundEndMsg = {
           round: this.currentRound,
           winner,
@@ -569,14 +574,14 @@ export class GameRoom {
 
     // round_end message + roundWins already sent/incremented at matchOverTick detection
 
-    // Check if match is won (best of 3 → first to 2)
-    if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED) {
-      const matchWinner = this.roundWins[0] >= WINS_NEEDED ? 0 : 1;
+    // Check if match is won (best of 3 → first to 2), with safety cap
+    if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED || this.currentRound >= TOTAL_ROUNDS * 2) {
+      const matchWinner = this.roundWins[0] >= this.roundWins[1] ? 0 : 1;
       this.pendingTimeouts.push(setTimeout(() => this.endMatch(matchWinner), 100));
     } else {
       // Start next round after delay
       this.currentRound++;
-      const nextMapIndex = this.mapOrder[this.currentRound % this.mapOrder.length];
+      const nextMapIndex = this.mapOrder[this.currentRound % this.mapOrder.length] ?? 0;
       this.pendingTimeouts.push(
         setTimeout(() => {
           if (this._status !== "playing") return;
