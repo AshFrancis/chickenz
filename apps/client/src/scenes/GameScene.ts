@@ -1828,8 +1828,8 @@ export class GameScene extends Phaser.Scene {
               stompShakeProgress: raw.stompShakeProgress,
             }
           : raw;
-        // Spring-damper smoothing: absorbs reconciliation snaps gracefully
-        // without the jerkiness of lerp-based correction
+        // Exponential smoothing: frame-rate-independent blend toward predicted position
+        // Uses smoothLerp (exponential decay) which is unconditionally stable at any dt
         const ls = this.localSmooth;
         const dt = delta ?? 16.667;
         if (!ls.initialized) {
@@ -1843,32 +1843,18 @@ export class GameScene extends Phaser.Scene {
         if (teleported) {
           ls.x = cp.x;
           ls.y = cp.y;
-          ls.velX = 0;
-          ls.velY = 0;
         } else if (cp.grounded) {
           // On ground: snap X tightly, snap Y exactly (no float)
-          ls.x = ls.x + (cp.x - ls.x) * 0.7;
+          ls.x = smoothLerp(ls.x, cp.x, 0.8, dt);
           ls.y = cp.y;
-          ls.velX = 0;
-          ls.velY = 0;
         } else {
-          // Airborne: critically-damped spring toward predicted position
-          // Spring params tuned for ~2 frame convergence at 60fps
-          const stiffness = 0.006;  // per ms²
-          const damping = 0.15;     // per ms
-
-          // X: spring toward predicted
-          const errX = cp.x - ls.x;
-          ls.velX += errX * stiffness * dt - ls.velX * damping * dt;
-          ls.x += ls.velX * dt;
-
-          // Y: spring toward predicted, with parabolic gravity hint
-          // so the spring naturally follows the jump arc
+          // Airborne: exponential blend toward predicted position
+          // ~85% convergence per frame, ~98% in 2 frames — fast but smooth
+          ls.x = smoothLerp(ls.x, cp.x, 0.85, dt);
+          // Y: blend + gravity hint so visual follows the jump arc naturally
           const ticks = dt / TICK_DT_MS;
           const gravityHint = 0.5 * GRAVITY * ticks * ticks;
-          const errY = cp.y - ls.y;
-          ls.velY += errY * stiffness * dt - ls.velY * damping * dt;
-          ls.y += ls.velY * dt + gravityHint;
+          ls.y = smoothLerp(ls.y, cp.y, 0.85, dt) + gravityHint;
         }
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);
