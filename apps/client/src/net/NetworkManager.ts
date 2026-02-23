@@ -221,6 +221,10 @@ export class NetworkManager {
     return this.serverOrigin;
   }
 
+  get connectedUrl() {
+    return this._url;
+  }
+
   sendSetUsername(username: string) {
     this.send({ type: "set_username", username });
   }

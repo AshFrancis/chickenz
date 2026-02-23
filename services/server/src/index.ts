@@ -505,13 +505,19 @@ const server = Bun.serve<SocketData>({
       }
     }
 
-    // Redirect raw IP access to domain
+    // Lightweight ping endpoint for region latency measurement
+    if (url.pathname === "/api/ping") {
+      return new Response("ok", { headers: corsHeaders });
+    }
+
+    // Redirect raw IP access to canonical hostname
     const host = req.headers.get("host") || "";
-    if (host.startsWith("178.156.244.26")) {
+    const canonicalHost = process.env.CANONICAL_HOST;
+    if (canonicalHost && !host.startsWith(canonicalHost) && /^\d+\.\d+\.\d+\.\d+/.test(host)) {
       return new Response(null, {
         status: 301,
         headers: {
-          Location: `https://chickenz.io${url.pathname}${url.search}`,
+          Location: `https://${canonicalHost}${url.pathname}${url.search}`,
           "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
         },
       });
@@ -769,7 +775,13 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/(.+)$/)) {
       const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
       try {
-        const body = (await req.json()) as { seal: string; journal: string; imageId: string; boundlessRequestId?: string; boundlessTxHash?: string };
+        const body = (await req.json()) as {
+          seal: string;
+          journal: string;
+          imageId: string;
+          boundlessRequestId?: string;
+          boundlessTxHash?: string;
+        };
         // 1E: Validate proof artifacts are valid hex with correct lengths
         // Seal: 260 bytes (520 hex) with selector, or 256 bytes (512 hex) without
         if (
@@ -781,7 +793,9 @@ const server = Bun.serve<SocketData>({
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
         // Save Boundless request ID and tx hash if provided by worker
-        console.log(`[worker] Result for ${matchId}: requestId=${body.boundlessRequestId ?? "none"}, txHash=${body.boundlessTxHash ?? "none"}`);
+        console.log(
+          `[worker] Result for ${matchId}: requestId=${body.boundlessRequestId ?? "none"}, txHash=${body.boundlessTxHash ?? "none"}`,
+        );
         if (body.boundlessRequestId && typeof body.boundlessRequestId === "string") {
           updateBoundlessRequestId(matchId, body.boundlessRequestId);
         }
@@ -809,6 +823,7 @@ const server = Bun.serve<SocketData>({
       return Response.json(
         {
           name: "chickenz-server",
+          region: process.env.SERVER_REGION || "unknown",
           activeRooms: [...rooms.values()].filter((r) => !r.isEnded()).length,
           lobbyClients: lobbySockets.size,
         },

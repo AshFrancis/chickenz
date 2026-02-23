@@ -492,7 +492,9 @@ export class GameRoom {
         if (winner === 0 || winner === 1) {
           this.roundWins[winner]++;
         } else {
-          console.warn(`[Room ${this.id}] round ${this.currentRound} ended with unexpected winner=${winner}, forcing to 0`);
+          console.warn(
+            `[Room ${this.id}] round ${this.currentRound} ended with unexpected winner=${winner}, forcing to 0`,
+          );
           this.roundWins[0]++;
         }
         const roundEndMsg = {

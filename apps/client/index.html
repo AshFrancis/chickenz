@@ -1193,6 +1193,77 @@
       /* Make match-item clickable */
       .match-item { cursor: pointer; }
       .match-item:hover { border-color: #555; }
+
+      /* Region selector */
+      #region-selector {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      #btn-region {
+        background: #1a1a2e;
+        border: 2px solid #444;
+        color: #ccc;
+        padding: 6px 12px;
+        font-family: "Silkscreen", monospace;
+        font-size: 11px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      #btn-region:hover { border-color: #666; color: #fff; }
+      .region-flag-label {
+        color: #ffee58;
+        font-weight: bold;
+        font-size: 11px;
+      }
+      .region-ping {
+        color: #66bb6a;
+        font-size: 10px;
+      }
+      .region-ping.high { color: #ffa726; }
+      .region-ping.unreachable { color: #ef5350; }
+      #region-dropdown {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        background: #0d0d1a;
+        border: 2px solid #444;
+        z-index: 300;
+        min-width: 200px;
+        font-size: 11px;
+      }
+      #region-dropdown.visible { display: block; }
+      .region-option {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        cursor: pointer;
+        gap: 8px;
+      }
+      .region-option:hover { background: #1a1a2e; }
+      .region-option.active { border-left: 3px solid #ffee58; }
+      .region-option.dimmed { opacity: 0.4; }
+      .region-option .ro-left { display: flex; align-items: center; gap: 6px; }
+      .region-option .ro-flag { color: #ffee58; font-weight: bold; }
+      .region-option .ro-name { color: #ccc; }
+      .region-option .ro-home { color: #66bb6a; font-size: 9px; }
+      .region-option .ro-ping { font-size: 10px; }
+
+      /* Region badge on rooms */
+      .region-badge {
+        font-size: 9px;
+        padding: 1px 5px;
+        border: 1px solid #555;
+        color: #aaa;
+        text-transform: uppercase;
+        margin-left: 6px;
+      }
+      .region-badge.home { border-color: #ffee58; color: #ffee58; }
     </style>
   </head>
   <body>
@@ -1420,6 +1491,14 @@
         <div id="lobby-overlay" class="visible">
           <div id="lobby-header">
             <img src="/sprites/logo.png" alt="Chickenz" class="logo" width="170" height="48" />
+            <div id="region-selector">
+              <button id="btn-region">
+                <span class="region-flag-label" id="region-flag">--</span>
+                <span id="region-name">Connecting...</span>
+                <span class="region-ping" id="region-ping"></span>
+              </button>
+              <div id="region-dropdown"></div>
+            </div>
           </div>
           <div id="lobby-actions">
             <div class="mode-toggle">

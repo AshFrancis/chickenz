@@ -194,8 +194,10 @@ export class GameScene extends Phaser.Scene {
 
   // Smooth render positions (spring damper absorbs prediction/reconciliation snaps)
   private localSmooth: {
-    x: number; y: number;       // visual position
-    velX: number; velY: number; // spring velocity (pixels/ms)
+    x: number;
+    y: number; // visual position
+    velX: number;
+    velY: number; // spring velocity (pixels/ms)
     initialized: boolean;
   } = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
   private remoteSmooth: { x: number; y: number; vx: number; vy: number; initialized: boolean } = {
@@ -1892,10 +1894,7 @@ export class GameScene extends Phaser.Scene {
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);
         // Track visual jump magnitude for diagnostics
-        const visualJump = Math.max(
-          Math.abs(drawX - this.diagPrevVisualX),
-          Math.abs(drawY - this.diagPrevVisualY),
-        );
+        const visualJump = Math.max(Math.abs(drawX - this.diagPrevVisualX), Math.abs(drawY - this.diagPrevVisualY));
         if (this.diagPrevVisualX !== 0) this.diagMaxVisualJump = Math.max(this.diagMaxVisualJump, visualJump);
         this.diagPrevVisualX = drawX;
         this.diagPrevVisualY = drawY;
@@ -2012,7 +2011,7 @@ export class GameScene extends Phaser.Scene {
             ragdoll.rotation += ragdoll.angularVel * dt;
             // Clamp to ±PI/2 — body topples flat and stays
             if (Math.abs(ragdoll.rotation) >= Math.PI / 2) {
-              ragdoll.rotation = Math.sign(ragdoll.rotation) * Math.PI / 2;
+              ragdoll.rotation = (Math.sign(ragdoll.rotation) * Math.PI) / 2;
               ragdoll.angularVel = 0;
             }
           }
@@ -2060,10 +2059,7 @@ export class GameScene extends Phaser.Scene {
 
           // Render: center pivot, position at hitbox center
           sprite.setOrigin(0.5, 0.5);
-          sprite.setPosition(
-            Math.round(ragdoll.x + PLAYER_WIDTH / 2),
-            Math.round(ragdoll.y + PLAYER_HEIGHT / 2),
-          );
+          sprite.setPosition(Math.round(ragdoll.x + PLAYER_WIDTH / 2), Math.round(ragdoll.y + PLAYER_HEIGHT / 2));
           sprite.setRotation(ragdoll.rotation);
           sprite.setAlpha(0.9);
           sprite.setVisible(true);
@@ -2071,10 +2067,7 @@ export class GameScene extends Phaser.Scene {
         } else if (ragdoll.settled && sprite) {
           // Settled: corpse lying flat on the ground, nudge down so body rests on surface
           sprite.setOrigin(0.5, 0.5);
-          sprite.setPosition(
-            Math.round(ragdoll.x + PLAYER_WIDTH / 2),
-            Math.round(ragdoll.y + PLAYER_HEIGHT / 2 + 6),
-          );
+          sprite.setPosition(Math.round(ragdoll.x + PLAYER_WIDTH / 2), Math.round(ragdoll.y + PLAYER_HEIGHT / 2 + 6));
           sprite.setRotation(ragdoll.rotation);
           sprite.setAlpha(0.5);
           sprite.setVisible(true);
