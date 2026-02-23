@@ -267,6 +267,12 @@ export class GameScene extends Phaser.Scene {
 
   // Netcode diagnostics
   private diagTimer = 0;
+  private diagMaxErrX = 0;
+  private diagMaxErrY = 0;
+  private diagTeleports = 0;
+  private diagMaxVisualJump = 0;
+  private diagPrevVisualX = 0;
+  private diagPrevVisualY = 0;
   // RTT from NetworkManager (set externally via setter)
   private networkRtt = 0;
 
@@ -1628,16 +1634,27 @@ export class GameScene extends Phaser.Scene {
         }
       }
 
+      // Track peak reconciliation error
+      if (this.prediction) {
+        const err = this.prediction.lastReconcileError;
+        this.diagMaxErrX = Math.max(this.diagMaxErrX, err.x);
+        this.diagMaxErrY = Math.max(this.diagMaxErrY, err.y);
+      }
+
       this.diagTimer += delta;
       if (this.diagTimer > 2000) {
         this.diagTimer = 0;
         if (this.prediction) {
-          const err = this.prediction.lastReconcileError;
           console.log(
-            `[netcode] RTT=${Math.round(rttMs)}ms PRED_LEAD=${PRED_LEAD} replay=${this.prediction.lastReplayCount} ` +
-              `errX=${err.x.toFixed(1)} errY=${err.y.toFixed(1)} gap=${this.prediction.currentTick - this.lastServerTick}`,
+            `[netcode] RTT=${Math.round(rttMs)}ms PRED=${PRED_LEAD} gap=${this.prediction.currentTick - this.lastServerTick} ` +
+              `peakErr=${this.diagMaxErrX.toFixed(1)}/${this.diagMaxErrY.toFixed(1)} ` +
+              `teleports=${this.diagTeleports} maxJump=${this.diagMaxVisualJump.toFixed(1)}`,
           );
         }
+        this.diagMaxErrX = 0;
+        this.diagMaxErrY = 0;
+        this.diagTeleports = 0;
+        this.diagMaxVisualJump = 0;
       }
     }
 
@@ -1845,6 +1862,7 @@ export class GameScene extends Phaser.Scene {
         if (teleported) {
           ls.x = cp.x;
           ls.y = cp.y;
+          this.diagTeleports++;
         } else {
           // Variable blend: tight for small errors (<10px), gradual for large errors
           // Small error: 0.6 → moves 60%/frame (snappy, responsive)
@@ -1861,6 +1879,14 @@ export class GameScene extends Phaser.Scene {
         }
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);
+        // Track visual jump magnitude for diagnostics
+        const visualJump = Math.max(
+          Math.abs(drawX - this.diagPrevVisualX),
+          Math.abs(drawY - this.diagPrevVisualY),
+        );
+        if (this.diagPrevVisualX !== 0) this.diagMaxVisualJump = Math.max(this.diagMaxVisualJump, visualJump);
+        this.diagPrevVisualX = drawX;
+        this.diagPrevVisualY = drawY;
       } else {
         // Remote player: dead reckoning with server correction
         cp = raw;
