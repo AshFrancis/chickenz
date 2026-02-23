@@ -351,7 +351,7 @@ export class GameRoom {
         seed: this.seed,
         roomId: this.id,
         usernames,
-        mapIndex: this.mapOrder[0],
+        mapIndex: this.mapOrder[0] ?? 0,
         totalRounds: TOTAL_ROUNDS,
         mode: this.mode,
         characters: this.characterSlots,

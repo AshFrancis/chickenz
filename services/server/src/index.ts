@@ -781,6 +781,7 @@ const server = Bun.serve<SocketData>({
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
         // Save Boundless request ID and tx hash if provided by worker
+        console.log(`[worker] Result for ${matchId}: requestId=${body.boundlessRequestId ?? "none"}, txHash=${body.boundlessTxHash ?? "none"}`);
         if (body.boundlessRequestId && typeof body.boundlessRequestId === "string") {
           updateBoundlessRequestId(matchId, body.boundlessRequestId);
         }

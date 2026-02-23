@@ -85,15 +85,18 @@ while true; do
 
       # Extract Boundless request ID and tx hash from stderr if present
       BOUNDLESS_ID=$(grep -oP 'Request ID:\s*\K[0-9a-fA-Fx]+' "$STDERR_FILE" 2>/dev/null || echo "")
-      BOUNDLESS_TX=$(grep -oP 'Broadcasting tx\s*(0x)?(\K[0-9a-fA-F]{64})' "$STDERR_FILE" 2>/dev/null || echo "")
+      BOUNDLESS_TX=$(grep -oP 'Broadcasting tx\s*\K0x[0-9a-fA-F]{64}' "$STDERR_FILE" 2>/dev/null || echo "")
       EXTRA=""
       if [[ -n "$BOUNDLESS_ID" ]]; then
         EXTRA=",\"boundlessRequestId\":\"$BOUNDLESS_ID\""
         echo "  Boundless request: $BOUNDLESS_ID"
       fi
       if [[ -n "$BOUNDLESS_TX" ]]; then
-        EXTRA="$EXTRA,\"boundlessTxHash\":\"0x$BOUNDLESS_TX\""
-        echo "  Boundless tx: 0x$BOUNDLESS_TX"
+        EXTRA="$EXTRA,\"boundlessTxHash\":\"$BOUNDLESS_TX\""
+        echo "  Boundless tx: $BOUNDLESS_TX"
+      else
+        echo "  (no Boundless tx hash found in stderr)"
+        grep -i 'broadcast\|tx\|hash' "$STDERR_FILE" 2>/dev/null | head -3 || true
       fi
 
       RESULT=$(curl_auth -X POST "$SERVER_URL/api/worker/result/$MATCH_ID" \
