@@ -137,6 +137,13 @@ async fn run_boundless_multi(seed: u32, rounds: &[Vec<[FpInput; 2]>]) {
     use boundless_market::Client;
     use std::time::Duration;
 
+    // Enable tracing so the Boundless SDK logs the tx hash via tracing::debug!
+    tracing_subscriber::fmt()
+        .with_env_filter("boundless_market=debug")
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+
     // 1. Encode input as raw bytes (multi-round encoding)
     let raw_bytes = fp::encode_raw_multi_round(seed, rounds);
     let byte_len = raw_bytes.len() as u32;

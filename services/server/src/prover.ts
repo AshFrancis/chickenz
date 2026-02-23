@@ -117,7 +117,12 @@ export function getJob(matchId: string): ProofJob | null {
 
 // ── Boundless fallback (spawns local binary) ─────────────
 
-export async function proveBoundless(matchId: string, transcript: object): Promise<ProofArtifacts | null> {
+export async function proveBoundless(
+  matchId: string,
+  transcript: object,
+  onRequestId?: (requestId: string) => void,
+  onTxHash?: (txHash: string) => void,
+): Promise<ProofArtifacts | null> {
   const workDir = join(tmpdir(), `chickenz-prove-${matchId}`);
   const inputPath = join(workDir, "input.json");
   const outputPath = join(workDir, "proof_artifacts.json");
@@ -129,6 +134,8 @@ export async function proveBoundless(matchId: string, transcript: object): Promi
 
     let stdout = "";
     let stderr = "";
+    let capturedRequestId: string | undefined;
+    let capturedTxHash: string | undefined;
     const result = await new Promise<number>((resolve, reject) => {
       const proc = spawn(PROVER_BINARY, ["--boundless", inputPath], {
         cwd: workDir,
@@ -145,7 +152,26 @@ export async function proveBoundless(matchId: string, transcript: object): Promi
         stdout += data.toString();
       });
       proc.stderr.on("data", (data: Buffer) => {
-        stderr += data.toString();
+        const chunk = data.toString();
+        stderr += chunk;
+        // Capture Boundless request ID as soon as it's printed (before proof completes)
+        if (!capturedRequestId) {
+          const reqIdMatch = chunk.match(/Request ID:\s*([0-9a-fA-Fx]+)/);
+          if (reqIdMatch) {
+            capturedRequestId = reqIdMatch[1]!;
+            console.log(`[prover] Boundless request ID for ${matchId}: ${capturedRequestId}`);
+            onRequestId?.(capturedRequestId);
+          }
+        }
+        // Capture tx hash from Boundless SDK tracing output: "Broadcasting tx <hash> with request ID"
+        if (!capturedTxHash) {
+          const txMatch = chunk.match(/Broadcasting tx (0x)?([0-9a-fA-F]{64})/);
+          if (txMatch) {
+            capturedTxHash = `0x${txMatch[2]!}`;
+            console.log(`[prover] Boundless tx hash for ${matchId}: ${capturedTxHash}`);
+            onTxHash?.(capturedTxHash);
+          }
+        }
       });
       proc.on("error", (err) => {
         console.error(`[prover] Failed to spawn Boundless for ${matchId}:`, err.message);
@@ -166,10 +192,8 @@ export async function proveBoundless(matchId: string, transcript: object): Promi
     const artifactsRaw = await readFile(outputPath, "utf-8");
     const artifacts = JSON.parse(artifactsRaw) as ProofArtifacts;
 
-    // Parse Boundless request ID from stderr (host prints "Request ID: {hex}")
-    const reqIdMatch = stderr.match(/Request ID:\s*([0-9a-fA-Fx]+)/);
-    if (reqIdMatch) {
-      artifacts.boundlessRequestId = reqIdMatch[1]!;
+    if (capturedRequestId) {
+      artifacts.boundlessRequestId = capturedRequestId;
     }
 
     console.log(`[prover] Boundless proof generated for ${matchId}`);
@@ -204,6 +228,8 @@ export function proveMatch(
   matchId: string,
   transcript: object,
   onResult: (artifacts: ProofArtifacts | null, source?: string) => void,
+  onBoundlessRequestId?: (requestId: string) => void,
+  onBoundlessTxHash?: (txHash: string) => void,
 ) {
   let settled = false;
 
@@ -243,7 +269,7 @@ export function proveMatch(
   // Also submit to Boundless in parallel
   if (process.env.BOUNDLESS_RPC_URL && process.env.BOUNDLESS_PRIVATE_KEY) {
     console.log(`[prover] Submitting ${matchId} to Boundless in parallel`);
-    proveBoundless(matchId, transcript)
+    proveBoundless(matchId, transcript, onBoundlessRequestId, onBoundlessTxHash)
       .then((artifacts) => {
         if (artifacts) {
           settleOnce("boundless")(artifacts);

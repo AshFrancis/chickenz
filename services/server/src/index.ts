@@ -29,6 +29,7 @@ import {
   getTranscriptByRoomId,
   updateTranscriptCid,
   updateBoundlessRequestId,
+  updateBoundlessTxHash,
   type MatchRecord,
 } from "./db";
 import { normalize, resolve } from "path";
@@ -229,7 +230,13 @@ function returnToLobby(
           updateProofStatus(matchId, "pending");
         }
       };
-      proveMatch(matchId, transcript, onProofResult);
+      proveMatch(
+        matchId,
+        transcript,
+        onProofResult,
+        (requestId) => updateBoundlessRequestId(matchId, requestId),
+        (txHash) => updateBoundlessTxHash(matchId, txHash),
+      );
     }
 
     insertMatch(record);
@@ -565,7 +572,7 @@ const server = Bun.serve<SocketData>({
 
     // Match history endpoints (strip sensitive fields for public API)
     if (url.pathname === "/api/matches") {
-      const matches = getRecentMatches().map(({ wallet1: _w1, wallet2: _w2, proofArtifacts: _pa, ...rest }) => rest);
+      const matches = getRecentMatches().map(({ proofArtifacts: _pa, ...rest }) => rest);
       return Response.json(matches, { headers: corsHeaders });
     }
     const matchStatusMatch = url.pathname.match(/^\/api\/matches\/(.+)\/status$/);
@@ -756,7 +763,7 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/(.+)$/)) {
       const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
       try {
-        const body = (await req.json()) as { seal: string; journal: string; imageId: string };
+        const body = (await req.json()) as { seal: string; journal: string; imageId: string; boundlessRequestId?: string };
         // 1E: Validate proof artifacts are valid hex with correct lengths
         // Seal: 260 bytes (520 hex) with selector, or 256 bytes (512 hex) without
         if (
@@ -766,6 +773,10 @@ const server = Bun.serve<SocketData>({
           !/^[0-9a-fA-F]{152}$/.test(body.journal)
         ) {
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
+        }
+        // Save Boundless request ID if provided by worker
+        if (body.boundlessRequestId && typeof body.boundlessRequestId === "string") {
+          updateBoundlessRequestId(matchId, body.boundlessRequestId);
         }
         const job = submitJobResult(matchId, body);
         if (!job) {

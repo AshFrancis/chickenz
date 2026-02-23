@@ -66,24 +66,34 @@ while true; do
 
   # Run proof (Groth16 by default — no --local flag)
   ARTIFACTS_FILE=$(mktemp /tmp/chickenz-artifacts-XXXXXX.json)
+  STDERR_FILE=$(mktemp /tmp/chickenz-stderr-XXXXXX.log)
   echo "  Proving..."
   PROOF_START=$(date +%s)
 
-  if (cd "$(dirname "$ARTIFACTS_FILE")" && "$PROVER_BINARY" "$TMPFILE" 2>&1 | tail -5); then
+  if (cd "$(dirname "$ARTIFACTS_FILE")" && "$PROVER_BINARY" "$TMPFILE" 2>"$STDERR_FILE"); then
     PROOF_END=$(date +%s)
     echo "  Proof generated in $((PROOF_END - PROOF_START))s"
+    tail -5 "$STDERR_FILE"
 
     # Read artifacts from proof_artifacts.json (host writes to cwd)
     ARTIFACTS_PATH="$(dirname "$ARTIFACTS_FILE")/proof_artifacts.json"
     if [[ -f "$ARTIFACTS_PATH" ]]; then
-      # Extract seal, journal, imageId and submit
+      # Extract seal, journal, imageId
       SEAL=$(python3 -c "import json; d=json.load(open('$ARTIFACTS_PATH')); print(d['seal'])")
       JOURNAL=$(python3 -c "import json; d=json.load(open('$ARTIFACTS_PATH')); print(d['journal'])")
       IMAGE_ID=$(python3 -c "import json; d=json.load(open('$ARTIFACTS_PATH')); print(d['image_id'])")
 
+      # Extract Boundless request ID from stderr if present
+      BOUNDLESS_ID=$(grep -oP 'Request ID:\s*\K[0-9a-fA-Fx]+' "$STDERR_FILE" 2>/dev/null || echo "")
+      EXTRA=""
+      if [[ -n "$BOUNDLESS_ID" ]]; then
+        EXTRA=",\"boundlessRequestId\":\"$BOUNDLESS_ID\""
+        echo "  Boundless request: $BOUNDLESS_ID"
+      fi
+
       RESULT=$(curl_auth -X POST "$SERVER_URL/api/worker/result/$MATCH_ID" \
         -H "Content-Type: application/json" \
-        -d "{\"seal\":\"$SEAL\",\"journal\":\"$JOURNAL\",\"imageId\":\"$IMAGE_ID\"}" 2>/dev/null || echo "error")
+        -d "{\"seal\":\"$SEAL\",\"journal\":\"$JOURNAL\",\"imageId\":\"$IMAGE_ID\"$EXTRA}" 2>/dev/null || echo "error")
 
       echo "  Submitted: $RESULT"
       rm -f "$ARTIFACTS_PATH"
@@ -92,7 +102,10 @@ while true; do
     fi
   else
     echo "  Proof generation failed"
+    tail -10 "$STDERR_FILE"
   fi
+
+  rm -f "$STDERR_FILE"
 
   rm -f "$TMPFILE" "$ARTIFACTS_FILE"
 done

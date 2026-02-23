@@ -29,6 +29,7 @@ export interface MatchRecord {
   wallet2Verified?: boolean;
   transcriptCid?: string;
   boundlessRequestId?: string;
+  boundlessTxHash?: string;
 }
 
 export interface LeaderboardEntry {
@@ -94,6 +95,7 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN transcript_data TEXT",
   "ALTER TABLE matches ADD COLUMN transcript_cid TEXT",
   "ALTER TABLE matches ADD COLUMN boundless_request_id TEXT",
+  "ALTER TABLE matches ADD COLUMN boundless_tx_hash TEXT",
 ];
 for (const sql of migrations) {
   try {
@@ -219,6 +221,7 @@ function rowToMatch(row: MatchRow): MatchRecord {
   record.wallet2Verified = !!row.wallet2_verified;
   if (row.transcript_cid) record.transcriptCid = row.transcript_cid;
   if (row.boundless_request_id) record.boundlessRequestId = row.boundless_request_id;
+  if (row.boundless_tx_hash) record.boundlessTxHash = row.boundless_tx_hash;
   return record;
 }
 
@@ -396,4 +399,10 @@ const stmtUpdateBoundlessRequestId = db.prepare(`UPDATE matches SET boundless_re
 
 export function updateBoundlessRequestId(matchId: string, requestId: string) {
   stmtUpdateBoundlessRequestId.run({ $id: matchId, $rid: requestId });
+}
+
+const stmtUpdateBoundlessTxHash = db.prepare(`UPDATE matches SET boundless_tx_hash = $hash WHERE id = $id`);
+
+export function updateBoundlessTxHash(matchId: string, txHash: string) {
+  stmtUpdateBoundlessTxHash.run({ $id: matchId, $hash: txHash });
 }

@@ -348,9 +348,27 @@
         border: 6px solid transparent;
         border-bottom-color: #666;
       }
-      .btn-mode.locked:hover .ranked-tooltip {
+      .btn-mode.locked:hover .ranked-tooltip,
+      .btn-join-wrapper:hover .ranked-tooltip {
         opacity: 1;
         visibility: visible;
+      }
+      .btn-join-wrapper {
+        position: relative;
+        display: inline-block;
+      }
+      .btn-join-wrapper .btn-join {
+        background: #133026;
+        border-color: #1a5038;
+        color: #668;
+      }
+      .btn-join-wrapper .ranked-tooltip {
+        left: auto;
+        right: 0;
+      }
+      .btn-join-wrapper .ranked-tooltip::after {
+        left: auto;
+        right: 16px;
       }
       .mode-badge {
         font-size: 10px;

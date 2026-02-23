@@ -14,6 +14,7 @@ let homeCharacter = parseInt(localStorage.getItem("chickenz-home-char") ?? "0", 
 let awayCharacter = parseInt(localStorage.getItem("chickenz-away-char") ?? "1", 10);
 if (!Number.isFinite(homeCharacter) || homeCharacter < 0 || homeCharacter >= NUM_CHARACTERS) homeCharacter = 0;
 if (!Number.isFinite(awayCharacter) || awayCharacter < 0 || awayCharacter >= NUM_CHARACTERS) awayCharacter = 1;
+if (awayCharacter === homeCharacter) awayCharacter = (homeCharacter + 1) % NUM_CHARACTERS;
 let pendingCharacter = homeCharacter; // character chosen for next match
 import {
   initWalletKit,
@@ -52,6 +53,7 @@ interface MatchRecord {
   gameHubAddress?: string;
   transcriptCid?: string;
   boundlessRequestId?: string;
+  boundlessTxHash?: string;
   sessionId?: number;
 }
 
@@ -350,6 +352,8 @@ function updateWalletUI() {
     localStorage.setItem("chickenz-wallet-address", addr);
     // Notify server of wallet address (verification deferred until ranked play)
     networkManager?.sendSetWallet(addr);
+    // Re-render room list so ranked join buttons update
+    if (lastLobbyRooms.length > 0) renderRoomList(lastLobbyRooms);
   } else {
     topBarAddress.textContent = "";
     walletBtn.textContent = "Connect Stellar Wallet";
@@ -366,6 +370,8 @@ function updateWalletUI() {
       setMode("casual");
     }
     modeRankedBtn.classList.add("locked");
+    // Re-render room list so ranked join buttons update
+    if (lastLobbyRooms.length > 0) renderRoomList(lastLobbyRooms);
   }
 }
 
@@ -808,13 +814,16 @@ updateCharUI();
 
 function setHomeChar(idx: number) {
   homeCharacter = ((idx % NUM_CHARACTERS) + NUM_CHARACTERS) % NUM_CHARACTERS;
+  if (homeCharacter === awayCharacter) awayCharacter = (homeCharacter + 1) % NUM_CHARACTERS;
   localStorage.setItem("chickenz-home-char", String(homeCharacter));
+  localStorage.setItem("chickenz-away-char", String(awayCharacter));
   pendingCharacter = homeCharacter;
   updateCharUI();
 }
 
 function setAwayChar(idx: number) {
   awayCharacter = ((idx % NUM_CHARACTERS) + NUM_CHARACTERS) % NUM_CHARACTERS;
+  if (awayCharacter === homeCharacter) awayCharacter = (awayCharacter + 1) % NUM_CHARACTERS;
   localStorage.setItem("chickenz-away-char", String(awayCharacter));
   updateCharUI();
 }
@@ -920,7 +929,10 @@ function setLobbyButtons(enabled: boolean) {
   joinCodeBtn.disabled = !enabled;
 }
 
+let lastLobbyRooms: RoomInfo[] = [];
+
 function renderRoomList(rooms: RoomInfo[]) {
+  lastLobbyRooms = rooms;
   roomListEl.innerHTML = "";
 
   const joinable = rooms.filter((r) => r.status === "waiting");
@@ -946,6 +958,12 @@ function createRoomElement(room: RoomInfo): HTMLDivElement {
     room.mode === "ranked"
       ? `<span class="mode-badge ranked">Ranked</span>`
       : `<span class="mode-badge casual">Casual</span>`;
+  const needsWalletTooltip = room.mode === "ranked" && room.status === "waiting" && !getConnectedAddress();
+  const joinButton = room.status === "waiting"
+    ? needsWalletTooltip
+      ? `<span class="btn-join-wrapper"><button class="btn btn-primary btn-join" data-room-id="${room.id}">Join</button><span class="ranked-tooltip">Connect a Stellar wallet to play ranked<br/>We recommend Freighter!</span></span>`
+      : `<button class="btn btn-primary btn-join" data-room-id="${room.id}">Join</button>`
+    : "";
   el.innerHTML = `
     <span>
       <span class="room-name">${escapeHtml(room.name)}</span>
@@ -954,7 +972,7 @@ function createRoomElement(room: RoomInfo): HTMLDivElement {
     </span>
     <div class="room-info">
       <span class="room-status ${room.status}">${room.status === "waiting" ? "Waiting (1/2)" : "In Progress (2/2)"}</span>
-      ${room.status === "waiting" ? `<button class="btn btn-primary btn-join" data-room-id="${room.id}">Join</button>` : ""}
+      ${joinButton}
     </div>
   `;
 
@@ -962,6 +980,17 @@ function createRoomElement(room: RoomInfo): HTMLDivElement {
   if (joinBtn) {
     joinBtn.addEventListener("click", () => {
       if (!networkManager?.connected) return;
+
+      if (room.mode === "ranked") {
+        void ensureRankedReady(true).then((ok) => {
+          if (!ok || !networkManager?.connected) return;
+          pendingCharacter = homeCharacter;
+          networkManager.sendJoinRoom(room.id, pendingCharacter, awayCharacter);
+          lobbyStatus.textContent = "Joining...";
+          setLobbyButtons(false);
+        });
+        return;
+      }
 
       pendingCharacter = homeCharacter;
       networkManager.sendJoinRoom(room.id, pendingCharacter, awayCharacter);
@@ -1205,6 +1234,10 @@ function explorerAccountUrl(addr: string): string {
   return `https://stellar.expert/explorer/testnet/account/${encodeURIComponent(addr)}`;
 }
 
+function explorerContractUrl(addr: string): string {
+  return `https://stellar.expert/explorer/testnet/contract/${encodeURIComponent(addr)}`;
+}
+
 function renderDataAvailability(m: MatchRecord): string {
   const rows: string[] = [];
   if (m.transcriptCid) {
@@ -1213,10 +1246,14 @@ function renderDataAvailability(m: MatchRecord): string {
       `<div class="dpg-row"><span class="dpg-label">Transcript</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">IPFS: ${escapeHtml(m.transcriptCid.slice(0, 12))}...</a></span></div>`,
     );
   }
-  if (m.boundlessRequestId) {
-    const boundlessUrl = `https://sepolia.etherscan.io/address/0xB74800f8E921F1a5b62B657b42DEa2867bfD4Ff3#events`;
+  if (m.boundlessTxHash) {
+    const etherscanUrl = `https://sepolia.etherscan.io/tx/${encodeURIComponent(m.boundlessTxHash)}`;
     rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value"><a href="${boundlessUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</a></span></div>`,
+      `<div class="dpg-row"><span class="dpg-label">Boundless TX</span><span class="dpg-value"><a href="${etherscanUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessTxHash.slice(0, 16))}...</a></span></div>`,
+    );
+  } else if (m.boundlessRequestId) {
+    rows.push(
+      `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</span></div>`,
     );
   }
   if (rows.length === 0) return "";
@@ -1282,10 +1319,13 @@ function renderMatchDetail(m: MatchRecord) {
   }
 
   if (m.mode === "ranked") {
+    const boundlessTxLink = m.boundlessTxHash
+      ? `<a class="tl-link" href="https://sepolia.etherscan.io/tx/${encodeURIComponent(m.boundlessTxHash)}" target="_blank" rel="noopener">View TX</a>`
+      : "";
     addStep(
       "Proof Requested",
       m.proofRequestedAt,
-      "",
+      boundlessTxLink,
       m.proofRequestedAt ? "done" : m.proofStatus !== "none" ? "active" : "pending",
     );
 
@@ -1297,11 +1337,17 @@ function renderMatchDetail(m: MatchRecord) {
         m.proofSource === "worker" ? "Self-Hosted" : m.proofSource === "boundless" ? "Boundless" : m.proofSource;
       const sourceBadge = sourceLabel ? `<span class="tl-badge">${escapeHtml(sourceLabel)}</span>` : "";
       addStep("Proof Generated", m.proofCompletedAt, `${sourceBadge}${proveDur}`);
+      addStep("Proof Verified", m.proofCompletedAt, "", "done");
     } else if (m.proofStatus === "proving") {
-      addStep("Proof Generating...", undefined, "", "active");
+      const boundlessExtra = m.boundlessRequestId
+        ? `<span class="tl-badge">Boundless: ${escapeHtml(m.boundlessRequestId.slice(0, 12))}...</span>`
+        : "";
+      addStep("Proof Generating...", undefined, boundlessExtra, "active");
+    } else if (m.proofStatus === "pending") {
+      addStep("Proof Generating...", undefined, "", "pending");
     }
 
-    // On-chain settle_match / end_game happen after proof
+    // On-chain settlement steps — always show as pending placeholders if not yet reached
     if (m.settleTxHash) {
       addStep(
         "settle_match TX",
@@ -1318,6 +1364,12 @@ function renderMatchDetail(m: MatchRecord) {
       addStep("end_game TX", undefined, "", "done");
     } else if (m.proofStatus === "verified") {
       addStep("Settlement Pending...", undefined, "", "active");
+      addStep("end_game TX", undefined, "", "pending");
+    } else {
+      // Proof not yet complete — show remaining steps as pending
+      addStep("Proof Verified", undefined, "", "pending");
+      addStep("settle_match TX", undefined, "", "pending");
+      addStep("end_game TX", undefined, "", "pending");
     }
   }
 
@@ -1345,9 +1397,9 @@ function renderMatchDetail(m: MatchRecord) {
       <div class="detail-section">
         <h3>Contracts</h3>
         <div class="detail-proof-grid">
-          <div class="dpg-row"><span class="dpg-label">Game</span><span class="dpg-value"><a href="${explorerAccountUrl(m.contractAddress)}" target="_blank" rel="noopener">${truncateAddress(m.contractAddress)}</a></span></div>
-          <div class="dpg-row"><span class="dpg-label">Verifier</span><span class="dpg-value"><a href="${explorerAccountUrl(m.verifierAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.verifierAddress!)}</a></span></div>
-          <div class="dpg-row"><span class="dpg-label">Game Hub</span><span class="dpg-value"><a href="${explorerAccountUrl(m.gameHubAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.gameHubAddress!)}</a></span></div>
+          <div class="dpg-row"><span class="dpg-label">Game</span><span class="dpg-value"><a href="${explorerContractUrl(m.contractAddress)}" target="_blank" rel="noopener">${truncateAddress(m.contractAddress)}</a></span></div>
+          <div class="dpg-row"><span class="dpg-label">Verifier</span><span class="dpg-value"><a href="${explorerContractUrl(m.verifierAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.verifierAddress!)}</a></span></div>
+          <div class="dpg-row"><span class="dpg-label">Game Hub</span><span class="dpg-value"><a href="${explorerContractUrl(m.gameHubAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.gameHubAddress!)}</a></span></div>
         </div>
       </div>
     `;
@@ -1693,12 +1745,12 @@ function connectToServer(url: string) {
 
 // ── Button handlers ────────────────────────────────────────────────────────────
 
-/** Ensure wallet is verified before a ranked action. Returns true if OK to proceed. */
-async function ensureRankedReady(): Promise<boolean> {
-  if (currentMode !== "ranked") return true;
+/** Verify wallet for ranked play. Returns true if verified or not needed (casual + not forced). */
+async function ensureRankedReady(forceVerify = false): Promise<boolean> {
+  if (!forceVerify && currentMode !== "ranked") return true;
   const addr = getConnectedAddress();
   if (!addr) {
-    lobbyStatus.textContent = "Connect a wallet to play ranked.";
+    lobbyStatus.textContent = "Connect a Stellar wallet to play ranked. We recommend Freighter!";
     return false;
   }
   if (lastVerifiedAddr === addr) return true;
@@ -1756,6 +1808,21 @@ joinCodeBtn.addEventListener("click", () => {
     lobbyStatus.textContent = "Join code must be 5 letters.";
     return;
   }
+
+  // Room mode unknown from code alone — verify wallet if connected but not yet
+  // verified, so ranked rooms work. No-op if already verified or no wallet.
+  const addr = getConnectedAddress();
+  if (addr && lastVerifiedAddr !== addr) {
+    void ensureRankedReady(true).then((ok) => {
+      if (!ok || !networkManager?.connected) return;
+      pendingCharacter = homeCharacter;
+      networkManager.sendJoinByCode(code, pendingCharacter, awayCharacter);
+      lobbyStatus.textContent = `Joining with code ${code}...`;
+      setLobbyButtons(false);
+    });
+    return;
+  }
+
   pendingCharacter = homeCharacter;
   networkManager.sendJoinByCode(code, pendingCharacter, awayCharacter);
   lobbyStatus.textContent = `Joining with code ${code}...`;

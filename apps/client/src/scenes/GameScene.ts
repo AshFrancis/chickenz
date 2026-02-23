@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import {
   ARENA,
   MAP_POOL,
+  GRAVITY,
   PLAYER_WIDTH,
   PLAYER_HEIGHT,
   INITIAL_LIVES,
@@ -190,8 +191,12 @@ export class GameScene extends Phaser.Scene {
   private prevPlayerGrounded: boolean[] = [false, false];
   private prevPlayerJumpsLeft: number[] = [2, 2];
 
-  // Smooth render positions (per-frame lerp absorbs prediction/reconciliation snaps)
-  private localSmooth: { x: number; y: number; initialized: boolean } = { x: 0, y: 0, initialized: false };
+  // Smooth render positions (spring damper absorbs prediction/reconciliation snaps)
+  private localSmooth: {
+    x: number; y: number;       // visual position
+    velX: number; velY: number; // spring velocity (pixels/ms)
+    initialized: boolean;
+  } = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
   private remoteSmooth: { x: number; y: number; vx: number; vy: number; initialized: boolean } = {
     x: 0,
     y: 0,
@@ -212,6 +217,7 @@ export class GameScene extends Phaser.Scene {
   // Audio
   private _muted = false;
   private bgm: Phaser.Sound.BaseSound | null = null;
+  private bgmLoading = false; // true while a BGM track is being lazy-loaded
   private audioLoaded = false;
   private bgmVolume = 0.1;
   private sfxVolume = 0.8;
@@ -698,7 +704,7 @@ export class GameScene extends Phaser.Scene {
     this.currentZoom = 1.0;
     this.cameraX = 480;
     this.cameraY = 270;
-    this.localSmooth = { x: 0, y: 0, initialized: false };
+    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.explosions = [];
 
@@ -991,7 +997,7 @@ export class GameScene extends Phaser.Scene {
       this.cameraY = 270;
       this.currentZoom = 1.0;
     }
-    this.localSmooth = { x: 0, y: 0, initialized: false };
+    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.lastServerTick = 0;
   }
@@ -1161,7 +1167,7 @@ export class GameScene extends Phaser.Scene {
     this.currentZoom = 1.0;
     this.cameraX = 480;
     this.cameraY = 270;
-    this.localSmooth = { x: 0, y: 0, initialized: false };
+    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.replayInfoText.setVisible(true);
 
@@ -1350,6 +1356,7 @@ export class GameScene extends Phaser.Scene {
   setMuted(muted: boolean) {
     this._muted = muted;
     if (muted) {
+      this.bgmLoading = false;
       if (this.bgm) {
         this.bgm.stop();
         this.bgm.destroy();
@@ -1763,29 +1770,48 @@ export class GameScene extends Phaser.Scene {
               stompShakeProgress: raw.stompShakeProgress,
             }
           : raw;
-        // Smooth local player visuals using velocity advancement (same as remote)
-        // to avoid stutter on high-refresh displays between 60Hz prediction ticks
+        // Spring-damper smoothing: absorbs reconciliation snaps gracefully
+        // without the jerkiness of lerp-based correction
         const ls = this.localSmooth;
         const dt = delta ?? 16.667;
         if (!ls.initialized) {
           ls.x = cp.x;
           ls.y = cp.y;
+          ls.velX = 0;
+          ls.velY = 0;
           ls.initialized = true;
         }
         const teleported = Math.abs(ls.x - cp.x) > 80 || Math.abs(ls.y - cp.y) > 80;
         if (teleported) {
           ls.x = cp.x;
           ls.y = cp.y;
-        } else {
-          // Advance by velocity, then pull toward predicted position
-          ls.x += (cp.vx ?? 0) * (dt / TICK_DT_MS);
-          ls.y += (cp.vy ?? 0) * (dt / TICK_DT_MS);
+          ls.velX = 0;
+          ls.velY = 0;
+        } else if (cp.grounded) {
+          // On ground: snap X tightly, snap Y exactly (no float)
           ls.x = ls.x + (cp.x - ls.x) * 0.5;
-          // Smooth Y more gently when airborne to absorb reconciliation snaps
-          const yLerp = cp.grounded ? 0.6 : 0.25;
-          ls.y = ls.y + (cp.y - ls.y) * yLerp;
+          ls.y = cp.y;
+          ls.velX = 0;
+          ls.velY = 0;
+        } else {
+          // Airborne: critically-damped spring toward predicted position
+          // Spring params tuned for ~4 frame convergence at 60fps
+          const stiffness = 0.0025; // per ms²
+          const damping = 0.1;      // per ms
+
+          // X: spring toward predicted
+          const errX = cp.x - ls.x;
+          ls.velX += errX * stiffness * dt - ls.velX * damping * dt;
+          ls.x += ls.velX * dt;
+
+          // Y: spring toward predicted, with parabolic gravity hint
+          // so the spring naturally follows the jump arc
+          const ticks = dt / TICK_DT_MS;
+          const gravityHint = 0.5 * GRAVITY * ticks * ticks;
+          const errY = cp.y - ls.y;
+          ls.velY += errY * stiffness * dt - ls.velY * damping * dt;
+          ls.y += ls.velY * dt + gravityHint;
         }
-        if (cp.grounded) ls.y = cp.y;
         drawX = Math.round(ls.x);
         drawY = Math.round(ls.y);
       } else {
@@ -1805,9 +1831,10 @@ export class GameScene extends Phaser.Scene {
           smooth.x = cp.x;
           smooth.y = cp.y;
         } else {
-          // Advance by velocity (dead reckoning), then correct toward server
-          smooth.x += smooth.vx * (dt / TICK_DT_MS);
-          smooth.y += smooth.vy * (dt / TICK_DT_MS);
+          // Advance by velocity (dead reckoning) with parabolic Y, then correct toward server
+          const ticks = dt / TICK_DT_MS;
+          smooth.x += smooth.vx * ticks;
+          smooth.y += smooth.vy * ticks + 0.5 * GRAVITY * ticks * ticks;
           // Gently pull toward server position
           smooth.x = smooth.x + (cp.x - smooth.x) * 0.3;
           smooth.y = smooth.y + (cp.y - smooth.y) * 0.3;
@@ -2380,7 +2407,7 @@ export class GameScene extends Phaser.Scene {
   /** Start BGM if not already playing. Idempotent — safe to call multiple times. */
   startBGM() {
     if (this.bgmVolume === 0 || !this.audioLoaded || this._muted) return;
-    if (this.bgm?.isPlaying) return; // already playing, don't restart
+    if (this.bgm?.isPlaying || this.bgmLoading) return; // already playing or loading
     this.playNextTrack();
   }
 
@@ -2390,8 +2417,12 @@ export class GameScene extends Phaser.Scene {
       const key = this.pickBgmTrack();
       // Lazy load BGM: if track isn't cached yet, load it first
       if (!this.cache.audio.exists(key)) {
+        this.bgmLoading = true;
         this.load.audio(key, `/audio/${key}.mp3`);
-        this.load.once("complete", () => this.startTrack(key));
+        this.load.once("complete", () => {
+          this.bgmLoading = false;
+          this.startTrack(key);
+        });
         this.load.start();
         return;
       }
