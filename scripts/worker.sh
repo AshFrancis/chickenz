@@ -3,16 +3,19 @@
 # Run this on your gaming PC with the chickenz-host binary built.
 #
 # Usage:
-#   WORKER_API_KEY=secret SERVER_URL=https://chickenz.example.com ./scripts/worker.sh
+#   ./scripts/worker.sh                    # uses built-in defaults
+#   SERVER_URL=http://localhost:3000 ./scripts/worker.sh   # override server
 #
-# Optional env:
+# Optional env overrides:
+#   SERVER_URL    — server to poll (default: https://chickenz.io)
+#   WORKER_API_KEY — auth key (default: built-in)
 #   PROVER_BINARY — path to chickenz-host (default: services/prover/target/release/chickenz-host)
 #   POLL_INTERVAL — seconds between polls (default: 5)
 
 set -euo pipefail
 
-SERVER_URL="${SERVER_URL:?Set SERVER_URL (e.g. https://chickenz.example.com)}"
-WORKER_API_KEY="${WORKER_API_KEY:-}"
+SERVER_URL="${SERVER_URL:-https://chickenz.io}"
+WORKER_API_KEY="${WORKER_API_KEY:-b956e09ed510d18e948a7b1927aab329eb3cb67676a58f66e3a616f53e09ec41}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
