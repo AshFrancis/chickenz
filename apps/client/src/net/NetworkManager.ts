@@ -26,7 +26,7 @@ export interface NetworkCallbacks {
     mode: GameMode,
     characters: [number, number],
   ) => void;
-  onState: (state: StateMessage, lastButtons?: [number, number], lastInputs?: [PlayerInput, PlayerInput]) => void;
+  onState: (state: StateMessage, lastButtons?: [number, number]) => void;
   onRoundEnd: (round: number, winner: number, roundWins: [number, number]) => void;
   onRoundStart: (round: number, seed: number, mapIndex: number) => void;
   onEnded: (
@@ -52,11 +52,7 @@ export interface NetworkCallbacks {
     totalRounds: number,
     characters: [number, number],
   ) => void;
-  onSpectateState?: (
-    state: SpectateStateMessage,
-    lastButtons?: [number, number],
-    lastInputs?: [PlayerInput, PlayerInput],
-  ) => void;
+  onSpectateState?: (state: SpectateStateMessage, lastButtons?: [number, number]) => void;
   onSpectateRoundEnd?: (round: number, winner: number, roundWins: [number, number]) => void;
   onSpectateRoundStart?: (round: number, seed: number, mapIndex: number) => void;
   onTournamentMatchEnd?: (
@@ -135,7 +131,7 @@ export class NetworkManager {
           );
           break;
         case "state":
-          this.callbacks.onState(msg, msg.lastButtons, msg.lastInputs);
+          this.callbacks.onState(msg, msg.lastButtons);
           break;
         case "round_end":
           this.callbacks.onRoundEnd(msg.round, msg.winner, msg.roundWins);
@@ -171,7 +167,7 @@ export class NetworkManager {
         }
         case "spectate_state": {
           const ss = msg as SpectateStateMessage;
-          this.callbacks.onSpectateState?.(ss, ss.lastButtons, ss.lastInputs);
+          this.callbacks.onSpectateState?.(ss, ss.lastButtons);
           break;
         }
         case "spectate_round_end":
