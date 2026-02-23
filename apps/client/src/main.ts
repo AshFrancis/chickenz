@@ -1238,7 +1238,7 @@ function explorerContractUrl(addr: string): string {
   return `https://stellar.expert/explorer/testnet/contract/${encodeURIComponent(addr)}`;
 }
 
-const GUEST_IMAGE_ID = "8dd539f16c344186c2a93bb3c40f37b911ed182dbad86ff9517b3619c18b572b";
+const GUEST_IMAGE_ID = "0b9b271bb844eeb1372a7a05d3150f03c8d0f582bfe43f826f5909aa94170e9e";
 
 function renderDataAvailability(m: MatchRecord): string {
   const rows: string[] = [];
