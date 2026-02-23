@@ -5,9 +5,10 @@
 # Server has bun but not pnpm/npx, so client must be built locally.
 #
 # Usage:
-#   ./scripts/deploy.sh          # full deploy (client + server + wasm)
+#   ./scripts/deploy.sh          # full deploy (client + server + wasm + prover)
 #   ./scripts/deploy.sh client   # client-only (build + upload dist)
-#   ./scripts/deploy.sh server   # server-only (git pull + restart)
+#   ./scripts/deploy.sh server   # server-only (git pull + prover build + restart)
+#   ./scripts/deploy.sh prover   # prover-only (git pull + rebuild binary)
 
 set -euo pipefail
 
@@ -55,6 +56,14 @@ if [ "$MODE" = "server" ] || [ "$MODE" = "both" ]; then
   scp $SSH_OPTS "$PROJECT_ROOT/services/prover/wasm/pkg/chickenz_wasm_bg.wasm" "$SERVER:$REMOTE_DIR/services/prover/wasm/pkg/"
   scp $SSH_OPTS "$PROJECT_ROOT/services/prover/wasm/pkg/chickenz_wasm.js" "$SERVER:$REMOTE_DIR/services/prover/wasm/pkg/"
   scp $SSH_OPTS "$PROJECT_ROOT/services/prover/wasm/pkg/chickenz_wasm.d.ts" "$SERVER:$REMOTE_DIR/services/prover/wasm/pkg/"
+fi
+
+# --- Rebuild prover binary on server (Rust must be installed) ---
+
+if [ "$MODE" = "server" ] || [ "$MODE" = "both" ] || [ "$MODE" = "prover" ]; then
+  log "Building prover binary on server..."
+  ssh $SSH_OPTS "$SERVER" "source ~/.cargo/env && cd $REMOTE_DIR/services/prover && cargo build -p chickenz-host --release 2>&1 | tail -5"
+  log "Prover binary built."
 fi
 
 # --- Restart server (only when deploying server changes) ---
