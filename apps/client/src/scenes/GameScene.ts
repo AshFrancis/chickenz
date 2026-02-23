@@ -256,9 +256,15 @@ export class GameScene extends Phaser.Scene {
     angularVel: number;
     bounces: number;
     wasAlive: boolean; // track alive→dead transition
+    // Last alive frame snapshot — used as ragdoll start position
+    lastAliveX: number;
+    lastAliveY: number;
+    lastAliveVx: number;
+    lastAliveVy: number;
+    lastAliveFacing: number; // 0 = right, 1 = left
   }[] = [
-    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
-    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
+    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true, lastAliveX: 0, lastAliveY: 0, lastAliveVx: 0, lastAliveVy: 0, lastAliveFacing: 0 },
+    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true, lastAliveX: 0, lastAliveY: 0, lastAliveVx: 0, lastAliveVy: 0, lastAliveFacing: 0 },
   ];
 
   // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
@@ -1935,19 +1941,18 @@ export class GameScene extends Phaser.Scene {
         // Detect fresh death (was alive last frame, now dead)
         if (ragdoll.wasAlive && !ragdoll.active && !ragdoll.settled) {
           ragdoll.active = true;
-          // Use server-authoritative position/velocity — prediction and smoothing can diverge significantly
-          const serverP = curr.players[i]!;
-          ragdoll.x = serverP.x;
-          ragdoll.y = serverP.y;
+          // Use last-alive snapshot — sim may move dead players (zone clamping) so current pos is wrong
+          ragdoll.x = ragdoll.lastAliveX;
+          ragdoll.y = ragdoll.lastAliveY;
           // Preserve momentum — exaggerate for comedy
-          const svx = serverP.vx ?? 0;
+          const svx = ragdoll.lastAliveVx;
           ragdoll.vx = svx * 1.5;
-          ragdoll.vy = Math.min(serverP.vy ?? 0, -2) * 1.2 - 3; // always pop up a bit
+          ragdoll.vy = Math.min(ragdoll.lastAliveVy, -2) * 1.2 - 3; // always pop up a bit
           // Spin direction: if moving, topple in movement direction; if still, fall backward (away from facing)
           if (Math.abs(svx) > 0.5) {
             ragdoll.angularVel = svx > 0 ? 6 : -6;
           } else {
-            ragdoll.angularVel = serverP.facing === Facing.Right ? -5 : 5; // fall backward
+            ragdoll.angularVel = ragdoll.lastAliveFacing === Facing.Right ? -5 : 5; // fall backward
           }
           ragdoll.rotation = 0;
           ragdoll.bounces = 0;
@@ -2058,7 +2063,7 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
 
-      // Player is alive — reset ragdoll on genuine respawn, ignore prediction flicker
+      // Player is alive — snapshot position for ragdoll, handle respawn reset
       {
         const ragdoll = this.deathRagdoll[i]!;
         const hasActiveRagdoll = ragdoll.active || ragdoll.settled;
@@ -2081,6 +2086,12 @@ export class GameScene extends Phaser.Scene {
           // Otherwise: prediction flicker — don't touch ragdoll, don't set wasAlive
         } else {
           ragdoll.wasAlive = true;
+          // Snapshot current visual position — used as ragdoll start when player dies
+          ragdoll.lastAliveX = drawX;
+          ragdoll.lastAliveY = drawY;
+          ragdoll.lastAliveVx = cp.vx ?? 0;
+          ragdoll.lastAliveVy = cp.vy ?? 0;
+          ragdoll.lastAliveFacing = cp.facing;
         }
       }
 
