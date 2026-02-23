@@ -15,7 +15,7 @@
 set -euo pipefail
 
 SERVER_URL="${SERVER_URL:-https://chickenz.io}"
-WORKER_API_KEY="${WORKER_API_KEY:-b956e09ed510d18e948a7b1927aab329eb3cb67676a58f66e3a616f53e09ec41}"
+WORKER_API_KEY="${WORKER_API_KEY:?Set WORKER_API_KEY}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
