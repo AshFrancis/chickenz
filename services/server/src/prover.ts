@@ -115,6 +115,8 @@ export async function proveBoundless(
     await writeFile(inputPath, JSON.stringify(transcript));
     console.log(`[prover] Starting Boundless proof for ${matchId}...`);
 
+    let stdout = "";
+    let stderr = "";
     const result = await new Promise<number>((resolve, reject) => {
       const proc = spawn(PROVER_BINARY, ["--boundless", inputPath], {
         cwd: workDir,
@@ -127,8 +129,6 @@ export async function proveBoundless(
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      let stdout = "";
-      let stderr = "";
       proc.stdout.on("data", (data: Buffer) => { stdout += data.toString(); });
       proc.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
       proc.on("error", (err) => {

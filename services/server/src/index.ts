@@ -658,6 +658,10 @@ const server = Bun.serve<SocketData>({
 
         const isPrivate = !!msg.isPrivate;
         const mode: GameMode = (msg as any).mode === "ranked" ? "ranked" : "casual";
+        if (mode === "ranked" && !ws.data.walletVerified) {
+          ws.send(JSON.stringify({ type: "error", message: "Verified wallet required for ranked" }));
+          return;
+        }
         const name = isPrivate ? "Private Match" : "Public Match";
         const roomId = generateRoomId();
         const room = new GameRoom(roomId, name, ws, isPrivate, mode);
@@ -683,6 +687,10 @@ const server = Bun.serve<SocketData>({
         }
         if (!room.isWaiting()) {
           ws.send(JSON.stringify({ type: "error", message: "Room is full or already started" }));
+          return;
+        }
+        if (room.mode === "ranked" && !ws.data.walletVerified) {
+          ws.send(JSON.stringify({ type: "error", message: "Verified wallet required for ranked" }));
           return;
         }
 
@@ -742,6 +750,10 @@ const server = Bun.serve<SocketData>({
         }
 
         const mode: GameMode = (msg as any).mode === "ranked" ? "ranked" : "casual";
+        if (mode === "ranked" && !ws.data.walletVerified) {
+          ws.send(JSON.stringify({ type: "error", message: "Verified wallet required for ranked" }));
+          return;
+        }
 
         // Find first waiting PUBLIC room with matching mode
         let matched = false;
