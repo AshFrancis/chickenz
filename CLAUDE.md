@@ -84,14 +84,13 @@ Server requires these in `.env` at the project root (see `.env.example`):
 **Every time the sim is updated** (`services/prover/core/src/` — physics, types, constants, weapons, etc.), ALL of the following must be rebuilt/updated:
 
 1. **WASM** (client + server): `pnpm build:wasm`
-2. **Host binary** (local prover): `cd services/prover && cargo build --release -p chickenz-host --features boundless`
-3. **Get new image ID**: `services/prover/target/release/chickenz-host --image-id`
+2. **Gaming PC worker**: `ssh user@192.168.50.81`, then in `/root/chickenz`: `git pull && cd services/prover && cargo build --release -p chickenz-host`
+3. **Get canonical image ID** (from gaming PC): `services/prover/target/release/chickenz-host --image-id`
 4. **Update contract**: `stellar contract invoke --id <CONTRACT> --source default --rpc-url https://soroban-testnet.stellar.org --network-passphrase "Test SDF Network ; September 2015" -- set_image_id --image_id <NEW_ID>`
 5. **Update client display** (optional): `GUEST_IMAGE_ID` in `apps/client/src/main.ts`
-6. **Gaming PC worker**: rebuild binary on gaming PC (`ssh user@192.168.50.81`, then build in `/root/chickenz`)
-7. **Deploy to production servers** (us/eu/asia): `./scripts/deploy.sh server` (after committing)
+6. **Deploy to production servers** (us/eu/asia): `./scripts/deploy.sh server` (rebuilds host binary on each server)
 
-The image ID changes because the ZK guest binary changes, producing a different RISC-V ELF hash. Proofs generated with old binaries will fail on-chain verification if the contract has the new image ID.
+**IMPORTANT — ARM vs x86 image ID mismatch**: `risc0-build` produces different guest ELFs on ARM (Mac) vs x86 (Linux), resulting in different image IDs even with identical source and toolchain versions. The **gaming PC (x86 Linux) image ID is canonical** — all production servers are also x86 Linux and will produce matching IDs. Never use a Mac-built image ID for the contract. The Mac host binary is fine for local development but its proofs won't verify on-chain.
 
 ## Critical Design Invariants
 
