@@ -98,6 +98,7 @@ export interface PlayerState {
   readonly stompAutoRunDir: number; // auto-run direction when being stomped: -1 or 1
   readonly stompAutoRunTimer: number; // ticks until direction change
   readonly stompCooldown: number; // ticks of immunity after being shaken off
+  readonly stompDamageTaken: number; // cumulative damage in current stomp session
 }
 
 // ── Projectile ──────────────────────────────────────────────

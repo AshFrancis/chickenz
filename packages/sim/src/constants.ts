@@ -112,6 +112,7 @@ export const STOMP_SHAKE_DECAY = 1; // decay per tick if not mashing
 export const STOMP_AUTO_RUN_MIN = 20; // min ticks before direction change
 export const STOMP_AUTO_RUN_MAX = 60; // max ticks before direction change
 export const STOMP_COOLDOWN_TICKS = 90; // 1.5s immunity after being shaken off
+export const STOMP_MAX_DAMAGE = MAX_HEALTH / 2; // 50 — cap per stomp session
 
 // Weapon pickup respawn time
 export const WEAPON_PICKUP_RESPAWN_TICKS = 300; // 5 seconds

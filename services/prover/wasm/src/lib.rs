@@ -54,6 +54,8 @@ struct JsPlayer {
     stomp_last_shake_dir: i32,
     stomp_auto_run_dir: i32,
     stomp_auto_run_timer: i32,
+    #[serde(default)]
+    stomp_damage_taken: i32,
 }
 
 /// JSON-serializable projectile (f64 values for JS)
@@ -139,6 +141,7 @@ fn player_to_js(p: &Player) -> JsPlayer {
         stomp_last_shake_dir: p.stomp_last_shake_dir,
         stomp_auto_run_dir: p.stomp_auto_run_dir,
         stomp_auto_run_timer: p.stomp_auto_run_timer,
+        stomp_damage_taken: p.stomp_damage_taken,
     }
 }
 
@@ -168,6 +171,7 @@ fn player_from_js(p: &JsPlayer) -> Player {
         stomp_auto_run_dir: p.stomp_auto_run_dir,
         stomp_auto_run_timer: p.stomp_auto_run_timer,
         stomp_cooldown: p.stomp_cooldown,
+        stomp_damage_taken: p.stomp_damage_taken,
     }
 }
 

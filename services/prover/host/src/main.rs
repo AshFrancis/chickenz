@@ -6,6 +6,7 @@ use chickenz_core::{MultiRoundProverInput, ProverInput, ProverOutput};
 
 use chickenz_methods::CHICKENZ_GUEST_ELF;
 use chickenz_methods::CHICKENZ_GUEST_ID;
+use risc0_zkvm::sha::Digestible;
 
 /// Loaded input: either single-round (legacy) or multi-round.
 enum LoadedInput {
@@ -197,15 +198,10 @@ async fn run_boundless_multi(seed: u32, rounds: &[Vec<[FpInput; 2]>]) {
         .new_request()
         .with_program(CHICKENZ_GUEST_ELF)
         .with_stdin(stdin_bytes)
-        .with_groth16_proof()
-        .with_offer(
-            boundless_market::request_builder::OfferParams::builder()
-                .min_price(alloy::primitives::utils::parse_ether("0.00001").unwrap())
-                .max_price(alloy::primitives::utils::parse_ether("0.00005").unwrap()),
-        );
+        .with_groth16_proof();
 
     let (request_id, expires_at) = client
-        .submit_onchain(request)
+        .submit(request)
         .await
         .expect("Failed to submit proof request");
     eprintln!("Submitted! Request ID: {:x}", request_id);
@@ -291,11 +287,19 @@ fn print_ids_and_artifacts(
     eprintln!("Journal size: {} bytes", journal_bytes.len());
 
     // Try to extract Groth16 seal; fall back to empty if not available (dev mode)
+    // Prepend 4-byte verifier selector (from Groth16ReceiptVerifierParameters digest)
+    // so the output matches on-chain format (260 bytes = selector + proof)
     let seal = if use_groth16 {
         match receipt.inner.groth16() {
             Ok(g) => {
-                eprintln!("Seal size: {} bytes", g.seal.len());
-                g.seal.clone()
+                let verifier_params_digest = risc0_zkvm::Groth16ReceiptVerifierParameters::default()
+                    .digest();
+                let selector = &verifier_params_digest.as_bytes()[..4];
+                let mut full_seal = Vec::with_capacity(4 + g.seal.len());
+                full_seal.extend_from_slice(selector);
+                full_seal.extend_from_slice(&g.seal);
+                eprintln!("Seal size: {} bytes (with selector)", full_seal.len());
+                full_seal
             }
             Err(_) => {
                 eprintln!("WARNING: No Groth16 seal (dev mode?). Writing artifacts with empty seal.");
@@ -333,6 +337,16 @@ fn print_ids_and_artifacts(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Print image ID and exit (no transcript needed)
+    if args.iter().any(|a| a == "--image-id") {
+        let id_hex = hex::encode(
+            CHICKENZ_GUEST_ID.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<_>>(),
+        );
+        println!("{id_hex}");
+        return;
+    }
+
     let use_groth16 = !args.iter().any(|a| a == "--local");
     let use_boundless = args.iter().any(|a| a == "--boundless");
 

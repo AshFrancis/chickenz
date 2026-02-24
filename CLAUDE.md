@@ -79,6 +79,20 @@ Server requires these in `.env` at the project root (see `.env.example`):
 - **Deploy script** (`scripts/deploy.sh`): Always commit and push before deploying. Run directly with Bash (timeout 60000). Do NOT use `run_in_background`. Do NOT use TaskOutput to poll. Just call Bash directly and wait for the result inline. The script takes ~30-50 seconds.
 - **Short-lived commands** (~under 2 min): Always run inline with Bash, never as background tasks. Background tasks add minutes of polling overhead.
 
+## Sim Update Checklist
+
+**Every time the sim is updated** (`services/prover/core/src/` — physics, types, constants, weapons, etc.), ALL of the following must be rebuilt/updated:
+
+1. **WASM** (client + server): `pnpm build:wasm`
+2. **Host binary** (local prover): `cd services/prover && cargo build --release -p chickenz-host --features boundless`
+3. **Get new image ID**: `services/prover/target/release/chickenz-host --image-id`
+4. **Update contract**: `stellar contract invoke --id <CONTRACT> --source default --rpc-url https://soroban-testnet.stellar.org --network-passphrase "Test SDF Network ; September 2015" -- set_image_id --image_id <NEW_ID>`
+5. **Update client display** (optional): `GUEST_IMAGE_ID` in `apps/client/src/main.ts`
+6. **Gaming PC worker**: rebuild binary on gaming PC (`ssh user@192.168.50.81`, then build in `/root/chickenz`)
+7. **Deploy to production servers** (us/eu/asia): `./scripts/deploy.sh server` (after committing)
+
+The image ID changes because the ZK guest binary changes, producing a different RISC-V ELF hash. Proofs generated with old binaries will fail on-chain verification if the contract has the new image ID.
+
 ## Critical Design Invariants
 
 1. **Deterministic sim** — `nextState = step(prevState, inputs, prevInputs, config)`. Given identical inputs and seed, replay from tick 0 must produce identical final state.

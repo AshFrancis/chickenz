@@ -517,8 +517,8 @@ async function verifyWallet(addr: string): Promise<boolean> {
       body: JSON.stringify({
         address: addr,
         credentialId: proof.credentialId,
-        publicKey: proof.publicKey,
-        assertion: proof.assertion,
+        ...(proof.publicKey ? { publicKey: proof.publicKey } : {}),
+        ...(proof.publicKey && proof.assertion ? { assertion: proof.assertion } : {}),
       }),
     });
     const { verified, token } = await res.json();
@@ -1555,7 +1555,7 @@ function explorerContractUrl(addr: string): string {
   return `https://stellar.expert/explorer/testnet/contract/${encodeURIComponent(addr)}`;
 }
 
-const GUEST_IMAGE_ID = "0b9b271bb844eeb1372a7a05d3150f03c8d0f582bfe43f826f5909aa94170e9e";
+const GUEST_IMAGE_ID = "00ad836f4dcb2fa59cb5f5acbcf79fa6add4c8e70b7df3b5d9cf22ae485a0461";
 
 function renderDataAvailability(m: MatchRecord): string {
   const rows: string[] = [];

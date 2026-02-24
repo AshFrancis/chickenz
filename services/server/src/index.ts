@@ -219,7 +219,14 @@ function sendLobby(ws: ServerWebSocket<SocketData>) {
 /** Auto-settle a match on-chain after proof is verified. */
 function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArtifacts) {
   if (!process.env.STELLAR_ADMIN_SECRET) return;
-  const sealBytes = new Uint8Array(Buffer.from(artifacts.seal, "hex"));
+  const rawSeal = Buffer.from(artifacts.seal, "hex");
+  // Contract expects 260 bytes: 4-byte Groth16 verifier selector + 256-byte proof
+  // Selector = first 4 bytes of Groth16ReceiptVerifierParameters digest (risc0 3.0.x)
+  const GROTH16_SELECTOR = Buffer.from("73c457ba", "hex");
+  const sealBytes =
+    rawSeal.length === 256
+      ? new Uint8Array(Buffer.concat([GROTH16_SELECTOR, rawSeal]))
+      : new Uint8Array(rawSeal); // already has selector (260 bytes)
   const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
   settleMatchOnChain(sessionId, sealBytes, journalBytes)
     .then((hash) => {
@@ -739,7 +746,7 @@ const server = Bun.serve<SocketData>({
       return Response.json(
         {
           ...record,
-          contractAddress: process.env.CHICKENZ_CONTRACT || "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
+          contractAddress: process.env.CHICKENZ_CONTRACT || "CBRDPRKUK3NH2HXOWSNZPG2ZSXXXZBR7GCMN7WLHWINMLNDCJ7NSREKG",
           verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
           gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
         },
@@ -786,31 +793,34 @@ const server = Bun.serve<SocketData>({
         const body = (await req.json()) as {
           address: string;
           credentialId: string;
-          publicKey: string;
+          publicKey?: string;
           assertion?: { authenticatorData: string; clientDataJSON: string; signature: string };
         };
         if (!body.address || !/^C[A-Z2-7]{55}$/.test(body.address)) {
           return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
         }
-        if (!body.credentialId || !body.publicKey) {
-          return Response.json({ error: "Missing credentialId or publicKey" }, { status: 400, headers: corsHeaders });
+        if (!body.credentialId) {
+          return Response.json({ error: "Missing credentialId" }, { status: 400, headers: corsHeaders });
         }
         // Verify credentialId → address derivation matches claimed address
+        // (deterministic and unforgeable — core security check)
         const derivedAddress = deriveSmartAccountAddress(body.credentialId);
         if (derivedAddress !== body.address) {
           console.warn(`[wallet] Address derivation mismatch: claimed=${body.address} derived=${derivedAddress}`);
           return Response.json({ error: "Address derivation mismatch" }, { status: 403, headers: corsHeaders });
         }
-        // Verify public key format (65-byte uncompressed secp256r1)
-        const pubKeyBytes = base64UrlDecode(body.publicKey);
-        if (pubKeyBytes.length !== 65 || pubKeyBytes[0] !== 0x04) {
-          return Response.json({ error: "Invalid public key format" }, { status: 400, headers: corsHeaders });
-        }
-        // If assertion present (login path), verify P-256 signature
-        if (body.assertion) {
-          const sigValid = await verifyPasskeyAssertion(pubKeyBytes, body.assertion);
-          if (!sigValid) {
-            return Response.json({ error: "Assertion signature invalid" }, { status: 403, headers: corsHeaders });
+        // If public key provided, verify format and optionally verify assertion signature
+        if (body.publicKey) {
+          const pubKeyBytes = base64UrlDecode(body.publicKey);
+          if (pubKeyBytes.length !== 65 || pubKeyBytes[0] !== 0x04) {
+            return Response.json({ error: "Invalid public key format" }, { status: 400, headers: corsHeaders });
+          }
+          // If assertion present (login path), verify P-256 signature
+          if (body.assertion) {
+            const sigValid = await verifyPasskeyAssertion(pubKeyBytes, body.assertion);
+            if (!sigValid) {
+              return Response.json({ error: "Assertion signature invalid" }, { status: 403, headers: corsHeaders });
+            }
           }
         }
         // Mark all matching WS connections as verified

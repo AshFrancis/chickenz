@@ -43,6 +43,7 @@ export function createInitialState(config: MatchConfig): GameState {
       stompAutoRunDir: 1,
       stompAutoRunTimer: 0,
       stompCooldown: 0,
+      stompDamageTaken: 0,
     });
   }
 

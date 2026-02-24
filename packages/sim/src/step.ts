@@ -16,6 +16,7 @@ import {
   STOMP_AUTO_RUN_MIN,
   STOMP_AUTO_RUN_MAX,
   STOMP_COOLDOWN_TICKS,
+  STOMP_MAX_DAMAGE,
   JUMP_VELOCITY,
 } from "./constants";
 import { applyPlayerInput, applyGravity, moveAndCollide } from "./physics";
@@ -233,8 +234,10 @@ export function step(prev: GameState, inputs: InputMap, prevInputs: InputMap, co
 
       // Deal damage to victim every STOMP_DAMAGE_INTERVAL ticks
       let newHealth = victim.health;
+      let newDmgTaken = victim.stompDamageTaken;
       if (currentTick % STOMP_DAMAGE_INTERVAL === 0) {
         newHealth = victim.health - STOMP_DAMAGE_PER_HIT;
+        newDmgTaken += STOMP_DAMAGE_PER_HIT;
         if (newHealth < 0) newHealth = 0;
       }
 
@@ -254,6 +257,27 @@ export function step(prev: GameState, inputs: InputMap, prevInputs: InputMap, co
           stompedBy: null,
           stompShakeProgress: 0,
           stompLastShakeDir: 0,
+          stompDamageTaken: 0,
+        };
+        continue;
+      }
+
+      // Eject rider when this stomp session hits the damage cap
+      if (newDmgTaken >= STOMP_MAX_DAMAGE) {
+        players[riderIdx] = {
+          ...rider,
+          stompingOn: null,
+          vy: JUMP_VELOCITY,
+          grounded: false,
+        };
+        players[b] = {
+          ...victim,
+          health: newHealth,
+          stompedBy: null,
+          stompShakeProgress: 0,
+          stompLastShakeDir: 0,
+          stompCooldown: STOMP_COOLDOWN_TICKS,
+          stompDamageTaken: 0,
         };
         continue;
       }
@@ -308,6 +332,7 @@ export function step(prev: GameState, inputs: InputMap, prevInputs: InputMap, co
           stompAutoRunDir: autoDir,
           stompAutoRunTimer: autoTimer,
           stompCooldown: STOMP_COOLDOWN_TICKS,
+          stompDamageTaken: 0,
         };
       } else {
         // Rider rides victim — position on top, no independent movement
@@ -326,6 +351,7 @@ export function step(prev: GameState, inputs: InputMap, prevInputs: InputMap, co
           stompLastShakeDir: lastDir,
           stompAutoRunDir: autoDir,
           stompAutoRunTimer: autoTimer,
+          stompDamageTaken: newDmgTaken,
         };
       }
     }

@@ -79,6 +79,7 @@ pub const STOMP_SHAKE_DECAY: i32 = 1;
 pub const STOMP_AUTO_RUN_MIN: i32 = 20;
 pub const STOMP_AUTO_RUN_MAX: i32 = 60;
 pub const STOMP_COOLDOWN_TICKS: i32 = 90;
+pub const STOMP_MAX_DAMAGE: i32 = MAX_HEALTH / 2; // 50 — cap per stomp session
 
 pub mod button {
     pub const LEFT: u8 = 1;
@@ -285,6 +286,7 @@ pub struct Player {
     pub stomp_auto_run_dir: i32,
     pub stomp_auto_run_timer: i32,
     pub stomp_cooldown: i32,
+    pub stomp_damage_taken: i32, // cumulative damage in current stomp session
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -552,6 +554,7 @@ pub fn create_initial_state_cfg(
                 stomp_auto_run_dir: 0,
                 stomp_auto_run_timer: 0,
                 stomp_cooldown: 0,
+                stomp_damage_taken: 0,
             },
             Player {
                 id: 1,
@@ -578,6 +581,7 @@ pub fn create_initial_state_cfg(
                 stomp_auto_run_dir: 0,
                 stomp_auto_run_timer: 0,
                 stomp_cooldown: 0,
+                stomp_damage_taken: 0,
             },
         ],
         projectiles: [EMPTY_PROJECTILE; MAX_PROJECTILES],
@@ -1150,6 +1154,7 @@ fn clear_stomp_fields(p: &mut Player) {
     p.stomp_last_shake_dir = 0;
     p.stomp_auto_run_dir = 0;
     p.stomp_auto_run_timer = 0;
+    p.stomp_damage_taken = 0;
 }
 
 /// Advance game state by one tick, mutating in place (zero copies of State).
@@ -1315,6 +1320,7 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
         // Damage tick
         if current_tick % STOMP_DAMAGE_INTERVAL == 0 {
             state.players[victim_idx].health -= STOMP_DAMAGE_PER_HIT;
+            state.players[victim_idx].stomp_damage_taken += STOMP_DAMAGE_PER_HIT;
             if state.players[victim_idx].health <= 0 {
                 // Kill victim, launch rider
                 state.players[victim_idx].health = 0;
@@ -1331,8 +1337,8 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                 state.players[victim_idx].lives -= 1;
                 continue;
             }
-            // Auto-escape at 50% health — victim breaks free automatically
-            if state.players[victim_idx].health <= MAX_HEALTH / 2 {
+            // Eject rider when this stomp session hits the damage cap
+            if state.players[victim_idx].stomp_damage_taken >= STOMP_MAX_DAMAGE {
                 state.players[rider_idx].stomping_on = -1;
                 state.players[rider_idx].vy = JUMP_VELOCITY;
                 state.players[rider_idx].grounded = false;

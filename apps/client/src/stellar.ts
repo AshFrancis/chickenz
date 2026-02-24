@@ -25,7 +25,7 @@ export function getConnectedAddress(): string | null {
 export interface AuthProof {
   address: string;
   credentialId: string; // base64url
-  publicKey: string; // base64url of 65-byte uncompressed secp256r1 key
+  publicKey?: string; // base64url of 65-byte uncompressed secp256r1 key
   assertion?: {
     authenticatorData: string; // base64url
     clientDataJSON: string; // base64url
@@ -104,13 +104,11 @@ export async function connectWallet(): Promise<string | null> {
     if (result) {
       // Cache proof data for server verification (silent restore — has credential but no assertion)
       const pubKey = result.credential?.publicKey;
-      if (pubKey) {
-        lastAuthProof = {
-          address: result.contractId,
-          credentialId: result.credentialId,
-          publicKey: toBase64Url(pubKey),
-        };
-      }
+      lastAuthProof = {
+        address: result.contractId,
+        credentialId: result.credentialId,
+        ...(pubKey ? { publicKey: toBase64Url(pubKey) } : {}),
+      };
       window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: result.contractId } }));
       return result.contractId;
     }

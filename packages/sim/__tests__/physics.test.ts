@@ -43,6 +43,7 @@ function makePlayer(overrides: Partial<PlayerState> = {}): PlayerState {
     stompAutoRunDir: 1,
     stompAutoRunTimer: 0,
     stompCooldown: 0,
+    stompDamageTaken: 0,
     ...overrides,
   };
 }

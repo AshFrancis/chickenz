@@ -197,8 +197,8 @@ export async function proveBoundless(
       proc.on("close", (code) => {
         if (code !== 0) {
           console.error(`[prover] Boundless exited with code ${code} for ${matchId}`);
-          if (stderr) console.error(`[prover] stderr: ${stderr.slice(0, 500)}`);
-          if (stdout) console.log(`[prover] stdout: ${stdout.slice(0, 500)}`);
+          if (stderr) console.error(`[prover] stderr: ${stderr.slice(-4000)}`);
+          if (stdout) console.log(`[prover] stdout: ${stdout.slice(-4000)}`);
         }
         resolve(code ?? 1);
       });
@@ -249,6 +249,8 @@ export function proveMatch(
   onBoundlessTxHash?: (txHash: string) => void,
 ) {
   let settled = false;
+  let winnerSource: string | undefined;
+  let winnerArtifacts: ProofArtifacts | undefined;
 
   function markJobDone() {
     const job = proofQueue.find((j) => j.matchId === matchId);
@@ -258,9 +260,24 @@ export function proveMatch(
   }
 
   const settleOnce = (source: string) => (artifacts: ProofArtifacts | null, _source?: string) => {
-    if (settled) return;
     if (!artifacts) return;
+    if (settled) {
+      // Second prover finished — log comparison with the winner
+      console.log(`[prover] ${matchId} also proved by ${source} (winner was ${winnerSource})`);
+      console.log(`[prover]   ${source} seal (${artifacts.seal.length / 2} bytes): ${artifacts.seal.slice(0, 16)}...`);
+      if (winnerArtifacts) {
+        const journalMatch = artifacts.journal === winnerArtifacts.journal;
+        console.log(`[prover]   journal match: ${journalMatch}`);
+        if (!journalMatch) {
+          console.error(`[prover]   MISMATCH! ${source} journal: ${artifacts.journal}`);
+          console.error(`[prover]   MISMATCH! ${winnerSource} journal: ${winnerArtifacts.journal}`);
+        }
+      }
+      return;
+    }
     settled = true;
+    winnerSource = source;
+    winnerArtifacts = artifacts;
     markJobDone(); // Prevent workers from re-claiming
     console.log(`[prover] ${matchId} proved by ${source}`);
     onResult(artifacts, source);
