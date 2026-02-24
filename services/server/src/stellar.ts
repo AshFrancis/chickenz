@@ -1,5 +1,3 @@
-import { createHash } from "crypto";
-
 // Lazy import — don't crash if @stellar/stellar-sdk isn't installed
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import has no static types
 let StellarSdk: any = null;
@@ -11,7 +9,7 @@ try {
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
-const CHICKENZ_CONTRACT = "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
+const CHICKENZ_CONTRACT = process.env.CHICKENZ_CONTRACT || "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
 const ADMIN_SECRET = process.env.STELLAR_ADMIN_SECRET;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic SDK type
@@ -137,17 +135,3 @@ export async function verifyTxOnChain(txHash: string): Promise<boolean> {
   }
 }
 
-/** Verify a Stellar signature using Keypair.verify().
- *  Freighter's signMessage prefixes with "Stellar Signed Message:\n" and SHA-256 hashes before signing. */
-export function verifySignature(publicKey: string, message: string, signature: string): boolean {
-  if (!StellarSdk) return false;
-  try {
-    const keypair = StellarSdk.Keypair.fromPublicKey(publicKey);
-    const prefixed = "Stellar Signed Message:\n" + message;
-    const hash = createHash("sha256").update(Buffer.from(prefixed, "utf-8")).digest();
-    const sigBytes = Buffer.from(signature, "base64");
-    return keypair.verify(hash, sigBytes);
-  } catch {
-    return false;
-  }
-}

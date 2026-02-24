@@ -2,27 +2,6 @@ use crate::constants::*;
 use crate::types::*;
 use crate::weapons::{apply_splash_damage, get_projectile_damage, is_rocket};
 
-/// Spawn a projectile from a player's position toward their aim direction (legacy fallback).
-pub fn spawn_projectile(player: &PlayerState, aim_x: f64, aim_y: f64, id: i32) -> Projectile {
-    let len = (aim_x * aim_x + aim_y * aim_y).sqrt();
-    let (nx, ny) = if len < 0.001 {
-        (player.facing as f64, 0.0)
-    } else {
-        (aim_x / len, aim_y / len)
-    };
-
-    Projectile {
-        id,
-        owner_id: player.id,
-        x: player.x + PLAYER_WIDTH / 2.0,
-        y: player.y + PLAYER_HEIGHT / 2.0,
-        vx: nx * PROJECTILE_SPEED,
-        vy: ny * PROJECTILE_SPEED,
-        lifetime: PROJECTILE_LIFETIME,
-        weapon: WeaponType::Pistol,
-    }
-}
-
 /// Move a projectile and decrement its lifetime.
 pub fn move_projectile(proj: &Projectile) -> Projectile {
     Projectile {
@@ -152,20 +131,6 @@ mod tests {
             weapon: None,
             ammo: 0,
         }
-    }
-
-    #[test]
-    fn spawn_projectile_facing_right() {
-        let mut p = alive_player(0, 100.0, 200.0);
-        p.weapon = Some(WeaponType::Pistol);
-        p.ammo = 15;
-        let proj = spawn_projectile(&p, 1.0, 0.0, 0);
-        assert_eq!(proj.owner_id, 0);
-        assert_eq!(proj.x, 100.0 + PLAYER_WIDTH / 2.0);
-        assert_eq!(proj.y, 200.0 + PLAYER_HEIGHT / 2.0);
-        assert!((proj.vx - PROJECTILE_SPEED).abs() < 0.001);
-        assert!(proj.vy.abs() < 0.001);
-        assert_eq!(proj.weapon, WeaponType::Pistol);
     }
 
     #[test]

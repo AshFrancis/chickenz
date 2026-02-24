@@ -22,14 +22,11 @@ export const WALL_JUMP_VX = 7.0;
 export const WALL_JUMP_VY = -10.0;
 
 // Legacy projectile defaults (used as fallback)
-export const PROJECTILE_SPEED = 8.0;
 export const PROJECTILE_LIFETIME = 90; // ticks (1.5s)
 export const SHOOT_COOLDOWN = 15; // ticks (0.25s)
-export const PROJECTILE_RADIUS = 4;
 
 // Health / combat
 export const MAX_HEALTH = 100;
-export const PROJECTILE_DAMAGE = 25; // 4 hits to kill (legacy, per-weapon now)
 // Respawn
 export const RESPAWN_TICKS = 60; // 1s respawn delay
 export const INVINCIBLE_TICKS = 60; // 1s

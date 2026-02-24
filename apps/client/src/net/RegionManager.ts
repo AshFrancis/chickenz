@@ -47,7 +47,9 @@ export class RegionManager {
   private lobbyWs = new Map<string, WebSocket>(); // regionId → lobby WS
   private regionRooms = new Map<string, RoomInfo[]>(); // regionId → rooms from that region
   private _homeRegionId: string;
+  private _activeRegionId = ""; // region the main NetworkManager is connected to
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>(); // regionId → pending reconnect
 
   constructor(regions: RegionConfig[], opts: RegionManagerOptions) {
     this.regions = regions;
@@ -57,27 +59,37 @@ export class RegionManager {
 
   // ── Public API ───────────────────────────────────────────────
 
-  /** Measure pings to all regions (3 samples, take median). */
+  /** Measure pings to all regions (3 samples, take median). All regions pinged in parallel. */
   async measurePings(): Promise<RegionPing[]> {
-    const results: RegionPing[] = [];
-    // Ping all regions in parallel, 3 samples each
-    for (const region of this.regions) {
-      const samples: number[] = [];
-      for (let i = 0; i < 3; i++) {
-        samples.push(await pingRegion(region.httpUrl));
-      }
-      const med = median(samples);
-      this.pings.set(region.id, med);
-      results.push({ region, pingMs: med });
-    }
+    // Ping all regions in parallel
+    const regionResults = await Promise.all(
+      this.regions.map(async (region) => {
+        const samples: number[] = [];
+        for (let i = 0; i < 3; i++) {
+          samples.push(await pingRegion(region.httpUrl));
+        }
+        const med = median(samples);
+        this.pings.set(region.id, med);
+        return { region, pingMs: med } as RegionPing;
+      }),
+    );
     // If no home region set, default to lowest ping
     if (!this._homeRegionId || !this.regions.find((r) => r.id === this._homeRegionId)) {
-      const best = results.reduce((a, b) => (a.pingMs < b.pingMs ? a : b));
+      const best = regionResults.reduce((a, b) => (a.pingMs < b.pingMs ? a : b));
       this._homeRegionId = best.region.id;
       localStorage.setItem(LOBBY_STORAGE_KEY, this._homeRegionId);
     }
-    this.opts.onPingsUpdated?.(results);
-    return results;
+    this.opts.onPingsUpdated?.(regionResults);
+    return regionResults;
+  }
+
+  /** Get the cached home region config (from localStorage), or first region as fallback. */
+  getCachedHomeRegion(): RegionConfig | null {
+    if (this._homeRegionId) {
+      const region = this.regions.find((r) => r.id === this._homeRegionId);
+      if (region) return region;
+    }
+    return null;
   }
 
   /** Start periodic ping refresh (every 30s). */
@@ -95,20 +107,53 @@ export class RegionManager {
     }
   }
 
-  /** Open lightweight lobby WebSockets to all reachable regions. */
+  /** Set which region the main NetworkManager is connected to (avoids duplicate lobby WS). */
+  set activeRegionId(id: string) {
+    // If the active region changed, close the old lobby WS for the new active region
+    // (the NetworkManager will feed its rooms via updateRoomsForRegion)
+    if (this._activeRegionId !== id) {
+      const oldWs = this.lobbyWs.get(id);
+      if (oldWs) {
+        oldWs.onclose = null; // prevent reconnect
+        oldWs.close();
+        this.lobbyWs.delete(id);
+      }
+      this._activeRegionId = id;
+    }
+  }
+
+  get activeRegionId(): string {
+    return this._activeRegionId;
+  }
+
+  /** Feed room list from the main NetworkManager's lobby messages. */
+  updateRoomsForRegion(regionId: string, rooms: RoomInfo[]) {
+    this.regionRooms.set(regionId, rooms);
+    this.opts.onRoomsChanged(this.getMergedRooms());
+  }
+
+  /** Open lightweight lobby WebSockets to all reachable regions (except the active one). */
   connectLobbyStreams() {
     this.disconnectLobbyStreams();
     for (const region of this.getReachableRegions()) {
+      // Skip the active region — its rooms come from the main NetworkManager
+      if (region.id === this._activeRegionId) continue;
       this.connectLobbyWs(region);
     }
   }
 
   disconnectLobbyStreams() {
+    for (const [, timer] of this.reconnectTimers) clearTimeout(timer);
+    this.reconnectTimers.clear();
     for (const [, ws] of this.lobbyWs) {
+      ws.onclose = null;
       ws.close();
     }
     this.lobbyWs.clear();
+    // Keep rooms from the active region (fed by NetworkManager), clear the rest
+    const activeRooms = this.regionRooms.get(this._activeRegionId);
     this.regionRooms.clear();
+    if (activeRooms) this.regionRooms.set(this._activeRegionId, activeRooms);
   }
 
   /** Get merged room list from all connected lobby streams. */
@@ -246,12 +291,14 @@ export class RegionManager {
       this.lobbyWs.delete(region.id);
       this.regionRooms.delete(region.id);
       // Reconnect after 5s if still reachable
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.reconnectTimers.delete(region.id);
         const ping = this.pings.get(region.id) ?? Infinity;
         if (ping < PING_THRESHOLD_MS && !this.lobbyWs.has(region.id)) {
           this.connectLobbyWs(region);
         }
       }, 5000);
+      this.reconnectTimers.set(region.id, timer);
     };
 
     ws.onerror = () => {

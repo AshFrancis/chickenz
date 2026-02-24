@@ -9,9 +9,9 @@
   },
   "dependencies": {
     "@chickenz/sim": "workspace:*",
-    "@creit.tech/stellar-wallets-kit": "^1.9.5",
     "@stellar/stellar-sdk": "^14.5.0",
-    "phaser": "^3.87.0"
+    "phaser": "^3.87.0",
+    "smart-account-kit": "^0.2.9"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

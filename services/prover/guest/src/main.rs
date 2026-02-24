@@ -15,6 +15,7 @@ fn main() {
     risc0_zkvm::guest::env::read_slice(&mut input_len);
     let byte_len = input_len[0] as usize;
     let word_len = byte_len.div_ceil(4);
+    assert!(word_len <= MAX_INPUT_WORDS, "Input too large: {} words (max {})", word_len, MAX_INPUT_WORDS);
 
     let mut raw_words = [0u32; MAX_INPUT_WORDS];
     risc0_zkvm::guest::env::read_slice(&mut raw_words[..word_len]);

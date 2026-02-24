@@ -1,169 +1,194 @@
-import { StellarWalletsKit, WalletNetwork, allowAllModules, FREIGHTER_ID } from "@creit.tech/stellar-wallets-kit";
+import { SmartAccountKit, IndexedDBStorage } from "smart-account-kit";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 const TESTNET_RPC = "https://soroban-testnet.stellar.org";
 const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 
 // Deployed contract addresses (testnet)
-export const CHICKENZ_CONTRACT = "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
+export const CHICKENZ_CONTRACT = "CBRDPRKUK3NH2HXOWSNZPG2ZSXXXZBR7GCMN7WLHWINMLNDCJ7NSREKG";
 export const GAME_HUB_CONTRACT = "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG";
 export const VERIFIER_CONTRACT = "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH";
 
-let connectedAddress: string | null = null;
-let kit: StellarWalletsKit | null = null;
-let addressPollTimer: ReturnType<typeof setInterval> | null = null;
+// SAK configuration — set via Vite env vars
+const ACCOUNT_WASM_HASH = import.meta.env.VITE_ACCOUNT_WASM_HASH ?? "";
+const WEBAUTHN_VERIFIER = import.meta.env.VITE_WEBAUTHN_VERIFIER ?? "";
+const RELAYER_URL = import.meta.env.VITE_RELAYER_URL ?? "";
+
+let kit: SmartAccountKit | null = null;
 
 export function getConnectedAddress(): string | null {
-  return connectedAddress;
+  return kit?.contractId ?? null;
 }
 
-// ── Init stellar-wallets-kit v1 ─────────────────────────────────────────────
+// ── Auth proof caching (for server-side wallet verification) ─────────────────
 
-export function initWalletKit() {
-  kit = new StellarWalletsKit({
-    network: WalletNetwork.TESTNET,
-    selectedWalletId: FREIGHTER_ID,
-    modules: allowAllModules(),
+export interface AuthProof {
+  address: string;
+  credentialId: string; // base64url
+  publicKey: string; // base64url of 65-byte uncompressed secp256r1 key
+  assertion?: {
+    authenticatorData: string; // base64url
+    clientDataJSON: string; // base64url
+    signature: string; // base64url (DER-encoded ECDSA)
+  };
+}
+
+let lastAuthProof: AuthProof | null = null;
+
+/** Returns cached proof data from the most recent login/register. */
+export function getLastAuthProof(): AuthProof | null {
+  return lastAuthProof;
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// ── Init smart-account-kit ──────────────────────────────────────────────────
+
+export async function initPasskeyKit(): Promise<void> {
+  kit = new SmartAccountKit({
+    rpcUrl: TESTNET_RPC,
+    networkPassphrase: TESTNET_PASSPHRASE,
+    accountWasmHash: ACCOUNT_WASM_HASH,
+    webauthnVerifierAddress: WEBAUTHN_VERIFIER,
+    rpId: window.location.hostname,
+    rpName: "Chickenz",
+    storage: new IndexedDBStorage(),
+    ...(RELAYER_URL ? { relayerUrl: RELAYER_URL } : {}),
+  });
+
+  kit.events.on("walletDisconnected", () => {
+    window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: null } }));
   });
 }
 
-/** Open wallet selection modal, connect, and return address. */
+/** Create a new passkey wallet (registration prompt).
+ *  Optimistically updates UI after passkey creation, deploys on-chain in background. */
+export async function createWallet(username: string): Promise<string | null> {
+  if (!kit) return null;
+  try {
+    // Create passkey + get signed deploy tx (no on-chain submit yet)
+    const result = await kit.createWallet("Chickenz", username);
+    localStorage.removeItem("chickenz-wallet-disconnected");
+    // Cache proof data for server verification (register path — no assertion needed)
+    lastAuthProof = {
+      address: result.contractId,
+      credentialId: result.credentialId,
+      publicKey: toBase64Url(result.publicKey),
+    };
+    // Optimistic UI update — wallet is usable locally immediately
+    window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: result.contractId } }));
+    // Deploy on-chain in background
+    if (result.signedTransaction) {
+      kit.relayer.sendXdr(result.signedTransaction).then((res) => {
+        if (!res.success) console.warn("[stellar] background deploy failed:", res.error);
+        else console.log("[stellar] wallet deployed on-chain:", res.hash);
+      }).catch((err) => console.warn("[stellar] background deploy error:", err));
+    }
+    return result.contractId;
+  } catch (err) {
+    console.error("[stellar] createWallet failed:", err);
+    return null;
+  }
+}
+
+/** Silent session restore (startup). Returns address or null. */
 export async function connectWallet(): Promise<string | null> {
   if (!kit) return null;
-
-  return new Promise((resolve) => {
-    void kit!.openModal({
-      onWalletSelected: (option: { id: string }) => {
-        void (async () => {
-          try {
-            kit!.setWallet(option.id);
-            const { address } = await kit!.getAddress();
-            if (address) {
-              connectedAddress = address;
-              localStorage.removeItem("chickenz-wallet-disconnected");
-              startAddressPolling();
-              window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address } }));
-              resolve(address);
-            } else {
-              resolve(null);
-            }
-          } catch {
-            resolve(null);
-          }
-        })();
-      },
-    });
-  });
+  if (localStorage.getItem("chickenz-wallet-disconnected")) return null;
+  try {
+    const result = await kit.connectWallet();
+    if (result) {
+      // Cache proof data for server verification (silent restore — has credential but no assertion)
+      const pubKey = result.credential?.publicKey;
+      if (pubKey) {
+        lastAuthProof = {
+          address: result.contractId,
+          credentialId: result.credentialId,
+          publicKey: toBase64Url(pubKey),
+        };
+      }
+      window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: result.contractId } }));
+      return result.contractId;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
-/** Disconnect wallet and clear state. */
-export function disconnectWallet() {
-  stopAddressPolling();
-  connectedAddress = null;
+/** Interactive connect — prompts passkey selection if no stored session. */
+export async function promptConnect(): Promise<string | null> {
+  if (!kit) return null;
+  try {
+    const result = await kit.connectWallet({ prompt: true });
+    if (result) {
+      localStorage.removeItem("chickenz-wallet-disconnected");
+      // Cache proof data for server verification (login path — includes assertion)
+      const pubKey = result.credential?.publicKey;
+      lastAuthProof = {
+        address: result.contractId,
+        credentialId: result.credentialId,
+        publicKey: pubKey ? toBase64Url(pubKey) : "",
+        ...(result.rawResponse
+          ? {
+              assertion: {
+                authenticatorData: result.rawResponse.response.authenticatorData,
+                clientDataJSON: result.rawResponse.response.clientDataJSON,
+                signature: result.rawResponse.response.signature,
+              },
+            }
+          : {}),
+      };
+      window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: result.contractId } }));
+      return result.contractId;
+    }
+    return null;
+  } catch (err) {
+    console.error("[stellar] promptConnect failed:", err);
+    return null;
+  }
+}
+
+/** Disconnect wallet and clear session. */
+export async function disconnectWallet(): Promise<void> {
+  if (!kit) return;
+  try {
+    await kit.disconnect();
+  } catch {
+    // Ignore errors on disconnect
+  }
   localStorage.setItem("chickenz-wallet-disconnected", "1");
   window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: null } }));
 }
 
-/** Poll Freighter for account switches and dispatch walletChanged if address changes. */
-function startAddressPolling() {
-  stopAddressPolling();
-  addressPollTimer = setInterval(() => {
-    if (!kit || !connectedAddress) return;
-    void kit
-      .getAddress()
-      .then(({ address }) => {
-        if (address && address !== connectedAddress) {
-          connectedAddress = address;
-          window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address } }));
-        }
-      })
-      .catch(() => {
-        // Freighter unavailable or locked — ignore
-      });
-  }, 3000);
-}
-
-function stopAddressPolling() {
-  if (addressPollTimer) {
-    clearInterval(addressPollTimer);
-    addressPollTimer = null;
-  }
-}
-
-/** Try to silently reconnect to Freighter if previously connected. */
-export async function tryReconnectWallet(): Promise<boolean> {
-  if (!kit) return false;
-  if (localStorage.getItem("chickenz-wallet-disconnected")) return false;
-  try {
-    kit.setWallet(FREIGHTER_ID);
-    const { address } = await kit.getAddress();
-    if (address) {
-      connectedAddress = address;
-      startAddressPolling();
-      window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address } }));
-      return true;
-    }
-  } catch {
-    // Freighter not available or user denied
-  }
-  return false;
-}
-
 // ── Contract helpers ───────────────────────────────────────────────────────
-
-function getRpc(): StellarSdk.rpc.Server {
-  return new StellarSdk.rpc.Server(TESTNET_RPC);
-}
 
 async function callContract(
   method: string,
   args: StellarSdk.xdr.ScVal[],
-): Promise<StellarSdk.rpc.Api.GetTransactionResponse> {
-  if (!connectedAddress || !kit) throw new Error("Wallet not connected");
+): Promise<string | null> {
+  if (!kit?.contractId) throw new Error("Wallet not connected");
 
-  const server = getRpc();
-  const account = await server.getAccount(connectedAddress);
-  const contract = new StellarSdk.Contract(CHICKENZ_CONTRACT);
-
-  const tx = new StellarSdk.TransactionBuilder(account, {
-    fee: "1000000",
+  const tx = await StellarSdk.contract.AssembledTransaction.build({
+    method,
+    args,
+    contractId: CHICKENZ_CONTRACT,
     networkPassphrase: TESTNET_PASSPHRASE,
-  })
-    .addOperation(contract.call(method, ...args))
-    .setTimeout(60)
-    .build();
-
-  const simResult = await server.simulateTransaction(tx);
-  if (StellarSdk.rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Simulation failed: ${simResult.error}`);
-  }
-
-  const prepared = StellarSdk.rpc
-    .assembleTransaction(tx, simResult as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse)
-    .build();
-
-  const { signedTxXdr } = await kit.signTransaction(prepared.toXDR(), {
-    networkPassphrase: TESTNET_PASSPHRASE,
-    address: connectedAddress,
+    rpcUrl: TESTNET_RPC,
+    publicKey: kit.contractId,
+    timeoutInSeconds: 60,
+    parseResultXdr: (result: StellarSdk.xdr.ScVal) => result,
   });
 
-  const signed = StellarSdk.TransactionBuilder.fromXDR(signedTxXdr, TESTNET_PASSPHRASE);
-
-  const sendResult = await server.sendTransaction(signed);
-  if (sendResult.status === "ERROR") {
-    throw new Error(`Transaction failed: ${sendResult.status}`);
+  const result = await kit.signAndSubmit(tx);
+  if (!result.success) {
+    throw new Error(`Transaction failed: ${result.error || "unknown"}`);
   }
-
-  // Wait for confirmation
-  let response = await server.getTransaction(sendResult.hash);
-  let retries = 0;
-  while (response.status === "NOT_FOUND") {
-    if (++retries > 60) throw new Error("Transaction polling timeout");
-    await new Promise((r) => setTimeout(r, 1000));
-    response = await server.getTransaction(sendResult.hash);
-  }
-
-  return response;
+  return result.hash ?? null;
 }
 
 export async function startMatch(
@@ -181,33 +206,11 @@ export async function startMatch(
 }
 
 export async function settleMatch(sessionId: number, seal: Uint8Array, journal: Uint8Array): Promise<string | null> {
-  const response = await callContract("settle_match", [
+  return callContract("settle_match", [
     StellarSdk.nativeToScVal(sessionId, { type: "u32" }),
     StellarSdk.nativeToScVal(seal, { type: "bytes" }),
     StellarSdk.nativeToScVal(journal, { type: "bytes" }),
   ]);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK response type not statically known
-  return (response as any)?.hash ?? null;
-}
-
-/** Sign a challenge string with the connected wallet (Freighter signMessage). */
-export async function signChallenge(challenge: string): Promise<string | null> {
-  if (!kit || !connectedAddress) return null;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- wallet kit signMessage not in type defs
-    const result = await (kit as any).signMessage(challenge, {
-      address: connectedAddress,
-      networkPassphrase: TESTNET_PASSPHRASE,
-    });
-    // signMessage returns { signedMessage: string } (base64)
-    if (result?.signedMessage) return result.signedMessage;
-    // Some wallet kit versions return differently
-    if (typeof result === "string") return result;
-    return null;
-  } catch (err) {
-    console.error("[stellar] signChallenge failed:", err);
-    return null;
-  }
 }
 
 /** SHA-256 hash of a u32 seed (LE bytes) — matches the Rust prover's hash_seed(). */

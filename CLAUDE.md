@@ -5,8 +5,8 @@ Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes set
 ## Tech Stack
 
 - **Sim core**: Rust fixed-point i32 compiled to WASM (single source of truth). Legacy TS types in `packages/sim`
-- **Client**: Phaser 2D renderer, lobby UI, Stellar wallet connect (`apps/client`)
-- **Server**: Bun WebSocket, server-authoritative netcode, bot opponents (`services/server`)
+- **Client**: Phaser 2D renderer, lobby UI, mobile touch controls, tutorial, Stellar wallet connect (`apps/client`)
+- **Server**: Bun WebSocket, server-authoritative netcode, bot opponents, adaptive difficulty (`services/server`)
 - **ZK Prover**: RISC Zero zkVM, Groth16 compression, multi-round proofs (`services/prover`)
 - **Contracts**: Soroban smart contract + Nethermind Groth16 verifier (`contracts/chickenz`)
 - **Package management**: pnpm (workspaces, dependency resolution) + Bun (runtime, test runner)
@@ -89,6 +89,8 @@ Server requires these in `.env` at the project root (see `.env.example`):
 6. **Game Hub integration** — every ranked match calls `start_game()` at match start and `end_game()` with the verified winner on the Game Hub contract.
 7. **Death linger** — 30-tick (0.5s) delay before `matchOver` after final kill, so both players see the death.
 8. **Ranked mode** — requires Freighter wallet verification (Stellar Signed Message prefix + SHA-256). No bots in ranked. Wallet disconnect leaves room.
+9. **Bot indistinguishability** — bots use realistic names (gamer tags + animal names), appear as normal players in lobby and match history. No `[BOT]` prefix exposed to clients.
+10. **Audio separation** — SFX always on by default; music (BGM) off by default, toggled independently via music icon or settings checkbox.
 
 ## Code Conventions
 
@@ -124,6 +126,54 @@ See contract source in `contracts/chickenz/src/lib.rs`.
 - **Game Hub** (testnet): `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG`
 - `start_game()` at match start, `end_game()` after ZK proof verifies outcome
 - Wallet verification: Freighter `signMessage()` → server verifies with `"Stellar Signed Message:\n"` prefix + SHA-256
+
+## Bot System
+
+- **BotLobbyManager** (`services/server/src/BotLobbyManager.ts`): maintains 3-5 fake "waiting" rooms in the lobby. When a human joins one, a real GameRoom is created with a bot opponent. Fake rooms churn with 45-120s TTLs.
+- **Auto-join**: human-created casual rooms get a bot after 5s if no human joins (`watchHumanRoom()`/`cancelWatch()`).
+- **Bot names**: 40% gamer names (e.g. `Sc00m`, `Krypt0`), 60% animal names (e.g. `Fox4821`). Tracked in a `Set` to avoid duplicates, released when bot match ends.
+- **Continuous difficulty**: 0.0–1.0 scale interpolated between easy/medium/hard anchors. Default 0.3 (from casual ELO 800). Maps `difficulty = clamp((elo - 500) / 1000, 0, 1)`.
+- **Adaptive rounds**: mercy round (one of first 2 rounds, difficulty reduced 0.2-0.35), score-based adjustment (bot leading → reduce, trailing → increase). AFK detection disables mercy.
+- **Bot taunts**: 50% chance per round win, sets `Button.Taunt` during death linger.
+
+## Casual ELO
+
+Hidden matchmaking rating for casual/bot matches. Stored in `casual_elo` table (SQLite). Default 800, K-factor 24. Updated after bot matches only (ranked uses visible ELO). Drives bot difficulty for next match.
+
+## Mobile Controls
+
+- **Touch detection**: `"ontouchstart" in window || navigator.maxTouchPoints > 0` → adds `body.touch` class
+- **Virtual joystick** (`apps/client/src/input/TouchControls.ts`): bottom-left, follow-thumb pattern, dead zone 15%, maps to Left/Right/Jump/Taunt
+- **Shoot button**: fixed bottom-right, 80px square, visual press feedback
+- **Integration**: `InputManager.setTouchState()` — touch buttons OR'd with keyboard buttons each frame via `requestAnimationFrame` loop
+
+## Tutorial
+
+- **First-time detection**: `localStorage.getItem("chickenz-tutorial-done")`
+- **6 steps**: movement → jump → weapon pickup → shoot → sudden death info → goal
+- **Completion tracking**: per-step conditions (movement ticks, jump detected, weapon pickup, shot fired, auto-advance timers)
+- **Integration**: `tutorial.update()` called each frame from main.ts rAF loop, reads player state from `GameScene.getPlayer0State()`
+
+## Audio System
+
+- **SFX**: always on by default, volume controlled by `chickenz-sfx-volume` (0-100)
+- **Music (BGM)**: off by default, toggled independently via `chickenz-music-muted`
+- **Migration**: old `chickenz-muted` key migrated on first load via `chickenz-audio-migrated` flag
+- **Top bar icon**: musical note, click toggles music only (not SFX)
+
+## Shareable Links
+
+- `?join=CODE` → auto-fill join code and trigger join (with cross-region lookup)
+- `?replay=roomId&region=us` → auto-load and play replay from specified region
+- Share buttons in warmup screen (copies join link) and match history (copies replay link)
+- Static OG meta tags in `index.html` for social media previews
+
+## Multi-Region Servers
+
+- **US**: `us.chickenz.io` (178.156.244.26), **EU**: `eu.chickenz.io` (89.167.92.60), **Asia**: `asia.chickenz.io` (5.223.61.107)
+- Client `RegionManager` measures pings, opens lobby WS to each region, merges room lists
+- Home region persisted in localStorage, defaults to lowest ping
+- Ping threshold: 160ms (high-ping regions shown dimmed)
 
 ## Additional Docs
 

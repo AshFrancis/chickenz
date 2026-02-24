@@ -5,23 +5,53 @@ import type { SocketData } from "./GameRoom";
 
 // ── Bot Names ──────────────────────────────────────────────
 
-const BOT_NAMES = [
-  "Clucky",
-  "Pecker",
-  "Nugget",
-  "Drumstk",
-  "Eggbert",
-  "Beaker",
-  "Feather",
-  "Rooster",
-  "Henny",
-  "Clucker",
-  "Yolko",
-  "Bantam",
+// Gamer names — leet-speak style, look like chosen usernames
+const GAMER_NAMES = [
+  "Dr1ft", "Fluxx", "Puls3", "Krypt0", "Sc00m", "Lurk3r", "Myth1c",
+  "Nex7", "Qu1ck", "Bl1tz", "Raz3", "V3x", "W4rp", "Cr0ss",
+  "N0va", "Pyr0", "Fr0st", "H4ze", "0nyx", "3ch0", "Crux",
+  "Ap3x", "Gl1tch", "Sh4rk", "Sw1ft", "Pr3y", "Z3r0", "Gh0st",
+  "R1ft", "Surj", "Sp1k3", "Tr1x", "Cyph3r", "V0lt",
 ];
 
+// Animals — same list + generation as client guest names (Animal + digits, max 7 chars)
+const ANIMALS = [
+  "Moose", "Fox", "Cat", "Dog", "Lion", "Monkey", "Zebra", "Bear", "Wolf", "Eagle",
+  "Hawk", "Otter", "Panda", "Koala", "Raven", "Shark", "Whale", "Tiger", "Cobra", "Viper",
+  "Gecko", "Lemur", "Bison", "Crane", "Heron", "Finch", "Robin", "Llama", "Goose", "Duck",
+  "Deer", "Frog", "Toad", "Crab", "Crow", "Dove", "Lynx", "Mole", "Moth", "Wasp",
+  "Wren", "Swan", "Yak", "Newt", "Puma", "Seal", "Slug", "Mink",
+];
+
+const usedBotNames = new Set<string>();
+
 export function randomBotName(): string {
-  return BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]!;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    let name: string;
+    if (Math.random() < 0.4) {
+      // 40%: gamer name (no digits)
+      name = GAMER_NAMES[Math.floor(Math.random() * GAMER_NAMES.length)]!;
+    } else {
+      // 60%: animal + digits — identical to client generateAnimalName()
+      const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]!;
+      const maxDigits = 7 - animal.length;
+      const num = Math.floor(Math.random() * Math.pow(10, maxDigits));
+      name = `${animal}${num}`;
+    }
+    if (!usedBotNames.has(name) && name.length <= 7) {
+      usedBotNames.add(name);
+      return name;
+    }
+  }
+  // Fallback — use timestamp suffix for guaranteed uniqueness
+  const ts = Date.now() % 10000;
+  const name = `Bot${ts}`;
+  usedBotNames.add(name);
+  return name;
+}
+
+export function releaseBotName(name: string): void {
+  usedBotNames.delete(name);
 }
 
 // ── Fake Socket ────────────────────────────────────────────
@@ -49,11 +79,13 @@ export function createBotSocket(botName: string): GameSocket {
 
 // ── Difficulty ─────────────────────────────────────────────
 
-export type BotDifficulty = "easy" | "medium" | "hard";
+type BotDifficulty = "easy" | "medium" | "hard";
 
 interface DifficultyParams {
   dodgeChance: number; // probability of reacting to any projectile
-  dodgeReactionTicks: number; // min ticks before projectile hits to react
+  dodgeReactionTicks: number; // max ticks before hit to start considering dodge
+  dodgeMinTicks: number; // projectile must be at least this many ticks away to react (reaction time)
+  dodgeJumpChance: number; // probability of jump-dodging (on top of regular dodge)
   shootChance: number; // probability of shooting per decision tick
   decisionInterval: number; // ticks between shoot decisions
   stompChance: number; // probability of trying to jump above opponent vs staying grounded
@@ -64,28 +96,67 @@ const DIFFICULTY: Record<BotDifficulty, DifficultyParams> = {
   easy: {
     dodgeChance: 0.12,
     dodgeReactionTicks: 20,
+    dodgeMinTicks: 12,
+    dodgeJumpChance: 0.15,
     shootChance: 0.35,
     decisionInterval: 13,
     stompChance: 0.05,
     pickupDetour: 400,
   },
   medium: {
-    dodgeChance: 0.6,
-    dodgeReactionTicks: 12,
+    dodgeChance: 0.5,
+    dodgeReactionTicks: 14,
+    dodgeMinTicks: 7,
+    dodgeJumpChance: 0.35,
     shootChance: 0.6,
     decisionInterval: 8,
     stompChance: 0.25,
     pickupDetour: 350,
   },
   hard: {
-    dodgeChance: 0.9,
+    dodgeChance: 0.8,
     dodgeReactionTicks: 20,
+    dodgeMinTicks: 4,
+    dodgeJumpChance: 0.6,
     shootChance: 0.8,
     decisionInterval: 6,
     stompChance: 0.5,
     pickupDetour: 500,
   },
 };
+
+/** Linearly interpolate difficulty params between easy (0.0), medium (0.5), hard (1.0). */
+function interpolateDifficulty(level: number): DifficultyParams {
+  const clamped = Math.max(0, Math.min(1, level));
+  const easy = DIFFICULTY.easy;
+  const medium = DIFFICULTY.medium;
+  const hard = DIFFICULTY.hard;
+
+  let low: DifficultyParams;
+  let high: DifficultyParams;
+  let t: number;
+
+  if (clamped <= 0.5) {
+    low = easy;
+    high = medium;
+    t = clamped / 0.5; // 0..1 within easy-medium range
+  } else {
+    low = medium;
+    high = hard;
+    t = (clamped - 0.5) / 0.5; // 0..1 within medium-hard range
+  }
+
+  return {
+    dodgeChance: low.dodgeChance + (high.dodgeChance - low.dodgeChance) * t,
+    dodgeReactionTicks: Math.round(low.dodgeReactionTicks + (high.dodgeReactionTicks - low.dodgeReactionTicks) * t),
+    dodgeMinTicks: Math.round(low.dodgeMinTicks + (high.dodgeMinTicks - low.dodgeMinTicks) * t),
+    dodgeJumpChance: low.dodgeJumpChance + (high.dodgeJumpChance - low.dodgeJumpChance) * t,
+    shootChance: low.shootChance + (high.shootChance - low.shootChance) * t,
+    decisionInterval: Math.round(low.decisionInterval + (high.decisionInterval - low.decisionInterval) * t),
+    stompChance: low.stompChance + (high.stompChance - low.stompChance) * t,
+    pickupDetour: Math.round(low.pickupDetour + (high.pickupDetour - low.pickupDetour) * t),
+  };
+}
 
 // ── Bot State ──────────────────────────────────────────────
 
@@ -106,11 +177,15 @@ export interface BotState {
   lastY: number;
   stuckTicks: number;
   nav: PlatformNav | null;
-  difficulty: BotDifficulty;
-  dodgeSeed: number; // per-projectile dodge roll (deterministic per tick range)
+  difficulty: number;
+  shouldTaunt: boolean;
+  tauntOn: boolean;
+  tauntTimer: number;
+  tauntBudget: number; // total ticks of taunting remaining
+  tauntMove: boolean; // whether to move while taunting
 }
 
-export function createBotState(difficulty: BotDifficulty = "easy"): BotState {
+export function createBotState(difficulty: number = 0.3): BotState {
   return {
     jumpCooldown: 0,
     shooting: false,
@@ -120,7 +195,11 @@ export function createBotState(difficulty: BotDifficulty = "easy"): BotState {
     stuckTicks: 0,
     nav: null,
     difficulty,
-    dodgeSeed: Math.random(),
+    shouldTaunt: false,
+    tauntOn: false,
+    tauntTimer: 0,
+    tauntBudget: -1,
+    tauntMove: Math.random() < 0.5,
   };
 }
 
@@ -286,7 +365,7 @@ function planPlatformNav(
 export function botThink(botId: number, state: ExportedState, map: GameMap, botState: BotState): PlayerInput {
   const bot = state.players[botId]!;
   const opp = state.players[1 - botId]!;
-  const diff = DIFFICULTY[botState.difficulty];
+  const diff = interpolateDifficulty(botState.difficulty);
 
   if (botState.jumpCooldown > 0) botState.jumpCooldown--;
 
@@ -315,6 +394,34 @@ export function botThink(botId: number, state: ExportedState, map: GameMap, botS
   const dist = Math.sqrt(dx * dx + dy * dy) || 1;
   const hasWeapon = bot.weapon >= 0 && bot.ammo > 0;
 
+  // Taunt spam when opponent is dead — variable duration, rhythm, and movement
+  if (!oppAlive && botState.shouldTaunt) {
+    // Initialize budget on first taunt frame: 2-6 taunts worth (each ~12 ticks)
+    if (botState.tauntBudget < 0) {
+      botState.tauntBudget = (2 + Math.floor(Math.random() * 5)) * 12; // 24-72 ticks
+    }
+    if (botState.tauntBudget <= 0) {
+      // Done taunting — wander around
+      const moveDir = Math.floor(state.tick / 30) % 3; // cycle: left, right, idle
+      const moveBtn = moveDir === 0 ? Button.Left : moveDir === 1 ? Button.Right : 0;
+      return { buttons: moveBtn, aimX: moveDir === 0 ? -1 : 1, aimY: 0 };
+    }
+    botState.tauntBudget--;
+    if (botState.tauntTimer <= 0) {
+      botState.tauntOn = !botState.tauntOn;
+      botState.tauntTimer = 4 + Math.floor(Math.random() * 5); // 4-8 ticks
+    }
+    botState.tauntTimer--;
+    // 50% of taunters move while taunting, 50% stand still
+    let moveBtn = 0;
+    let aimDir = 0;
+    if (botState.tauntMove && Math.floor(state.tick / 15) % 3 === 0) {
+      moveBtn = dx > 0 ? Button.Right : Button.Left;
+      aimDir = dx > 0 ? 1 : -1;
+    }
+    return { buttons: (botState.tauntOn ? Button.Taunt : 0) | moveBtn, aimX: aimDir, aimY: 0 };
+  }
+
   // Aim toward opponent
   const aimX: number = dx > 8 ? 1 : dx < -8 ? -1 : bot.vx >= 0 ? 1 : -1;
 
@@ -339,6 +446,8 @@ export function botThink(botId: number, state: ExportedState, map: GameMap, botS
     const ticksToArrive = dot / projSpeed;
     // Harder bots react to bullets further away
     if (ticksToArrive > diff.dodgeReactionTicks) continue;
+    // Can't react if projectile is too close (simulates reaction time)
+    if (ticksToArrive < diff.dodgeMinTicks) continue;
     const closestX = proj.x + nvx * dot;
     const closestY = proj.y + nvy * dot;
     const perpDist = Math.sqrt((bot.x - closestX) ** 2 + (bot.y - closestY) ** 2);
@@ -349,9 +458,10 @@ export function botThink(botId: number, state: ExportedState, map: GameMap, botS
       botState.nav = null;
       const cross = nvx * py - nvy * px;
       buttons |= cross > 0 ? Button.Right : Button.Left;
-      if (bot.grounded && ticksToArrive < 8 && botState.jumpCooldown <= 0) {
+      // Jump-dodge: separate probability check, not guaranteed
+      if (bot.grounded && ticksToArrive < 10 && botState.jumpCooldown <= 0 && Math.random() < diff.dodgeJumpChance) {
         buttons |= Button.Jump;
-        botState.jumpCooldown = 20;
+        botState.jumpCooldown = 30;
       }
       break;
     }

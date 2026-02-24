@@ -25,6 +25,7 @@ export interface ProofJob {
 // ── Proof Queue ──────────────────────────────────────────
 
 const proofQueue: ProofJob[] = [];
+const MAX_QUEUE_SIZE = 50; // prevent unbounded memory growth
 let lastWorkerPing = 0;
 const JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -47,6 +48,22 @@ export function queueProof(
   if (existing) {
     console.log(`[prover] Job for ${matchId} already in queue (status: ${existing.status}), skipping`);
     return existing;
+  }
+  // Enforce max queue size — evict oldest done/queued jobs
+  while (proofQueue.length >= MAX_QUEUE_SIZE) {
+    const doneIdx = proofQueue.findIndex((j) => j.status === "done");
+    if (doneIdx >= 0) {
+      proofQueue.splice(doneIdx, 1);
+    } else {
+      // Drop oldest queued job
+      const queuedIdx = proofQueue.findIndex((j) => j.status === "queued");
+      if (queuedIdx >= 0) {
+        console.log(`[prover] Queue full, dropping oldest job: ${proofQueue[queuedIdx]!.matchId}`);
+        proofQueue.splice(queuedIdx, 1);
+      } else {
+        break; // All jobs are claimed — can't evict
+      }
+    }
   }
   const job: ProofJob = { matchId, transcript, status: "queued", onResult };
   proofQueue.push(job);
@@ -249,17 +266,18 @@ export function proveMatch(
     onResult(artifacts, source);
   };
 
-  // Safety timeout: if neither prover settles within 10 minutes, report failure
+  // Safety timeout: if neither prover settles within 20 minutes, report failure
+  // (Boundless marketplace queue can take 10-15 min on testnet)
   setTimeout(
     () => {
       if (!settled) {
         settled = true;
         markJobDone(); // Clean up stale job
-        console.log(`[prover] ${matchId} timed out after 10 minutes`);
+        console.log(`[prover] ${matchId} timed out after 20 minutes`);
         onResult(null);
       }
     },
-    10 * 60 * 1000,
+    20 * 60 * 1000,
   );
 
   // Always queue for worker (gaming PC polls these)

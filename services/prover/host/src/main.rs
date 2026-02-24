@@ -197,7 +197,12 @@ async fn run_boundless_multi(seed: u32, rounds: &[Vec<[FpInput; 2]>]) {
         .new_request()
         .with_program(CHICKENZ_GUEST_ELF)
         .with_stdin(stdin_bytes)
-        .with_groth16_proof();
+        .with_groth16_proof()
+        .with_offer(
+            boundless_market::request_builder::OfferParams::builder()
+                .min_price(alloy::primitives::utils::parse_ether("0.00001").unwrap())
+                .max_price(alloy::primitives::utils::parse_ether("0.00005").unwrap()),
+        );
 
     let (request_id, expires_at) = client
         .submit_onchain(request)

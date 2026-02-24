@@ -1,32 +1,7 @@
 import type { PlayerState, Projectile, GameMap } from "./types";
 import { WeaponType, PlayerStateFlag } from "./types";
-import { PROJECTILE_SPEED, PROJECTILE_LIFETIME, PLAYER_WIDTH, PLAYER_HEIGHT } from "./constants";
+import { PLAYER_WIDTH, PLAYER_HEIGHT } from "./constants";
 import { getProjectileDamage, isRocket, applySplashDamage } from "./weapons";
-
-/** Spawn a projectile from a player's position toward their aim direction (legacy, unarmed fallback). */
-export function spawnProjectile(player: PlayerState, aimX: number, aimY: number, id: number): Projectile {
-  // Normalize aim vector
-  const len = Math.sqrt(aimX * aimX + aimY * aimY);
-  let nx: number, ny: number;
-  if (len < 0.001) {
-    nx = player.facing;
-    ny = 0;
-  } else {
-    nx = aimX / len;
-    ny = aimY / len;
-  }
-
-  return {
-    id,
-    ownerId: player.id,
-    x: player.x + PLAYER_WIDTH / 2,
-    y: player.y + PLAYER_HEIGHT / 2,
-    vx: nx * PROJECTILE_SPEED,
-    vy: ny * PROJECTILE_SPEED,
-    lifetime: PROJECTILE_LIFETIME,
-    weapon: WeaponType.Pistol,
-  };
-}
 
 /** Move a projectile and decrement its lifetime. */
 export function moveProjectile(proj: Projectile): Projectile {

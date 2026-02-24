@@ -4,7 +4,9 @@ import type { GameMap, PlayerInput } from "@chickenz/sim";
 import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol";
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
 import { WasmState } from "./wasm";
-import { randomBotName, createBotSocket, createBotState, botThink, type BotState, type BotDifficulty } from "./BotAI";
+import { randomBotName, createBotSocket, createBotState, botThink, type BotState } from "./BotAI";
+
+const COUNTDOWN_TICKS = 90;
 
 export interface SocketData {
   roomId: string | null;
@@ -22,8 +24,11 @@ export interface SocketData {
 type GameSocket = ServerWebSocket<SocketData>;
 
 const STATE_BROADCAST_INTERVAL = 1; // send state every tick (60Hz) for minimal remote player delay
-const TOTAL_ROUNDS = 3;
-const WINS_NEEDED = 2;
+// Ranked: best-of-3 (ZK proof compatibility), Casual: best-of-5
+const RANKED_TOTAL_ROUNDS = 3;
+const RANKED_WINS_NEEDED = 2;
+const CASUAL_TOTAL_ROUNDS = 5;
+const CASUAL_WINS_NEEDED = 3;
 const ROUND_TRANSITION_MS = 750; // brief pause between taunt end and next round
 
 export class GameRoom {
@@ -58,6 +63,8 @@ export class GameRoom {
   onStarted?: (room: GameRoom) => void;
 
   // Round system
+  private totalRounds: number;
+  private winsNeeded: number;
   private currentRound = 0;
   private roundWins: [number, number] = [0, 0];
   private mapOrder: number[] = []; // indices into MAP_POOL
@@ -68,29 +75,38 @@ export class GameRoom {
   private countdownTick = 0; // tracks tick calls (including countdown before sim steps)
   private _matchStartTime = 0; // wall-clock ms when match started
   private botState: BotState | null = null;
+  private botState0: BotState | null = null; // bot AI for player 0 (bot-vs-bot only)
   private _isBotMatch = false;
+  private _isBotVsBotMatch = false;
+  private botDifficulty = 0.3;
+  private mercyRound = -1; // which round gets difficulty reduction
+  private mercyAmount = 0;
   private _sessionId = 0;
   private _startTxHash: string | null = null;
   /** DB match ID — set once match record is created, used for late async updates */
   matchRecordId: string | null = null;
 
-  constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual") {
+  constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual", skipWaiting: boolean = false) {
     this.id = id;
     this.name = name;
     this.joinCode = generateJoinCode();
     this.isPrivate = isPrivate;
     this.mode = mode;
+    this.totalRounds = mode === "ranked" ? RANKED_TOTAL_ROUNDS : CASUAL_TOTAL_ROUNDS;
+    this.winsNeeded = mode === "ranked" ? RANKED_WINS_NEEDED : CASUAL_WINS_NEEDED;
 
     creator.data.roomId = id;
     creator.data.playerId = 0;
     this.sockets.push(creator);
 
-    this.send(creator, {
-      type: "waiting",
-      roomId: id,
-      roomName: name,
-      joinCode: this.joinCode,
-    });
+    if (!skipWaiting) {
+      this.send(creator, {
+        type: "waiting",
+        roomId: id,
+        roomName: name,
+        joinCode: this.joinCode,
+      });
+    }
   }
 
   get status() {
@@ -125,6 +141,15 @@ export class GameRoom {
     return this._isBotMatch;
   }
 
+  get botName(): string | null {
+    if (!this._isBotMatch || this.sockets.length < 2) return null;
+    return this.sockets[1]?.data.username || null;
+  }
+
+  get currentBotDifficulty(): number {
+    return this.botDifficulty;
+  }
+
   get sessionId() {
     return this._sessionId;
   }
@@ -144,13 +169,29 @@ export class GameRoom {
     return [this.sockets[0]?.data.walletAddress || "", this.sockets[1]?.data.walletAddress || ""];
   }
 
-  /** Add a bot opponent to this room. */
-  addBot(difficulty: BotDifficulty = "easy") {
-    const name = randomBotName();
+  /** Add a bot opponent to this room. Optionally pass a pre-generated name. */
+  addBot(difficulty: number = 0.3, botName?: string) {
+    const name = botName ?? randomBotName();
     const botSocket = createBotSocket(name);
     this._isBotMatch = true;
+    this.botDifficulty = difficulty;
     this.botState = createBotState(difficulty);
+    // Pre-plan mercy: one of first 2 rounds gets difficulty reduced
+    this.mercyRound = Math.random() < 0.5 ? 0 : 1;
+    this.mercyAmount = 0.2 + Math.random() * 0.15; // 0.2-0.35 reduction
     this.addPlayer(botSocket);
+  }
+
+  /** Make player 0 also a bot (for bot-vs-bot exhibition matches). */
+  makeBotVsBot(difficulty0: number = 0.3) {
+    this._isBotVsBotMatch = true;
+    this.botState0 = createBotState(difficulty0);
+    // No mercy for bot-vs-bot
+    this.mercyRound = -1;
+  }
+
+  get isBotVsBotMatch() {
+    return this._isBotVsBotMatch;
   }
 
   /** Second player joins — start the match. */
@@ -231,6 +272,7 @@ export class GameRoom {
       joinCode: this.joinCode,
       isPrivate: this.isPrivate,
       mode: this.mode,
+      playerNames: this.sockets.map((s) => s.data.username || ""),
     };
   }
 
@@ -261,7 +303,7 @@ export class GameRoom {
   /** Return transcript for proving (both winning rounds in multi-round format). */
   getTranscript() {
     // Determine the match winner
-    const matchWinner = this.roundWins[0] >= WINS_NEEDED ? 0 : 1;
+    const matchWinner = this.roundWins[0] >= this.winsNeeded ? 0 : 1;
 
     // Extract transcripts from rounds the match winner won
     const winningRounds = this.roundTranscripts.filter((r) => r.winner === matchWinner);
@@ -352,7 +394,7 @@ export class GameRoom {
         roomId: this.id,
         usernames,
         mapIndex: this.mapOrder[0] ?? 0,
-        totalRounds: TOTAL_ROUNDS,
+        totalRounds: this.totalRounds,
         mode: this.mode,
         characters: this.characterSlots,
       });
@@ -386,7 +428,27 @@ export class GameRoom {
     this.transcript = [];
     this.matchOverTick = -1;
     this.countdownTick = 0;
-    if (this.botState) this.botState = createBotState(this.botState.difficulty);
+    if (this.botState !== null) {
+      let roundDiff = this.botDifficulty;
+      // Mercy round: reduce difficulty
+      if (this.currentRound === this.mercyRound) {
+        roundDiff = Math.max(0, roundDiff - this.mercyAmount);
+      }
+      // Dynamic adjustment based on scores (skip for bot-vs-bot)
+      if (!this._isBotVsBotMatch) {
+        if (this.roundWins[1] > this.roundWins[0]) {
+          roundDiff = Math.max(0, roundDiff - 0.15);
+        } else if (this.roundWins[0] > this.roundWins[1]) {
+          roundDiff = Math.min(1.0, roundDiff + 0.05);
+        }
+      }
+      this.botState = createBotState(roundDiff);
+      this.botState.shouldTaunt = Math.random() < 0.5;
+    }
+    if (this.botState0 !== null) {
+      this.botState0 = createBotState(this.botState0.difficulty);
+      this.botState0.shouldTaunt = Math.random() < 0.5;
+    }
 
     // Start game loop — self-correcting to prevent drift
     this.loopStartTime = performance.now();
@@ -410,12 +472,11 @@ export class GameRoom {
   }
 
   private tick() {
-    if (this._status !== "playing") return;
+    if (this._status !== "playing" || this.timer === null) return;
 
     this.countdownTick++;
 
     // Freeze sim during countdown (~1.5s = 90 ticks) — broadcast state but don't advance
-    const COUNTDOWN_TICKS = 90;
     if (this.countdownTick <= COUNTDOWN_TICKS) {
       this.broadcastState();
       return;
@@ -434,11 +495,18 @@ export class GameRoom {
     }
 
     // Inject bot input before transcript recording
-    if (this.botState !== null) {
+    if (this.botState !== null || this.botState0 !== null) {
       const exported = this.wasmState.export_state() as StateMessage;
-      const input = botThink(1, exported, this.currentMap, this.botState);
-      this.rawInput[1] = input;
-      this.accInput[1] = { ...input };
+      if (this.botState0 !== null) {
+        const input0 = botThink(0, exported, this.currentMap, this.botState0);
+        this.rawInput[0] = input0;
+        this.accInput[0] = { ...input0 };
+      }
+      if (this.botState !== null) {
+        const input = botThink(1, exported, this.currentMap, this.botState);
+        this.rawInput[1] = input;
+        this.accInput[1] = { ...input };
+      }
     }
 
     // Record for transcript (strip Taunt bit — cosmetic only, not part of ZK proof)
@@ -497,9 +565,10 @@ export class GameRoom {
           );
           this.roundWins[0]++;
         }
+        const safeWinner = winner === 0 || winner === 1 ? winner : 0;
         const roundEndMsg = {
           round: this.currentRound,
-          winner,
+          winner: safeWinner,
           roundWins: [...this.roundWins] as [number, number],
         };
         this.broadcast({ type: "round_end", ...roundEndMsg });
@@ -507,6 +576,10 @@ export class GameRoom {
       }
       // Keep broadcasting state for 60 extra ticks (1s) so clients see winner movement + bullet travel
       if (currentTick - this.matchOverTick >= 60) {
+        // AFK detection: if player barely moved, disable mercy
+        if (this._isBotMatch && this.inputChanges[0] < 5) {
+          this.mercyRound = -1;
+        }
         this.endRound(this.wasmState.winner());
       }
     }
@@ -576,8 +649,8 @@ export class GameRoom {
 
     // round_end message + roundWins already sent/incremented at matchOverTick detection
 
-    // Check if match is won (best of 3 → first to 2), with safety cap
-    if (this.roundWins[0] >= WINS_NEEDED || this.roundWins[1] >= WINS_NEEDED || this.currentRound >= TOTAL_ROUNDS * 2) {
+    // Check if match is won (casual: first to 3, ranked: first to 2), with safety cap
+    if (this.roundWins[0] >= this.winsNeeded || this.roundWins[1] >= this.winsNeeded || this.currentRound >= this.totalRounds * 2) {
       const matchWinner = this.roundWins[0] >= this.roundWins[1] ? 0 : 1;
       this.pendingTimeouts.push(setTimeout(() => this.endMatch(matchWinner), 100));
     } else {

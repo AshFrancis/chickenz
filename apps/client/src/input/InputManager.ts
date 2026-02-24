@@ -44,6 +44,8 @@ export function friendlyKeyName(code: string): string {
 export class InputManager {
   private keys: Record<string, boolean> = {};
   private bindings: KeyBindings;
+  private touchButtons = 0;
+  private touchAimX = 0;
 
   constructor() {
     this.bindings = this.loadBindings();
@@ -107,6 +109,12 @@ export class InputManager {
     return !!(a && this.keys[a]) || !!(b && this.keys[b]);
   }
 
+  /** Set touch control state from TouchControls each frame. */
+  setTouchState(buttons: number, aimX: number) {
+    this.touchButtons = buttons;
+    this.touchAimX = aimX;
+  }
+
   getPlayer1Input(_playerX: number, _playerY: number): PlayerInput {
     let buttons = 0;
 
@@ -122,9 +130,14 @@ export class InputManager {
     if (shoot) buttons |= Button.Shoot;
     if (taunt) buttons |= Button.Taunt;
 
+    // OR with touch controls
+    buttons |= this.touchButtons;
+
     let aimX = 0;
     if (left) aimX = -1;
     if (right) aimX = 1;
+    // Touch aim overrides keyboard aim when active
+    if (this.touchAimX !== 0) aimX = this.touchAimX;
 
     return { buttons, aimX, aimY: 0 };
   }

@@ -2,8 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Chickenz.io</title>
+    <meta name="description" content="Competitive 2D multiplayer platformer shooter. Pick up weapons, dodge bullets, survive sudden death." />
+    <meta property="og:title" content="Chickenz.io" />
+    <meta property="og:description" content="Competitive 2D multiplayer platformer shooter" />
+    <meta property="og:image" content="https://chickenz.io/og-image.png" />
+    <meta property="og:url" content="https://chickenz.io/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0a0a14" />
+    <link rel="canonical" href="https://chickenz.io/" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -31,6 +39,7 @@
         flex-direction: column;
         height: 100vh;
         overflow: hidden;
+        touch-action: manipulation;
         font-family: "Silkscreen", monospace;
         color: #ccc;
       }
@@ -289,6 +298,43 @@
         font-size: 12px;
         padding: 0 4px;
       }
+      #lobby-actions-right {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      #more-menu-wrapper {
+        position: relative;
+      }
+      #btn-more-menu {
+        font-size: 16px;
+        letter-spacing: 2px;
+        padding: 8px 12px;
+        line-height: 1;
+        min-width: unset;
+        min-height: unset;
+      }
+      #more-menu-dropdown {
+        display: none;
+        position: absolute;
+        top: 100%;
+        right: 0;
+        background: #0d0d1a;
+        border: 2px solid #444;
+        z-index: 300;
+        min-width: 140px;
+        font-size: 11px;
+      }
+      #more-menu-dropdown.visible { display: block; }
+      .more-menu-option {
+        padding: 10px 14px;
+        cursor: pointer;
+        color: #ccc;
+        font-family: 'Silkscreen', monospace;
+        white-space: nowrap;
+      }
+      .more-menu-option:hover { background: #1a1a2e; color: #fff; }
 
       /* Mode toggle */
       .mode-toggle {
@@ -428,6 +474,7 @@
         letter-spacing: 1px;
         margin-left: 8px;
       }
+      .room-players { font-size: 11px; color: #aaa; margin-left: 8px; }
       .room-lock { font-size: 12px; margin-left: 4px; }
       .room-status {
         font-size: 12px;
@@ -539,7 +586,7 @@
         position: absolute;
         top: 50px; left: 0;
         width: 100%;
-        z-index: 160;
+        z-index: 162;
         pointer-events: none;
         text-align: center;
       }
@@ -554,6 +601,25 @@
         font-family: 'Press Start 2P', 'Courier New', monospace;
       }
 
+      /* Weapon/ammo HUD (DOM overlay) */
+      #weapon-hud {
+        display: none;
+        position: absolute;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 161;
+        pointer-events: none;
+      }
+      #weapon-hud-text {
+        font-size: 12px;
+        color: #fff;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000;
+        font-family: 'Silkscreen', monospace;
+      }
+
       #high-ping-overlay {
         display: none;
         position: absolute;
@@ -563,6 +629,7 @@
         pointer-events: none;
         text-align: center;
       }
+      body.touch #weapon-hud { bottom: 100px; } /* avoid overlap with mobile shoot button */
       #high-ping-overlay.visible { display: block; }
       #high-ping-text {
         font-size: 10px;
@@ -1229,7 +1296,7 @@
         display: none;
         position: absolute;
         top: 100%;
-        left: 0;
+        right: 0;
         background: #0d0d1a;
         border: 2px solid #444;
         z-index: 300;
@@ -1264,6 +1331,9 @@
         margin-left: 6px;
       }
       .region-badge.home { border-color: #ffee58; color: #ffee58; }
+      /* Touch devices: hide keyboard controls hint */
+      body.touch #controls-hint { display: none; }
+      body.touch #warmup-overlay #btn-add-bot { display: none; }
     </style>
   </head>
   <body>
@@ -1273,9 +1343,10 @@
           <div></div>
           <div id="top-bar-right">
             <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
-            <button id="btn-mute" title="Unmute" style="background:none;border:none;cursor:pointer;padding:2px 6px;line-height:1;display:flex;align-items:center"><svg id="mute-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+            <button id="btn-mute" title="Music Off" style="background:none;border:none;cursor:pointer;padding:2px 6px;line-height:1;display:flex;align-items:center"><svg id="mute-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/><line x1="2" y1="12" x2="22" y2="12" stroke="white" stroke-width="2.5" opacity="0.5"/></svg></button>
             <button id="btn-settings" title="Settings">&#9881;</button>
-            <button id="btn-wallet" class="btn btn-sm btn-primary" title="Connect Stellar wallet">Connect Stellar Wallet</button>
+            <button id="btn-wallet-login" class="btn btn-sm btn-primary" title="Log in with passkey" style="display:none">Log In</button>
+            <button id="btn-wallet-register" class="btn btn-sm btn-primary" title="Create a new passkey wallet" style="display:none">Register</button>
             <span id="top-bar-address"></span>
             <span id="top-bar-username"></span>
           </div>
@@ -1307,6 +1378,11 @@
           <span id="sudden-death-text"></span>
         </div>
 
+        <!-- Weapon/ammo HUD -->
+        <div id="weapon-hud">
+          <span id="weapon-hud-text"></span>
+        </div>
+
         <!-- High ping warning -->
         <div id="high-ping-overlay">
           <span id="high-ping-text">High ping detected &gt;180ms — You may experience stutters</span>
@@ -1322,7 +1398,31 @@
           <div style="margin-top:78px;display:flex;gap:8px;pointer-events:auto">
             <button id="btn-warmup-back" class="btn btn-sm">&larr; LOBBY</button>
             <button id="btn-add-bot" class="btn btn-sm btn-primary">PLAY VS BOT</button>
+            <button id="btn-warmup-share" class="btn btn-sm" title="Copy invite link">COPY LINK</button>
           </div>
+        </div>
+
+
+        <!-- Tutorial overlay -->
+        <div id="tutorial-overlay" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;z-index:195;pointer-events:none">
+          <div id="tutorial-prompt" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(10,10,20,0.95);border:2px solid #ffee58;padding:24px;text-align:center;pointer-events:auto;max-width:320px">
+            <p style="color:#ffee58;font-size:16px;margin-bottom:6px;text-shadow:2px 2px 0 #c9a800">Welcome to Chickenz!</p>
+            <p style="color:#aaa;font-size:11px;margin-bottom:16px">Learn the controls in a quick tutorial</p>
+            <div style="display:flex;gap:8px;justify-content:center">
+              <button id="btn-tutorial-play" class="btn btn-primary">Play Tutorial</button>
+              <button id="btn-tutorial-skip" class="btn">Skip</button>
+            </div>
+          </div>
+          <div id="tutorial-step" style="display:none;position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(10,10,20,0.85);border:2px solid #ffee58;padding:12px 20px;text-align:center;pointer-events:auto;max-width:400px">
+            <p id="tutorial-step-text" style="color:#fff;font-size:12px;margin-bottom:8px"></p>
+            <button id="btn-tutorial-skip-step" class="btn btn-sm" style="font-size:10px">Skip Tutorial</button>
+          </div>
+        </div>
+
+        <!-- Touch controls (visible on touch devices during gameplay) -->
+        <div id="touch-controls" style="display:none;position:absolute;bottom:0;left:0;width:100%;height:50%;z-index:45;pointer-events:none">
+          <canvas id="touch-joystick" style="position:absolute;bottom:0;left:0;width:50%;height:100%;pointer-events:auto;touch-action:none"></canvas>
+          <div id="touch-shoot" style="position:absolute;bottom:30px;right:30px;width:80px;height:80px;pointer-events:auto;touch-action:none;background:rgba(255,50,50,0.3);border:3px solid rgba(255,50,50,0.6);display:flex;align-items:center;justify-content:center;font-size:24px;color:rgba(255,255,255,0.7)">&#x1F4A5;</div>
         </div>
 
         <!-- Settings overlay -->
@@ -1407,13 +1507,14 @@
             <div class="settings-section">
               <h3>Audio</h3>
               <div class="settings-row">
-                <label>Mute All</label>
+                <label>Music</label>
                 <div class="settings-check">
-                  <input type="checkbox" id="check-mute-all" />
+                  <input type="checkbox" id="check-music" />
+                  <span style="font-size:10px;color:#888">Toggle music on/off</span>
                 </div>
               </div>
               <div class="settings-row">
-                <label>Music</label>
+                <label>Music Vol</label>
                 <div class="settings-slider">
                   <input type="range" id="slider-bgm" min="0" max="100" value="10" />
                   <span class="slider-val" id="val-bgm">10</span>
@@ -1503,17 +1604,23 @@
           <div id="lobby-actions">
             <div class="mode-toggle">
               <button id="btn-mode-casual" class="btn-mode active">Casual</button>
-              <button id="btn-mode-ranked" class="btn-mode locked">Ranked<span class="ranked-tooltip">Connect a Stellar wallet to play ranked<br/>We recommend Freighter!</span></button>
+              <button id="btn-mode-ranked" class="btn-mode locked">Ranked<span class="ranked-tooltip">Connect a wallet to play ranked</span></button>
             </div>
             <button id="btn-quickplay" class="btn btn-primary">Quick Play</button>
             <span class="lobby-divider">|</span>
             <button id="btn-create-public" class="btn btn-primary">Create Public</button>
             <button id="btn-create-private" class="btn">Create Private</button>
-            <span class="lobby-divider">|</span>
-            <input id="input-join-code" type="text" placeholder="CODE" maxlength="5" />
-            <button id="btn-join-code" class="btn">Join</button>
-            <span class="lobby-divider">|</span>
-            <button id="btn-create-tournament" class="btn" style="border-color:#ffa726;color:#ffa726">Tournament</button>
+            <div id="lobby-actions-right">
+              <input id="input-join-code" type="text" placeholder="CODE" maxlength="5" />
+              <button id="btn-join-code" class="btn">Join</button>
+              <div id="more-menu-wrapper">
+                <button id="btn-more-menu" class="btn">⋯</button>
+                <div id="more-menu-dropdown">
+                  <div class="more-menu-option" id="menu-tournament">Tournament</div>
+                  <div class="more-menu-option" id="menu-tutorial">Tutorial</div>
+                </div>
+              </div>
+            </div>
           </div>
           <div id="lobby-tabs" role="tablist">
             <button class="lobby-tab active" data-tab="rooms" role="tab" aria-selected="true">Rooms</button>
@@ -1542,12 +1649,18 @@
         var name = localStorage.getItem("chickenz-username");
         if (name) document.getElementById("top-bar-username").textContent = name;
 
-        // Mute icon (default is muted)
-        var muted = localStorage.getItem("chickenz-muted");
-        if (muted === "false") {
+        // Music icon (default is OFF for new users)
+        var musicMuted = localStorage.getItem("chickenz-music-muted");
+        // Migration: if old key exists and was "false" (unmuted), keep music on
+        if (!localStorage.getItem("chickenz-audio-migrated")) {
+          var oldMuted = localStorage.getItem("chickenz-muted");
+          if (oldMuted === "false") musicMuted = "false";
+          else musicMuted = "true";
+        }
+        if (musicMuted === "false") {
           var svg = document.getElementById("mute-icon");
-          if (svg) svg.innerHTML = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"/>';
-          document.getElementById("btn-mute").title = "Mute";
+          if (svg) svg.innerHTML = '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>';
+          document.getElementById("btn-mute").title = "Mute Music";
         }
 
         // Mode toggle (default is casual)

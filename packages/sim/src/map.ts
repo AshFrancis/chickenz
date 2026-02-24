@@ -97,4 +97,4 @@ export const BRIDGES: GameMap = {
 };
 
 /** Pool of maps for round rotation. */
-export const MAP_POOL: GameMap[] = [ARENA, TOWERS, BRIDGES];
+export const MAP_POOL: GameMap[] = [ARENA, TOWERS];

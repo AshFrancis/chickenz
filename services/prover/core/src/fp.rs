@@ -50,10 +50,8 @@ pub const PLAYER_HEIGHT: Fp = 8192; // 32
 
 pub const PROJECTILE_SPEED: Fp = 2048; // 8.0
 pub const PROJECTILE_LIFETIME: i32 = 90;
-pub const SHOOT_COOLDOWN: i32 = 15;
 
 pub const MAX_HEALTH: i32 = 100;
-pub const PROJECTILE_DAMAGE: i32 = 25;
 
 pub const RESPAWN_TICKS: i32 = 60;
 pub const INVINCIBLE_TICKS: i32 = 60;
@@ -402,6 +400,7 @@ impl KillList {
         }
     }
     pub fn push(&mut self, killer: i32, victim: i32) {
+        debug_assert!((self.len as usize) < self.data.len(), "KillList overflow");
         if (self.len as usize) < self.data.len() {
             self.data[self.len as usize] = (killer, victim);
             self.len += 1;
@@ -783,7 +782,7 @@ fn move_and_collide_mut(p: &mut Player, buttons: u8, map: &Map) {
         }
     }
 
-    // Wall sliding: character and gun face away from the wall_dir side
+    // Wall sliding: facing tracks wall_dir (projectile direction overridden in spawn_projectile)
     if p.wall_sliding {
         p.facing = p.wall_dir;
         p.vx = 0;
@@ -1330,6 +1329,15 @@ pub fn step_mut(state: &mut State, inputs: &[FpInput; 2], map: &Map) {
                     state.score[killer as usize] += 1;
                 }
                 state.players[victim_idx].lives -= 1;
+                continue;
+            }
+            // Auto-escape at 50% health — victim breaks free automatically
+            if state.players[victim_idx].health <= MAX_HEALTH / 2 {
+                state.players[rider_idx].stomping_on = -1;
+                state.players[rider_idx].vy = JUMP_VELOCITY;
+                state.players[rider_idx].grounded = false;
+                state.players[victim_idx].stomp_cooldown = STOMP_COOLDOWN_TICKS;
+                clear_stomp_fields(&mut state.players[victim_idx]);
                 continue;
             }
         }

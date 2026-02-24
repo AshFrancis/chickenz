@@ -82,6 +82,15 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS casual_elo (
+    username TEXT PRIMARY KEY,
+    elo INTEGER DEFAULT 800,
+    games_played INTEGER DEFAULT 0,
+    last_updated INTEGER
+  )
+`);
+
 // ── Schema migrations (idempotent) ───────────────────────
 const migrations = [
   "ALTER TABLE matches ADD COLUMN match_start_time INTEGER",
@@ -96,6 +105,7 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN transcript_cid TEXT",
   "ALTER TABLE matches ADD COLUMN boundless_request_id TEXT",
   "ALTER TABLE matches ADD COLUMN boundless_tx_hash TEXT",
+  "ALTER TABLE matches ADD COLUMN bot_vs_bot INTEGER DEFAULT 0",
 ];
 for (const sql of migrations) {
   try {
@@ -173,6 +183,7 @@ interface MatchRow {
   transcript_data: string | null;
   transcript_cid: string | null;
   boundless_request_id: string | null;
+  boundless_tx_hash: string | null;
 }
 
 interface PlayerRow {
@@ -188,6 +199,8 @@ interface TranscriptRow {
 
 // ── Helpers ───────────────────────────────────────────────
 
+const VALID_PROOF_STATUSES = new Set(["none", "pending", "proving", "verified", "settled"]);
+
 function rowToMatch(row: MatchRow): MatchRecord {
   const record: MatchRecord = {
     id: row.id,
@@ -200,11 +213,13 @@ function rowToMatch(row: MatchRow): MatchRecord {
     winner: row.winner,
     scores: [row.score1, row.score2],
     timestamp: row.timestamp,
-    proofStatus: row.proof_status,
+    proofStatus: VALID_PROOF_STATUSES.has(row.proof_status)
+      ? (row.proof_status as MatchRecord["proofStatus"])
+      : "none",
     roomId: row.room_id,
     mode: row.mode,
   };
-  if (row.proof_seal) {
+  if (row.proof_seal && row.proof_journal && row.proof_image_id) {
     record.proofArtifacts = {
       seal: row.proof_seal,
       journal: row.proof_journal,
@@ -250,7 +265,7 @@ export function insertMatch(record: MatchRecord): void {
   });
 }
 
-export function updateProofStatus(matchId: string, status: string, artifacts?: ProofArtifacts): void {
+export function updateProofStatus(matchId: string, status: MatchRecord["proofStatus"], artifacts?: ProofArtifacts): void {
   if (artifacts) {
     stmtUpdateProof.run({
       $id: matchId,
@@ -405,4 +420,65 @@ const stmtUpdateBoundlessTxHash = db.prepare(`UPDATE matches SET boundless_tx_ha
 
 export function updateBoundlessTxHash(matchId: string, txHash: string) {
   stmtUpdateBoundlessTxHash.run({ $id: matchId, $hash: txHash });
+}
+
+// ── Bot-vs-bot match tracking + transcript pruning ──────
+
+const stmtMarkBotVsBot = db.prepare(`UPDATE matches SET bot_vs_bot = 1 WHERE id = $id`);
+
+export function markBotVsBot(matchId: string) {
+  stmtMarkBotVsBot.run({ $id: matchId });
+}
+
+const stmtPruneBotTranscripts = db.prepare(`
+  UPDATE matches SET transcript_data = NULL
+  WHERE bot_vs_bot = 1 AND transcript_data IS NOT NULL
+  AND id NOT IN (
+    SELECT id FROM matches WHERE bot_vs_bot = 1 AND transcript_data IS NOT NULL
+    ORDER BY timestamp DESC LIMIT 100
+  )
+`);
+
+export function pruneBotVsBotTranscripts() {
+  stmtPruneBotTranscripts.run();
+}
+
+// ── Casual ELO ───────────────────────────────────────────
+
+const CASUAL_DEFAULT_ELO = 800;
+const CASUAL_K = 24;
+
+const stmtGetCasualElo = db.prepare(`SELECT elo FROM casual_elo WHERE username = $username`);
+const stmtGetCasualGamesPlayed = db.prepare(`SELECT games_played FROM casual_elo WHERE username = $username`);
+const stmtUpsertCasualElo = db.prepare(`
+  INSERT INTO casual_elo (username, elo, games_played, last_updated) VALUES ($username, $elo, $gamesPlayed, $lastUpdated)
+  ON CONFLICT(username) DO UPDATE SET elo = $elo, games_played = $gamesPlayed, last_updated = $lastUpdated
+`);
+
+interface CasualEloRow {
+  elo: number;
+}
+
+export function getCasualElo(username: string): number {
+  const row = stmtGetCasualElo.get({ $username: username }) as CasualEloRow | null;
+  return row?.elo ?? CASUAL_DEFAULT_ELO;
+}
+
+export function updateCasualElo(username: string, won: boolean, opponentElo: number): number {
+  const currentElo = getCasualElo(username);
+  const expected = 1 / (1 + Math.pow(10, (opponentElo - currentElo) / 400));
+  const actual = won ? 1 : 0;
+  const newElo = Math.max(0, Math.round(currentElo + CASUAL_K * (actual - expected)));
+
+  const existing = stmtGetCasualGamesPlayed.get({ $username: username }) as { games_played: number } | null;
+  const gamesPlayed = (existing?.games_played ?? 0) + 1;
+
+  stmtUpsertCasualElo.run({
+    $username: username,
+    $elo: newElo,
+    $gamesPlayed: gamesPlayed,
+    $lastUpdated: Date.now(),
+  });
+
+  return newElo;
 }

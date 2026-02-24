@@ -71,6 +71,23 @@ type: "spectate_round_start"   // spectator new round notification
 
 ---
 
+## Bot Lobby Rooms
+
+Fake "waiting" rooms created by `BotLobbyManager` appear in lobby broadcasts as normal `RoomInfo` entries with `status: "waiting"`. When a client sends `join_room` or `join_code` targeting a fake room:
+
+1. Server detects fake room ID via `botLobbyManager.getFakeRoom(roomId)`
+2. Consumes the fake room (`consumeFakeRoom()` — removes from pool, spawns replacement after 2-5s)
+3. Creates a real `GameRoom`, adds the human player as P1
+4. Adds a bot as P2 with difficulty based on the player's casual ELO
+5. Game starts normally — indistinguishable from human-vs-human match
+
+Auto-join for human-created casual rooms:
+- `watchHumanRoom(roomId, addBot)` sets a 5s timer
+- If a human joins within 5s, `cancelWatch(roomId)` clears the timer
+- Otherwise, a bot is added automatically
+
+---
+
 ## Missing Input Rule
 
 If no input at tick T:

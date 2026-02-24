@@ -3,7 +3,7 @@ import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode, InputMessage } from "./protocol";
 import { generateJoinCode } from "./protocol";
-import { startMatchOnChain, settleMatchOnChain, verifySignature, verifyTxOnChain } from "./stellar";
+import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain } from "./stellar";
 import {
   proveMatch,
   claimNextJob,
@@ -14,6 +14,8 @@ import {
 } from "./prover";
 import {
   updateElo,
+  getCasualElo,
+  updateCasualElo,
   getLeaderboard,
   insertMatch,
   updateProofStatus,
@@ -30,9 +32,105 @@ import {
   updateTranscriptCid,
   updateBoundlessRequestId,
   updateBoundlessTxHash,
+  markBotVsBot,
+  pruneBotVsBotTranscripts,
   type MatchRecord,
 } from "./db";
 import { normalize, resolve } from "path";
+import { releaseBotName, randomBotName, createBotSocket } from "./BotAI";
+import { BotLobbyManager } from "./BotLobbyManager";
+import { hash, Keypair, StrKey, Address, xdr } from "@stellar/stellar-sdk";
+
+// ── Passkey wallet verification helpers ─────────────────────
+
+const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
+
+function base64UrlDecode(str: string): Uint8Array {
+  // Restore standard base64: replace URL-safe chars, add padding
+  const base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+}
+
+/** Replicate SAK's contract address derivation: credentialId → Stellar contract address. */
+function deriveSmartAccountAddress(credentialIdB64url: string): string {
+  const credentialIdBuf = Buffer.from(base64UrlDecode(credentialIdB64url));
+  const deployerKeypair = Keypair.fromRawEd25519Seed(hash(Buffer.from("openzeppelin-smart-account-kit")));
+  const preimage = xdr.HashIdPreimage.envelopeTypeContractId(
+    new xdr.HashIdPreimageContractId({
+      networkId: hash(Buffer.from(TESTNET_PASSPHRASE)),
+      contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+        new xdr.ContractIdPreimageFromAddress({
+          address: Address.fromString(deployerKeypair.publicKey()).toScAddress(),
+          salt: hash(credentialIdBuf),
+        }),
+      ),
+    }),
+  );
+  return StrKey.encodeContract(hash(preimage.toXDR()));
+}
+
+/** Convert DER-encoded ECDSA signature to raw r||s (64 bytes) for crypto.subtle. */
+function derToRaw(derSig: Uint8Array): Uint8Array {
+  // DER: 0x30 [len] 0x02 [rLen] [r...] 0x02 [sLen] [s...]
+  if (derSig.length < 8 || derSig[0] !== 0x30) throw new Error("Not a DER signature");
+  let offset = 2; // skip 0x30 + total length
+  if (derSig[1]! & 0x80) offset += derSig[1]! & 0x7f; // long form length (unlikely but handle)
+
+  if (derSig[offset] !== 0x02) throw new Error("Expected integer tag for r");
+  const rLen = derSig[offset + 1]!;
+  const rStart = offset + 2;
+  const rBytes = derSig.subarray(rStart, rStart + rLen);
+
+  const sOffset = rStart + rLen;
+  if (derSig[sOffset] !== 0x02) throw new Error("Expected integer tag for s");
+  const sLen = derSig[sOffset + 1]!;
+  const sStart = sOffset + 2;
+  const sBytes = derSig.subarray(sStart, sStart + sLen);
+
+  // Pad/trim to exactly 32 bytes each (remove leading zero padding, left-pad if short)
+  const raw = new Uint8Array(64);
+  const rTrimmed = rBytes[0] === 0 && rLen > 32 ? rBytes.subarray(1) : rBytes;
+  const sTrimmed = sBytes[0] === 0 && sLen > 32 ? sBytes.subarray(1) : sBytes;
+  raw.set(rTrimmed, 32 - rTrimmed.length);
+  raw.set(sTrimmed, 64 - sTrimmed.length);
+  return raw;
+}
+
+/** Verify a WebAuthn P-256 assertion signature. */
+async function verifyPasskeyAssertion(
+  publicKeyBytes: Uint8Array,
+  assertion: { authenticatorData: string; clientDataJSON: string; signature: string },
+): Promise<boolean> {
+  try {
+    const authData = base64UrlDecode(assertion.authenticatorData);
+    const clientDataJSON = base64UrlDecode(assertion.clientDataJSON);
+    const signatureDer = base64UrlDecode(assertion.signature);
+
+    // Signed data = authenticatorData || SHA-256(clientDataJSON)
+    const clientDataHash = new Uint8Array(await crypto.subtle.digest("SHA-256", Buffer.from(clientDataJSON)));
+    const signedData = Buffer.alloc(authData.length + 32);
+    signedData.set(authData);
+    signedData.set(clientDataHash, authData.length);
+
+    // Import P-256 public key
+    const key = await crypto.subtle.importKey(
+      "raw",
+      Buffer.from(publicKeyBytes),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    );
+
+    // Convert DER signature to raw r||s format
+    const rawSig = derToRaw(signatureDer);
+
+    return await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, Buffer.from(rawSig), signedData);
+  } catch (err) {
+    console.error("[wallet] Assertion verification error:", err);
+    return false;
+  }
+}
 
 const PORT = Number(process.env.PORT) || 3000;
 // ── Startup env validation ─────────────────────────────────
@@ -81,6 +179,12 @@ function generateRoomId(): string {
   return id;
 }
 
+const botLobbyManager = new BotLobbyManager({
+  generateRoomId,
+  isJoinCodeInUse,
+  broadcastLobby: () => broadcastLobby(),
+});
+
 function getVisibleRooms(): RoomInfo[] {
   const list: RoomInfo[] = [];
   for (const room of rooms.values()) {
@@ -88,6 +192,8 @@ function getVisibleRooms(): RoomInfo[] {
       list.push(room.toInfo());
     }
   }
+  // Include fake bot waiting rooms
+  list.push(...botLobbyManager.getFakeRooms());
   return list;
 }
 
@@ -187,6 +293,15 @@ function returnToLobby(
     }
   }
 
+  // Update casual ELO for bot matches
+  if (room?.isBotMatch && winner >= 0 && winner <= 1) {
+    const playerName = sockets[0]?.data.username;
+    if (playerName) {
+      const botElo = 500 + Math.round(room.currentBotDifficulty * 1000);
+      updateCasualElo(playerName, winner === 0, botElo);
+    }
+  }
+
   // Record match history
   if (sockets.length === 2) {
     const matchId = generateMatchId();
@@ -197,7 +312,7 @@ function returnToLobby(
       sessionId,
       roomName,
       player1: sockets[0]?.data.username || "Player 1",
-      player2: (room?.isBotMatch ? "[BOT] " : "") + (sockets[1]?.data.username || "Player 2"),
+      player2: sockets[1]?.data.username || "Player 2",
       wallet1: sockets[0]?.data.walletAddress || "",
       wallet2: sockets[1]?.data.walletAddress || "",
       winner,
@@ -267,6 +382,11 @@ function returnToLobby(
     }
   }
 
+  // Release bot name for reuse
+  if (room?.isBotMatch && room.botName) {
+    releaseBotName(room.botName);
+  }
+
   for (const ws of sockets) {
     // Skip bot sockets — they're fake objects that should never enter the lobby
     if (!allSockets.has(ws)) continue;
@@ -331,7 +451,8 @@ function isJoinCodeInUse(code: string): boolean {
 
 /** Ensure a room/tournament's join code is globally unique; re-roll if collision. */
 function ensureUniqueJoinCode(entity: { joinCode: string }) {
-  while (isJoinCodeInUse(entity.joinCode)) {
+  let attempts = 0;
+  while (isJoinCodeInUse(entity.joinCode) && attempts++ < 100) {
     entity.joinCode = generateJoinCode();
   }
 }
@@ -435,16 +556,15 @@ function isValidUsername(name: string): boolean {
 
 // ── Server ─────────────────────────────────────────────────
 
-// Server-issued challenges: token → issue timestamp (for single-use + freshness)
-const issuedChallenges = new Map<string, number>();
-// Reusable verification tokens: address → token (survives page reloads, lost on server restart)
-const verifiedTokens = new Map<string, string>();
-// Prune expired challenges every 10 minutes
+// Reusable verification tokens: address → { token, issuedAt } (24h TTL, lost on server restart)
+const verifiedTokens = new Map<string, { token: string; issuedAt: number }>();
+const VERIFIED_TOKEN_TTL = 24 * 60 * 60 * 1000; // 24 hours
+// Prune expired tokens every 10 minutes
 setInterval(
   () => {
     const now = Date.now();
-    for (const [token, ts] of issuedChallenges) {
-      if (now - ts > 10 * 60 * 1000) issuedChallenges.delete(token);
+    for (const [addr, entry] of verifiedTokens) {
+      if (now - entry.issuedAt > VERIFIED_TOKEN_TTL) verifiedTokens.delete(addr);
     }
   },
   10 * 60 * 1000,
@@ -558,7 +678,7 @@ const server = Bun.serve<SocketData>({
     }
 
     // Transcript endpoint
-    const transcriptMatch = url.pathname.match(/^\/transcript\/(.+)$/);
+    const transcriptMatch = url.pathname.match(/^\/transcript\/([a-zA-Z0-9_-]+)$/);
     if (transcriptMatch) {
       const roomId = transcriptMatch[1]!;
       // Try in-memory room first (still active or recently ended)
@@ -587,7 +707,7 @@ const server = Bun.serve<SocketData>({
       const matches = getRecentMatches().map(({ proofArtifacts: _pa, ...rest }) => rest);
       return Response.json(matches, { headers: corsHeaders });
     }
-    const matchStatusMatch = url.pathname.match(/^\/api\/matches\/(.+)\/status$/);
+    const matchStatusMatch = url.pathname.match(/^\/api\/matches\/([a-zA-Z0-9_-]+)\/status$/);
     if (matchStatusMatch) {
       const matchId = matchStatusMatch[1]!;
       const record = getMatchById(matchId);
@@ -596,7 +716,7 @@ const server = Bun.serve<SocketData>({
       }
       return Response.json({ id: record.id, proofStatus: record.proofStatus }, { headers: corsHeaders });
     }
-    const matchProofMatch = url.pathname.match(/^\/api\/matches\/(.+)\/proof$/);
+    const matchProofMatch = url.pathname.match(/^\/api\/matches\/([a-zA-Z0-9_-]+)\/proof$/);
     if (matchProofMatch) {
       const matchId = matchProofMatch[1]!;
       const record = getMatchById(matchId);
@@ -609,7 +729,7 @@ const server = Bun.serve<SocketData>({
       return Response.json(record.proofArtifacts, { headers: corsHeaders });
     }
     // ── Match detail endpoint ──────────────────────────────
-    const matchDetailMatch = url.pathname.match(/^\/api\/matches\/(.+)\/detail$/);
+    const matchDetailMatch = url.pathname.match(/^\/api\/matches\/([a-zA-Z0-9_-]+)\/detail$/);
     if (matchDetailMatch) {
       const matchId = matchDetailMatch[1]!;
       const record = getMatchById(matchId);
@@ -619,7 +739,7 @@ const server = Bun.serve<SocketData>({
       return Response.json(
         {
           ...record,
-          contractAddress: "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
+          contractAddress: process.env.CHICKENZ_CONTRACT || "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
           verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
           gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
         },
@@ -628,7 +748,7 @@ const server = Bun.serve<SocketData>({
     }
 
     // ── Client-triggered settle notification ──────────────
-    const matchSettleMatch = url.pathname.match(/^\/api\/matches\/(.+)\/settle$/);
+    const matchSettleMatch = url.pathname.match(/^\/api\/matches\/([a-zA-Z0-9_-]+)\/settle$/);
     if (req.method === "POST" && matchSettleMatch) {
       const matchId = matchSettleMatch[1]!;
       const record = getMatchById(matchId);
@@ -660,72 +780,64 @@ const server = Bun.serve<SocketData>({
       return Response.json({ ok: true, proofStatus: "settled" }, { headers: corsHeaders });
     }
 
-    // ── Wallet challenge/verify endpoints ─────────────────
-    if (url.pathname === "/api/wallet/challenge") {
-      const addr = url.searchParams.get("address") ?? "";
-      if (!addr || !/^G[A-Z2-7]{55}$/.test(addr)) {
-        return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
-      }
-      const challenge = `chickenz-auth:${crypto.randomUUID()}:${Date.now()}`;
-      issuedChallenges.set(challenge, Date.now());
-      return Response.json({ challenge }, { headers: corsHeaders });
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/wallet/verify") {
+    // ── Wallet register/revalidate endpoints ─────────────────
+    if (req.method === "POST" && url.pathname === "/api/wallet/register") {
       try {
-        const body = (await req.json()) as { address: string; challenge: string; signature: string };
-        if (!body.address || !body.challenge || !body.signature) {
-          return Response.json({ error: "Missing fields" }, { status: 400, headers: corsHeaders });
-        }
-        if (!/^G[A-Z2-7]{55}$/.test(body.address)) {
+        const body = (await req.json()) as {
+          address: string;
+          credentialId: string;
+          publicKey: string;
+          assertion?: { authenticatorData: string; clientDataJSON: string; signature: string };
+        };
+        if (!body.address || !/^C[A-Z2-7]{55}$/.test(body.address)) {
           return Response.json({ error: "Invalid address" }, { status: 400, headers: corsHeaders });
         }
-        // Extract the original challenge token from the signed message
-        const challengeMatch = body.challenge.match(/chickenz-auth:[^:\s]+:\d+/);
-        if (!challengeMatch) {
-          return Response.json({ error: "Invalid challenge" }, { status: 400, headers: corsHeaders });
+        if (!body.credentialId || !body.publicKey) {
+          return Response.json({ error: "Missing credentialId or publicKey" }, { status: 400, headers: corsHeaders });
         }
-        const challengeToken = challengeMatch[0]!;
-        // Verify this challenge was actually issued by this server (prevents forgery)
-        if (!issuedChallenges.has(challengeToken)) {
-          return Response.json({ error: "Challenge not recognized" }, { status: 400, headers: corsHeaders });
+        // Verify credentialId → address derivation matches claimed address
+        const derivedAddress = deriveSmartAccountAddress(body.credentialId);
+        if (derivedAddress !== body.address) {
+          console.warn(`[wallet] Address derivation mismatch: claimed=${body.address} derived=${derivedAddress}`);
+          return Response.json({ error: "Address derivation mismatch" }, { status: 403, headers: corsHeaders });
         }
-        // Consume the challenge (single-use)
-        issuedChallenges.delete(challengeToken);
-        // Validate challenge freshness (5 min window)
-        const parts = challengeToken.split(":");
-        const challengeTs = parseInt(parts[2] ?? "0", 10);
-        if (isNaN(challengeTs) || Date.now() - challengeTs > 5 * 60 * 1000) {
-          return Response.json({ error: "Challenge expired" }, { status: 400, headers: corsHeaders });
+        // Verify public key format (65-byte uncompressed secp256r1)
+        const pubKeyBytes = base64UrlDecode(body.publicKey);
+        if (pubKeyBytes.length !== 65 || pubKeyBytes[0] !== 0x04) {
+          return Response.json({ error: "Invalid public key format" }, { status: 400, headers: corsHeaders });
         }
-        const verified = verifySignature(body.address, body.challenge, body.signature);
-        // Mark ALL matching WebSocket connections as verified (not just lobby)
-        let token: string | undefined;
-        if (verified) {
-          for (const ws of allSockets) {
-            if (ws.data.walletAddress === body.address) {
-              ws.data.walletVerified = true;
-            }
+        // If assertion present (login path), verify P-256 signature
+        if (body.assertion) {
+          const sigValid = await verifyPasskeyAssertion(pubKeyBytes, body.assertion);
+          if (!sigValid) {
+            return Response.json({ error: "Assertion signature invalid" }, { status: 403, headers: corsHeaders });
           }
-          // Issue a reusable token so the client can skip Freighter on future page loads
-          token = crypto.randomUUID();
-          verifiedTokens.set(body.address, token);
         }
-        return Response.json({ verified, token }, { headers: corsHeaders });
-      } catch {
+        // Mark all matching WS connections as verified
+        for (const ws of allSockets) {
+          if (ws.data.walletAddress === body.address) {
+            ws.data.walletVerified = true;
+          }
+        }
+        // Issue reusable token
+        const token = crypto.randomUUID();
+        verifiedTokens.set(body.address, { token, issuedAt: Date.now() });
+        return Response.json({ verified: true, token }, { headers: corsHeaders });
+      } catch (err) {
+        console.error("[wallet] register error:", err);
         return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
       }
     }
 
-    // Revalidate with a previously issued token (no Freighter popup needed)
+    // Revalidate with a previously issued token (no passkey prompt needed)
     if (req.method === "POST" && url.pathname === "/api/wallet/revalidate") {
       try {
         const body = (await req.json()) as { address: string; token: string };
-        if (!body.address || !body.token) {
+        if (!body.address || !body.token || !/^[CG][A-Z2-7]{55}$/.test(body.address)) {
           return Response.json({ verified: false }, { headers: corsHeaders });
         }
         const stored = verifiedTokens.get(body.address);
-        if (!stored || stored !== body.token) {
+        if (!stored || stored.token !== body.token) {
           return Response.json({ verified: false }, { headers: corsHeaders });
         }
         // Token matches — mark all matching WebSocket connections as verified
@@ -761,7 +873,7 @@ const server = Bun.serve<SocketData>({
     }
 
     // Worker downloads transcript for a claimed job
-    const workerInputMatch = url.pathname.match(/^\/api\/worker\/input\/(.+)$/);
+    const workerInputMatch = url.pathname.match(/^\/api\/worker\/input\/([a-zA-Z0-9_-]+)$/);
     if (workerInputMatch) {
       const matchId = workerInputMatch[1]!;
       const transcript = getJobTranscript(matchId);
@@ -772,8 +884,8 @@ const server = Bun.serve<SocketData>({
     }
 
     // Worker submits proof result
-    if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/(.+)$/)) {
-      const matchId = url.pathname.match(/^\/api\/worker\/result\/(.+)$/)![1]!;
+    if (req.method === "POST" && url.pathname.match(/^\/api\/worker\/result\/([a-zA-Z0-9_-]+)$/)) {
+      const matchId = url.pathname.match(/^\/api\/worker\/result\/([a-zA-Z0-9_-]+)$/)![1]!;
       try {
         const body = (await req.json()) as {
           seal: string;
@@ -784,11 +896,14 @@ const server = Bun.serve<SocketData>({
         };
         // 1E: Validate proof artifacts are valid hex with correct lengths
         // Seal: 260 bytes (520 hex) with selector, or 256 bytes (512 hex) without
+        // ImageId: 32 bytes (64 hex)
         if (
           typeof body.seal !== "string" ||
           typeof body.journal !== "string" ||
+          typeof body.imageId !== "string" ||
           !/^[0-9a-fA-F]{512}([0-9a-fA-F]{8})?$/.test(body.seal) ||
-          !/^[0-9a-fA-F]{152}$/.test(body.journal)
+          !/^[0-9a-fA-F]{152}$/.test(body.journal) ||
+          !/^[0-9a-fA-F]{64}$/.test(body.imageId)
         ) {
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
@@ -879,7 +994,8 @@ const server = Bun.serve<SocketData>({
 
       // ── Ping/pong (RTT measurement) ─────────────────────
       if (msg.type === "ping") {
-        ws.send(JSON.stringify({ type: "pong", t: msg.t }));
+        const t = typeof msg.t === "number" ? msg.t : 0;
+        ws.send(JSON.stringify({ type: "pong", t }));
         return;
       }
 
@@ -903,7 +1019,7 @@ const server = Bun.serve<SocketData>({
       // ── Set wallet address ──────────────────────────────────
       if (msg.type === "set_wallet") {
         const addr = (msg.address ?? "").trim();
-        if (addr && /^G[A-Z2-7]{55}$/.test(addr)) {
+        if (addr && /^[CG][A-Z2-7]{55}$/.test(addr)) {
           ws.data.walletAddress = addr;
           // Don't trust client-supplied verified flag; require server-side verification
           ws.data.walletVerified = false;
@@ -973,6 +1089,15 @@ const server = Bun.serve<SocketData>({
         rooms.set(roomId, room);
         lobbySockets.delete(ws);
         broadcastLobby();
+
+        // Auto-add bot after 5s if no human joins (casual only, not private)
+        if (mode === "casual" && !isPrivate) {
+          const playerElo = getCasualElo(ws.data.username || "");
+          const difficulty = Math.max(0, Math.min(1, (playerElo - 500) / 1000));
+          botLobbyManager.watchHumanRoom(roomId, () => {
+            if (room.isWaiting()) room.addBot(difficulty);
+          });
+        }
         return;
       }
 
@@ -981,6 +1106,26 @@ const server = Bun.serve<SocketData>({
         if (ws.data.roomId || ws.data.tournamentId) {
           ws.send(JSON.stringify({ type: "error", message: "Already in a room or tournament" }));
           return;
+        }
+
+        // Check if this is a fake bot lobby room
+        const fakeRoom = botLobbyManager.getFakeRoom(msg.roomId);
+        if (fakeRoom) {
+          const botName = botLobbyManager.consumeFakeRoom(msg.roomId);
+          if (botName) {
+            const roomId = generateRoomId();
+            const room = new GameRoom(roomId, "Public Match", ws, false, "casual", true);
+            ensureUniqueJoinCode(room);
+            room.onEnded = returnToLobby;
+            room.onStarted = onMatchStarted;
+            rooms.set(roomId, room);
+            lobbySockets.delete(ws);
+            const playerElo = getCasualElo(ws.data.username || "");
+            const difficulty = Math.max(0, Math.min(1, (playerElo - 500) / 1000));
+            room.addBot(difficulty, botName);
+            broadcastLobby();
+            return;
+          }
         }
 
         const room = rooms.get(msg.roomId);
@@ -997,6 +1142,8 @@ const server = Bun.serve<SocketData>({
           return;
         }
 
+        // Cancel bot auto-join timer if a human is joining
+        botLobbyManager.cancelWatch(msg.roomId);
         room.addPlayer(ws);
         lobbySockets.delete(ws);
         broadcastLobby();
@@ -1014,6 +1161,26 @@ const server = Bun.serve<SocketData>({
         if (code.length !== 5) {
           ws.send(JSON.stringify({ type: "error", message: "Invalid join code" }));
           return;
+        }
+
+        // Check if code matches a fake bot lobby room
+        const fakeByCode = botLobbyManager.findByJoinCode(code);
+        if (fakeByCode) {
+          const botName = botLobbyManager.consumeFakeRoom(fakeByCode.id);
+          if (botName) {
+            const roomId = generateRoomId();
+            const room = new GameRoom(roomId, "Public Match", ws, false, "casual", true);
+            ensureUniqueJoinCode(room);
+            room.onEnded = returnToLobby;
+            room.onStarted = onMatchStarted;
+            rooms.set(roomId, room);
+            lobbySockets.delete(ws);
+            const playerElo = getCasualElo(ws.data.username || "");
+            const difficulty = Math.max(0, Math.min(1, (playerElo - 500) / 1000));
+            room.addBot(difficulty, botName);
+            broadcastLobby();
+            return;
+          }
         }
 
         const room = findRoomByJoinCode(code);
@@ -1045,6 +1212,8 @@ const server = Bun.serve<SocketData>({
           return;
         }
 
+        // Cancel bot auto-join timer if a human is joining
+        botLobbyManager.cancelWatch(room.id);
         room.addPlayer(ws);
         lobbySockets.delete(ws);
         broadcastLobby();
@@ -1068,11 +1237,35 @@ const server = Bun.serve<SocketData>({
         let matched = false;
         for (const room of rooms.values()) {
           if (room.isWaiting() && !room.isPrivate && room.mode === mode) {
+            botLobbyManager.cancelWatch(room.id);
             room.addPlayer(ws);
             lobbySockets.delete(ws);
             broadcastLobby();
             matched = true;
             break;
+          }
+        }
+
+        // If no real room matched and casual, try joining a fake bot room instantly
+        if (!matched && mode === "casual") {
+          const fakeRooms = botLobbyManager.getFakeRooms();
+          if (fakeRooms.length > 0) {
+            const fake = fakeRooms[Math.floor(Math.random() * fakeRooms.length)]!;
+            const botName = botLobbyManager.consumeFakeRoom(fake.id);
+            if (botName) {
+              const roomId = generateRoomId();
+              const room = new GameRoom(roomId, "Quick Play", ws, false, "casual", true);
+              ensureUniqueJoinCode(room);
+              room.onEnded = returnToLobby;
+              room.onStarted = onMatchStarted;
+              rooms.set(roomId, room);
+              lobbySockets.delete(ws);
+              const playerElo = getCasualElo(ws.data.username || "");
+              const difficulty = Math.max(0, Math.min(1, (playerElo - 500) / 1000));
+              room.addBot(difficulty, botName);
+              broadcastLobby();
+              matched = true;
+            }
           }
         }
 
@@ -1086,7 +1279,14 @@ const server = Bun.serve<SocketData>({
           lobbySockets.delete(ws);
           broadcastLobby();
 
-          // Bot auto-join removed — player can request bot via "add_bot" message
+          // Auto-add bot after 5s if no human joins (casual only)
+          if (mode === "casual") {
+            const playerElo = getCasualElo(ws.data.username || "");
+            const difficulty = Math.max(0, Math.min(1, (playerElo - 500) / 1000));
+            botLobbyManager.watchHumanRoom(roomId, () => {
+              if (room.isWaiting()) room.addBot(difficulty);
+            });
+          }
         }
         return;
       }
@@ -1155,7 +1355,10 @@ const server = Bun.serve<SocketData>({
         if (!roomId) return;
         const room = rooms.get(roomId);
         if (room && room.isWaiting() && room.playerCount === 1 && room.mode !== "ranked") {
-          room.addBot();
+          botLobbyManager.cancelWatch(roomId);
+          const playerElo = getCasualElo(ws.data.username || "");
+          const difficulty = Math.max(0, Math.min(1, (playerElo - 500) / 1000));
+          room.addBot(difficulty);
           broadcastLobby();
         }
         return;
@@ -1242,5 +1445,65 @@ setInterval(() => {
     }
   }
 }, 60_000);
+
+// Start bot lobby system
+botLobbyManager.start();
+
+// Bot-vs-bot exhibition matches — spawn one every 2-5 minutes
+function spawnBotVsBotMatch() {
+  const roomId = generateRoomId();
+  const bot0Name = randomBotName();
+  const bot0Socket = createBotSocket(bot0Name);
+  const diff0 = 0.2 + Math.random() * 0.6; // 0.2-0.8
+  const diff1 = 0.2 + Math.random() * 0.6;
+  const room = new GameRoom(roomId, "Public Match", bot0Socket, false, "casual", true);
+  ensureUniqueJoinCode(room);
+  room.onEnded = (sockets, winner, rid, roomName, scores, mode) => {
+    // Record match history
+    const matchId = generateMatchId();
+    room.matchRecordId = matchId;
+    const record: MatchRecord = {
+      id: matchId,
+      sessionId: room.sessionId,
+      roomName,
+      player1: sockets[0]?.data.username || "Bot 1",
+      player2: sockets[1]?.data.username || "Bot 2",
+      wallet1: "",
+      wallet2: "",
+      winner,
+      scores,
+      timestamp: Date.now(),
+      proofStatus: "none",
+      roomId: rid,
+      mode,
+      matchStartTime: room.matchStartTime,
+    };
+    insertMatch(record);
+    markBotVsBot(matchId);
+    const fullTranscript = room.getFullTranscript();
+    saveTranscript(matchId, fullTranscript);
+    pruneBotVsBotTranscripts();
+    // Release both bot names
+    releaseBotName(bot0Name);
+    if (room.botName) releaseBotName(room.botName);
+    cleanupRoom(rid);
+    broadcastLobby();
+  };
+  room.makeBotVsBot(diff0);
+  room.addBot(diff1);
+  rooms.set(roomId, room);
+  broadcastLobby();
+}
+
+const BOT_MATCH_MIN_MS = 2 * 60_000; // 2 minutes
+const BOT_MATCH_MAX_MS = 5 * 60_000; // 5 minutes
+function scheduleBotVsBotMatch() {
+  const delay = BOT_MATCH_MIN_MS + Math.random() * (BOT_MATCH_MAX_MS - BOT_MATCH_MIN_MS);
+  setTimeout(() => {
+    spawnBotVsBotMatch();
+    scheduleBotVsBotMatch();
+  }, delay);
+}
+scheduleBotVsBotMatch();
 
 console.log(`Chickenz server running on http://localhost:${server.port}`);

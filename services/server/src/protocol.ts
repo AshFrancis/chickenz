@@ -162,6 +162,7 @@ export interface RoomInfo {
   joinCode: string;
   isPrivate: boolean;
   mode: GameMode;
+  playerNames?: string[];
 }
 
 export interface LobbyMessage {
@@ -325,7 +326,7 @@ export interface SerializedWeaponPickup {
 // ── Helpers ────────────────────────────────────────────────
 
 export function inputFromMessage(msg: InputMessage): PlayerInput {
-  const buttons = (Number.isFinite(msg.buttons) ? msg.buttons : 0) & 0xff;
+  const buttons = (Number.isFinite(msg.buttons) ? msg.buttons : 0) & 0x1f;
   const aimX = msg.aimX === 1 ? 1 : msg.aimX === -1 ? -1 : 0;
   const aimY = msg.aimY === 1 ? 1 : msg.aimY === -1 ? -1 : 0;
   return { buttons, aimX, aimY };

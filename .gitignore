@@ -28,6 +28,9 @@ services/prover/bench-noir/
 contracts/chickenz/test_snapshots/
 .soroban/
 
+# Local TLS certs
+apps/client/certs/
+
 # IDE
 .idea/
 .vscode/

@@ -20,12 +20,19 @@ import {
 import type { GameMap, MatchConfig, PlayerInput } from "@chickenz/sim";
 import { WasmState } from "../wasm";
 import { InputManager } from "../input/InputManager";
+import type { Tutorial, TutorialTickResult } from "../tutorial/Tutorial";
 import { PredictionManager } from "../net/PredictionManager";
 import type { StateMessage, SerializedPlayer, SerializedProjectile } from "../../../../services/server/src/protocol";
 /** Game state data — shared shape of StateMessage, SpectateStateMessage, and WASM exports */
 type GameStateData = Omit<StateMessage, "type">;
 import { DPR, VIEW_W, VIEW_H } from "../game";
 import { playSFX } from "../audio/sfx";
+
+/** Tutorial map — ARENA with an extra high platform requiring double jump to reach. */
+const TUTORIAL_MAP: GameMap = {
+  ...ARENA,
+  platforms: [...ARENA.platforms, { x: 368, y: 144, width: 224, height: 16 }],
+};
 
 interface TranscriptInput {
   buttons: number;
@@ -160,7 +167,6 @@ export class GameScene extends Phaser.Scene {
   private suddenDeathText!: Phaser.GameObjects.Text;
   // winText + roundPopupText are DOM-based (see #announce-overlay)
   private controlsText!: Phaser.GameObjects.Text;
-  private weaponText!: Phaser.GameObjects.Text;
   private highPingShown = false;
   private nameTexts: Phaser.GameObjects.Text[] = [];
 
@@ -218,7 +224,7 @@ export class GameScene extends Phaser.Scene {
   private lastServerTick = 0;
 
   // Audio
-  private _muted = false;
+  private musicMuted = false;
   private bgm: Phaser.Sound.BaseSound | null = null;
   private bgmLoading = false; // true while a BGM track is being lazy-loaded
   private audioLoaded = false;
@@ -236,6 +242,11 @@ export class GameScene extends Phaser.Scene {
   private warmupAccum = 0;
   private warmupJoinCode = "";
   // Warmup overlay is DOM-based (see index.html #warmup-overlay)
+
+  // Tutorial mode (standalone local WASM session)
+  private tutorialMode = false;
+  private tutorialRef: Tutorial | null = null;
+  private tutorialCallback: (() => void) | null = null;
 
   // Diamond transition
   private transitionActive = false;
@@ -354,8 +365,7 @@ export class GameScene extends Phaser.Scene {
     if (storedSFX !== null) this.sfxVolume = parseInt(storedSFX, 10) / 100;
     const storedZoom = localStorage.getItem("chickenz-dynamic-zoom");
     if (storedZoom !== null) this.dynamicZoom = storedZoom !== "false";
-    const storedMute = localStorage.getItem("chickenz-muted");
-    this._muted = storedMute === null ? true : storedMute === "true";
+    this.musicMuted = localStorage.getItem("chickenz-music-muted") !== "false";
   }
 
   create() {
@@ -416,17 +426,6 @@ export class GameScene extends Phaser.Scene {
       .setResolution(DPR)
       .setDepth(100);
 
-    this.weaponText = this.add
-      .text(VIEW_W / 2, VIEW_H - 20, "", {
-        fontSize: "8px",
-        color: "#ffffff",
-        fontFamily: PIXEL_FONT,
-        align: "center",
-      })
-      .setOrigin(0.5, 1)
-      .setResolution(DPR)
-      .setDepth(100);
-
     // Player name texts (rendered on main camera, move with players)
     for (let i = 0; i < 2; i++) {
       const text = this.add
@@ -464,9 +463,11 @@ export class GameScene extends Phaser.Scene {
     // Round indicator (top-left)
     this.roundText = this.add
       .text(10, 10, "", {
-        fontSize: "8px",
+        fontSize: "10px",
         color: "#ffffff",
         fontFamily: PIXEL_FONT,
+        stroke: "#000000",
+        strokeThickness: 2,
       })
       .setResolution(DPR)
       .setDepth(100);
@@ -474,10 +475,12 @@ export class GameScene extends Phaser.Scene {
     // Replay info text
     this.replayInfoText = this.add
       .text(VIEW_W / 2, VIEW_H - 10, "", {
-        fontSize: "8px",
+        fontSize: "10px",
         color: "#ffee58",
         fontFamily: PIXEL_FONT,
         align: "center",
+        stroke: "#000000",
+        strokeThickness: 2,
       })
       .setOrigin(0.5, 1)
       .setResolution(DPR)
@@ -504,7 +507,6 @@ export class GameScene extends Phaser.Scene {
       this.timerText,
       this.suddenDeathText,
       this.controlsText,
-      this.weaponText,
       this.roundText,
       this.replayInfoText,
     ];
@@ -746,7 +748,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   get isWarmup(): boolean {
-    return this.warmupMode;
+    return this.warmupMode || this.tutorialMode;
   }
 
   get isPlaying(): boolean {
@@ -777,6 +779,89 @@ export class GameScene extends Phaser.Scene {
       this.warmupWasm = null;
     }
     document.getElementById("warmup-overlay")?.classList.remove("visible");
+  }
+
+  /** Start a standalone tutorial session (local WASM, no network). */
+  startTutorial(tutorial: Tutorial, onComplete: () => void, character?: number) {
+    if (!this.sceneReady) {
+      this.onReady(() => this.startTutorial(tutorial, onComplete, character));
+      return;
+    }
+    if (character !== undefined) {
+      const NUM_CHARS = 4;
+      let p2 = Math.floor(Math.random() * (NUM_CHARS - 1));
+      if (p2 >= character) p2++;
+      this.characterSlots = [character, p2];
+    } else {
+      this.assignCharacters();
+    }
+    this.tutorialMode = true;
+    this.tutorialRef = tutorial;
+    this.tutorialCallback = onComplete;
+    this.warmupAccum = 0;
+
+    const map = TUTORIAL_MAP;
+    this.createMapTiles(map, Date.now() >>> 0);
+    this.warmupConfig = {
+      seed: 0,
+      map,
+      playerCount: 2,
+      tickRate: TICK_RATE,
+      initialLives: 99,
+      matchDurationTicks: 999999,
+      suddenDeathStartTick: 999999,
+    };
+    if (this.warmupWasm) {
+      try {
+        this.warmupWasm.free();
+      } catch {
+        /* already freed */
+      }
+    }
+    this.warmupWasm = WasmState.new_warmup(0, JSON.stringify(map));
+    this.warmupState = this.warmupWasm!.export_state();
+    this.currState = this.warmupState;
+    this.prevState = this.warmupState;
+    this.config = this.warmupConfig;
+    this.localPlayerId = 0;
+    this.resetRagdolls();
+    this.playing = false;
+    this.prediction = null;
+    hideAnnounce();
+    document.getElementById("sudden-death-overlay")?.classList.remove("visible");
+    const whTut = document.getElementById("weapon-hud");
+    if (whTut) whTut.style.display = "none";
+    this.currentZoom = 1.0;
+    this.cameraX = 480;
+    this.cameraY = 270;
+    this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
+    this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
+    this.explosions = [];
+    this.roundText?.setVisible(false);
+    this.replayInfoText?.setVisible(false);
+    // Don't show warmup overlay — tutorial has its own overlay
+  }
+
+  stopTutorial() {
+    this.tutorialMode = false;
+    this.warmupState = null;
+    this.resetRagdolls();
+    if (this.warmupWasm) {
+      try {
+        this.warmupWasm.free();
+      } catch {
+        /* already freed */
+      }
+      this.warmupWasm = null;
+    }
+    const cb = this.tutorialCallback;
+    this.tutorialRef = null;
+    this.tutorialCallback = null;
+    cb?.();
+  }
+
+  get isTutorial(): boolean {
+    return this.tutorialMode;
   }
 
   startOnlineMatch(
@@ -817,6 +902,7 @@ export class GameScene extends Phaser.Scene {
       // Screen is now fully covered — safe to close lobby behind the transition
       onCovered?.();
       this.warmupMode = false;
+      this.tutorialMode = false;
       this.warmupState = null;
       document.getElementById("warmup-overlay")?.classList.remove("visible");
       this.initRound(seed, mapIndex);
@@ -1374,6 +1460,7 @@ export class GameScene extends Phaser.Scene {
 
     this.playTransition(() => {
       this.warmupMode = false;
+      this.tutorialMode = false;
       this.warmupState = null;
       document.getElementById("warmup-overlay")?.classList.remove("visible");
       this.initRound(seed, mapIndex);
@@ -1412,7 +1499,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   setMuted(muted: boolean) {
-    this._muted = muted;
+    this.setMusicMuted(muted);
+  }
+
+  setMusicMuted(muted: boolean) {
+    this.musicMuted = muted;
     if (muted) {
       this.bgmLoading = false;
       if (this.bgm) {
@@ -1450,7 +1541,6 @@ export class GameScene extends Phaser.Scene {
     this.timerText.setPosition(VIEW_W - 20, 10).setResolution(DPR);
     this.suddenDeathText.setPosition(VIEW_W / 2, this.suddenDeathText.y).setResolution(DPR);
     this.controlsText.setPosition(10, VIEW_H - 25).setResolution(DPR);
-    this.weaponText.setPosition(VIEW_W / 2, VIEW_H - 20).setResolution(DPR);
     this.roundText.setResolution(DPR);
     this.replayInfoText.setPosition(VIEW_W / 2, VIEW_H - 10).setResolution(DPR);
     // Update main camera bounds and zoom
@@ -1495,6 +1585,45 @@ export class GameScene extends Phaser.Scene {
     // Cap delta to prevent burst of ticks after scene transitions
     if (delta > 100) delta = TICK_DT_MS;
 
+    // Tutorial mode — step local WASM sim with P1 input + tutorial-controlled P2
+    if (this.tutorialMode && this.warmupWasm && this.warmupConfig && this.tutorialRef) {
+      this.warmupAccum += delta;
+      const maxTicks = 3;
+      let ticksRun = 0;
+      while (this.warmupAccum >= TICK_DT_MS && ticksRun < maxTicks) {
+        this.warmupAccum -= TICK_DT_MS;
+        ticksRun++;
+        if (this.warmupWasm.match_over()) break;
+        const p0 = this.warmupState?.players?.[0];
+        const input = p0
+          ? this.inputManager.getPlayer1Input(p0.x + PLAYER_WIDTH / 2, p0.y + PLAYER_HEIGHT / 2)
+          : NULL_INPUT;
+        const result: TutorialTickResult = this.tutorialRef.tick(this.warmupState!, input);
+        const prevWarmup = this.warmupState;
+        this.warmupWasm.step(
+          input.buttons,
+          input.aimX,
+          input.aimY,
+          result.p2Buttons,
+          result.p2AimX,
+          result.p2AimY,
+        );
+        this.warmupState = this.warmupWasm.export_state();
+        if (result.banishP2) {
+          this.banishWarmupPlayer2(this.warmupState!);
+        }
+        if (result.modifyState) {
+          result.modifyState(this.warmupState!);
+        }
+        this.warmupWasm.import_state(this.warmupState);
+        this.detectAudioEvents(prevWarmup!, this.warmupState!);
+      }
+      if (this.warmupAccum > TICK_DT_MS * 2) this.warmupAccum = 0;
+      this.currState = this.warmupState;
+      this.render(delta);
+      return;
+    }
+
     // Warmup mode — step local WASM sim with player 0 input
     if (this.warmupMode && this.warmupWasm && this.warmupConfig) {
       this.warmupAccum += delta;
@@ -1531,7 +1660,12 @@ export class GameScene extends Phaser.Scene {
         this.replayAccum -= TICK_DT_MS;
         ticksRun++;
         if (this.replayTick < this.replayTranscript.length && !this.currState!.matchOver && this.replayWasm) {
-          const tickInputs = this.replayTranscript[this.replayTick]!;
+          const tickInputs = this.replayTranscript[this.replayTick];
+          if (!tickInputs || !tickInputs[0] || !tickInputs[1]) {
+            // Truncated/corrupt transcript — stop replay gracefully
+            this.playing = false;
+            break;
+          }
           const p0i = tickInputs[0];
           const p1i = tickInputs[1];
           const b0 = p0i.buttons,
@@ -1567,6 +1701,10 @@ export class GameScene extends Phaser.Scene {
               });
             }, 2500);
           }
+          this.playing = false;
+          break;
+        } else {
+          // Transcript exhausted before matchOver — stop replay to prevent freeze
           this.playing = false;
           break;
         }
@@ -1686,18 +1824,11 @@ export class GameScene extends Phaser.Scene {
     const predicted = this.replayMode ? null : (this.prediction?.predictedState ?? null);
     const displayState = predicted ?? curr;
 
-    // Detect rocket explosions — local player rockets from predicted, remote from server
-    const localId = this.localPlayerId;
+    // Detect rocket explosions — track all rockets from server state only
+    // (using predicted state causes phantom explosions when prediction disagrees with server)
     const currentRocketIds = new Set<number>();
-    const rocketSource = predicted && !this.replayMode ? predicted : curr;
-    const serverRockets = curr.projectiles;
-    // Track local player rockets from predicted state
-    for (const proj of rocketSource.projectiles) {
-      if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) currentRocketIds.add(proj.id);
-    }
-    // Track remote player rockets from server state
-    for (const proj of serverRockets) {
-      if (proj.weapon === WeaponType.Rocket && proj.ownerId !== localId) currentRocketIds.add(proj.id);
+    for (const proj of curr.projectiles) {
+      if (proj.weapon === WeaponType.Rocket) currentRocketIds.add(proj.id);
     }
     for (const [id, pos] of this.prevRockets) {
       if (!currentRocketIds.has(id)) {
@@ -1709,16 +1840,9 @@ export class GameScene extends Phaser.Scene {
     // Store rocket positions for next-frame disappearance detection
     const rcfg = GUN_CONFIG[WeaponType.Rocket];
     const ryOff = rcfg ? rcfg.offsetY + rcfg.muzzleY * rcfg.scale : 0;
-    // Local player rockets from predicted state (or curr if no prediction, e.g. warmup)
-    const localRocketSource = predicted && !this.replayMode ? predicted : curr;
-    for (const proj of localRocketSource.projectiles) {
-      if (proj.weapon === WeaponType.Rocket && proj.ownerId === localId) {
-        this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
-      }
-    }
-    // Remote player rockets from server state
-    for (const proj of serverRockets) {
-      if (proj.weapon === WeaponType.Rocket && proj.ownerId !== localId) {
+    // Store all rocket positions from server state for next-frame disappearance detection
+    for (const proj of curr.projectiles) {
+      if (proj.weapon === WeaponType.Rocket) {
         this.prevRockets.set(proj.id, { x: proj.x, y: proj.y + ryOff });
       }
     }
@@ -2135,7 +2259,7 @@ export class GameScene extends Phaser.Scene {
         const hasGun = cp.weapon !== null && cp.weapon >= 0;
         // Determine crouch button state for edge detection
         // Local player: read inputManager directly (no round-trip delay)
-        const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
+        const isLocal = (i === this.localPlayerId && !this.replayMode) || ((this.warmupMode || this.tutorialMode) && i === 0);
         const playerBtns = isLocal
           ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
           : this.lastReceivedButtons[i];
@@ -2143,7 +2267,10 @@ export class GameScene extends Phaser.Scene {
         const tauntPrev = !!((this.prevFrameButtons[i] ?? 0) & Button.Taunt);
         const tauntEdge = tauntNow && !tauntPrev && cp.grounded;
         const tauntPlaying = sprite.anims.currentAnim?.key === `${slug}-crouch` && sprite.anims.isPlaying;
-        if (tauntEdge) {
+        if (!this.playing && !this.replayMode && !this.spectateMode) {
+          // During countdown freeze, force idle animation
+          animKey = `${slug}-idle`;
+        } else if (tauntEdge) {
           // Restart animation + sound immediately (interrupts previous)
           sprite.play(`${slug}-crouch`);
           const soundKey = CROUCH_SOUNDS[slug!];
@@ -2261,7 +2388,7 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < 2; i++) {
       const cp = playerStates[i];
       if (!cp) continue;
-      const isLocal = (i === this.localPlayerId && !this.replayMode) || (this.warmupMode && i === 0);
+      const isLocal = (i === this.localPlayerId && !this.replayMode) || ((this.warmupMode || this.tutorialMode) && i === 0);
       const btns = isLocal ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons : this.lastReceivedButtons[i];
       this.prevFrameButtons[i] = btns ?? 0;
     }
@@ -2419,12 +2546,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawHUD(curr: GameStateData, displayState: GameStateData, _predicted: GameStateData | null) {
-    // Warmup mode — hide all game HUD
-    if (this.warmupMode) {
+    // Warmup/tutorial mode — hide all game HUD
+    if (this.warmupMode || this.tutorialMode) {
       this.timerText.setText("");
       document.getElementById("sudden-death-overlay")?.classList.remove("visible");
       this.roundText.setVisible(false);
-      this.weaponText.setText("");
+      const wh = document.getElementById("weapon-hud");
+      if (wh) wh.style.display = "none";
       return;
     }
 
@@ -2466,8 +2594,19 @@ export class GameScene extends Phaser.Scene {
       this.roundText.setVisible(false);
     }
 
-    // Weapon + ammo (hidden)
-    this.weaponText.setText("");
+    // Weapon + ammo (DOM overlay for guaranteed visibility)
+    const weaponHud = document.getElementById("weapon-hud");
+    const weaponHudText = document.getElementById("weapon-hud-text");
+    if (weaponHud && weaponHudText) {
+      const localP = displayState.players[this.localPlayerId];
+      if (localP && localP.weapon !== null && localP.weapon >= 0) {
+        const names = ["PISTOL", "SHOTGUN", "SNIPER", "ROCKET", "SMG"];
+        weaponHudText.textContent = `${names[localP.weapon] ?? "?"} ${localP.ammo}`;
+        weaponHud.style.display = "block";
+      } else {
+        weaponHud.style.display = "none";
+      }
+    }
 
     // Stomp alert alpha reset (drawPlayerOverlays sets alpha when active)
 
@@ -2489,7 +2628,7 @@ export class GameScene extends Phaser.Scene {
     const cam = this.cameras.main;
 
     // Fixed zoom mode: show whole arena, centered (with padding so edges aren't clipped)
-    if (!this.dynamicZoom && !this.warmupMode) {
+    if (!this.dynamicZoom && !this.warmupMode && !this.tutorialMode) {
       const mapW = this.config?.map.width ?? 960;
       const mapH = this.config?.map.height ?? 540;
       const PAD = 40;
@@ -2506,8 +2645,8 @@ export class GameScene extends Phaser.Scene {
     const remoteP = curr.players[1 - this.localPlayerId];
 
     // Warmup or single-player
-    if (!localP || !remoteP || this.warmupMode) {
-      if (this.warmupMode && this.dynamicZoom && localP) {
+    if (!localP || !remoteP || this.warmupMode || this.tutorialMode) {
+      if ((this.warmupMode || this.tutorialMode) && this.dynamicZoom && localP) {
         // Dynamic zoom in warmup: follow the player
         const aliveLocal = !!(localP.stateFlags & PlayerStateFlag.Alive);
         const targetX = aliveLocal ? localP.x + PLAYER_WIDTH / 2 : 480;
@@ -2517,8 +2656,8 @@ export class GameScene extends Phaser.Scene {
         this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
       } else {
         // Static zoom: show full arena
-        const mapW = (this.warmupMode ? this.warmupConfig?.map.width : this.config?.map.width) ?? 960;
-        const mapH = (this.warmupMode ? this.warmupConfig?.map.height : this.config?.map.height) ?? 540;
+        const mapW = (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.width : this.config?.map.width) ?? 960;
+        const mapH = (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.height : this.config?.map.height) ?? 540;
         const PAD = 40;
         const fitZoom = Math.min(VIEW_W / (mapW + PAD * 2), VIEW_H / (mapH + PAD * 2));
         this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.05, delta);
@@ -2574,7 +2713,7 @@ export class GameScene extends Phaser.Scene {
   // ── Audio ──────────────────────────────────────────────────────────────────
 
   private playSound(key: string) {
-    if (this._muted || this.sfxVolume === 0) return;
+    if (this.sfxVolume === 0) return;
     // Try Phaser audio first (check asset cache, not sound manager), fall back to Web Audio synth
     if (this.audioLoaded && this.cache.audio.exists(key)) {
       try {
@@ -2589,7 +2728,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Play a sound, stopping any previous instance first (for spammable SFX like taunt). */
   private playSoundInterrupt(key: string) {
-    if (this._muted || this.sfxVolume === 0) return;
+    if (this.sfxVolume === 0) return;
     if (this.audioLoaded && this.cache.audio.exists(key)) {
       try {
         // Stop all existing instances of this sound
@@ -2604,6 +2743,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Smoothly fade a WebAudio track's volume from `from` to `to` over `ms` milliseconds. */
+  private fadeTimers: ReturnType<typeof setInterval>[] = [];
+
   private fadeVolume(track: Phaser.Sound.WebAudioSound, from: number, to: number, ms: number) {
     const steps = 20;
     const interval = ms / steps;
@@ -2614,30 +2755,42 @@ export class GameScene extends Phaser.Scene {
         track.volume = from + (to - from) * (step / steps);
       } catch {
         clearInterval(timer);
+        this.fadeTimers = this.fadeTimers.filter((t) => t !== timer);
         return;
       }
-      if (step >= steps) clearInterval(timer);
+      if (step >= steps) {
+        clearInterval(timer);
+        this.fadeTimers = this.fadeTimers.filter((t) => t !== timer);
+      }
     }, interval);
+    this.fadeTimers.push(timer);
+  }
+
+  /** Clear all pending fade intervals (for cleanup). */
+  private clearFadeTimers() {
+    for (const t of this.fadeTimers) clearInterval(t);
+    this.fadeTimers = [];
   }
 
   private pickBgmTrack(): string {
+    const TRACK_COUNT = 5;
     let track: number;
     do {
-      track = 1 + Math.floor(Math.random() * 5);
-    } while (track === this.lastBgmTrack && 5 > 1);
+      track = 1 + Math.floor(Math.random() * TRACK_COUNT);
+    } while (track === this.lastBgmTrack && TRACK_COUNT > 1);
     this.lastBgmTrack = track;
     return `bgm-${track}`;
   }
 
   /** Start BGM if not already playing. Idempotent — safe to call multiple times. */
   startBGM() {
-    if (this.bgmVolume === 0 || !this.audioLoaded || this._muted) return;
+    if (this.bgmVolume === 0 || !this.audioLoaded || this.musicMuted) return;
     if (this.bgm?.isPlaying || this.bgmLoading) return; // already playing or loading
     this.playNextTrack();
   }
 
   private playNextTrack() {
-    if (this.bgmVolume === 0 || !this.audioLoaded || this._muted) return;
+    if (this.bgmVolume === 0 || !this.audioLoaded || this.musicMuted) return;
     try {
       const key = this.pickBgmTrack();
       // Lazy load BGM: if track isn't cached yet, load it first

@@ -39,6 +39,7 @@ export interface NetworkCallbacks {
   onLobby: (rooms: RoomInfo[]) => void;
   onError: (message: string) => void;
   onDisconnect: () => void;
+  onReconnect?: () => void;
   // Tournament callbacks
   onTournamentLobby?: (tournamentId: string, joinCode: string, players: string[], status: string) => void;
   onTournamentMatchStart?: (
@@ -107,8 +108,8 @@ export class NetworkManager {
         case "pong": {
           const sample = Date.now() - (msg as { t: number }).t;
           if (sample > 2000) break; // discard outliers (>2s = broken connection, not real RTT)
-          // Asymmetric EWMA: recover quickly from spikes (alpha=0.5 down, 0.2 up)
-          const alpha = sample < this.rttMs ? 0.5 : 0.2;
+          // Asymmetric EWMA: recover quickly from spikes (alpha=0.5 up), slow follow for drops (0.2 down)
+          const alpha = sample > this.rttMs ? 0.5 : 0.2;
           this.rttMs = this.rttMs === 0 ? sample : this.rttMs * (1 - alpha) + sample * alpha;
           break;
         }
@@ -190,12 +191,14 @@ export class NetworkManager {
     };
 
     this.ws.onopen = () => {
+      const wasReconnect = this._reconnectAttempts > 0;
       this._reconnectAttempts = 0;
       // Start RTT measurement pings
       this.send({ type: "ping", t: Date.now() });
       this.pingInterval = setInterval(() => {
         this.send({ type: "ping", t: Date.now() });
       }, 2000);
+      if (wasReconnect) this.callbacks.onReconnect?.();
     };
 
     this.ws.onclose = () => {

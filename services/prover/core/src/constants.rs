@@ -7,7 +7,7 @@ pub const GRAVITY: f64 = 0.5;
 pub const PLAYER_SPEED: f64 = 4.0;
 pub const ACCELERATION: f64 = 0.8;
 pub const DECELERATION: f64 = 0.6;
-pub const JUMP_VELOCITY: f64 = -12.0;
+pub const JUMP_VELOCITY: f64 = -10.5;
 pub const MAX_FALL_SPEED: f64 = 12.0;
 
 // Player hitbox
@@ -17,12 +17,9 @@ pub const PLAYER_HEIGHT: f64 = 32.0;
 // Legacy projectile defaults
 pub const PROJECTILE_SPEED: f64 = 8.0;
 pub const PROJECTILE_LIFETIME: i32 = 90;
-pub const SHOOT_COOLDOWN: i32 = 15;
-pub const PROJECTILE_RADIUS: f64 = 4.0;
 
 // Health / combat
 pub const MAX_HEALTH: i32 = 100;
-pub const PROJECTILE_DAMAGE: i32 = 25;
 
 // Respawn
 pub const RESPAWN_TICKS: i32 = 60;
@@ -88,7 +85,7 @@ pub fn weapon_stats(weapon: WeaponType) -> WeaponStats {
         },
         WeaponType::Rocket => WeaponStats {
             damage: 50,
-            speed: 5.0,
+            speed: 7.0,
             cooldown: 45,
             lifetime: 120,
             ammo: 4,
