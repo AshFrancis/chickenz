@@ -400,6 +400,18 @@ export function getTranscriptByRoomId(roomId: string): object | null {
   }
 }
 
+const stmtGetTranscriptById = db.prepare(`SELECT transcript_data FROM matches WHERE id = $id`);
+
+export function getTranscriptByMatchId(matchId: string): object | null {
+  const row = stmtGetTranscriptById.get({ $id: matchId }) as TranscriptRow | null;
+  if (!row?.transcript_data) return null;
+  try {
+    return JSON.parse(row.transcript_data);
+  } catch {
+    return null;
+  }
+}
+
 // ── IPFS transcript CID ─────────────────────────────────
 
 const stmtUpdateTranscriptCid = db.prepare(`UPDATE matches SET transcript_cid = $cid WHERE id = $id`);

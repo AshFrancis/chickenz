@@ -29,6 +29,7 @@ import {
   updateWalletVerified,
   saveTranscript,
   getTranscriptByRoomId,
+  getTranscriptByMatchId,
   updateTranscriptCid,
   updateBoundlessRequestId,
   updateBoundlessTxHash,
@@ -637,6 +638,37 @@ const server = Bun.serve<SocketData>({
       return new Response("ok", { headers: corsHeaders });
     }
 
+    // Relayer proxy: forward /relayer/* to channels.openzeppelin.com/* (avoids CORS issues)
+    if (url.pathname.startsWith("/relayer/")) {
+      const relayerApiKey = process.env.RELAYER_API_KEY;
+      if (!relayerApiKey) {
+        return Response.json({ error: "Relayer not configured" }, { status: 503, headers: corsHeaders });
+      }
+      const targetPath = url.pathname.replace(/^\/relayer/, "");
+      const targetUrl = `https://channels.openzeppelin.com${targetPath}${url.search}`;
+      const proxyHeaders: Record<string, string> = {
+        Authorization: `Bearer ${relayerApiKey}`,
+      };
+      // Forward relevant headers from the original request
+      const ct = req.headers.get("content-type");
+      if (ct) proxyHeaders["Content-Type"] = ct;
+      try {
+        const proxyRes = await fetch(targetUrl, {
+          method: req.method,
+          headers: proxyHeaders,
+          body: req.method !== "GET" && req.method !== "HEAD" ? await req.arrayBuffer() : undefined,
+        });
+        const body = await proxyRes.arrayBuffer();
+        const resHeaders: Record<string, string> = { ...corsHeaders };
+        const resCt = proxyRes.headers.get("content-type");
+        if (resCt) resHeaders["Content-Type"] = resCt;
+        return new Response(body, { status: proxyRes.status, headers: resHeaders });
+      } catch (err) {
+        console.error("[relayer proxy] error:", err);
+        return Response.json({ error: "Relayer proxy failed" }, { status: 502, headers: corsHeaders });
+      }
+    }
+
     // Redirect raw IP access to canonical hostname
     const host = req.headers.get("host") || "";
     const canonicalHost = process.env.CANONICAL_HOST;
@@ -941,6 +973,45 @@ const server = Bun.serve<SocketData>({
     // Worker status (for dashboard/debugging)
     if (url.pathname === "/api/worker/status") {
       return Response.json({ online: isWorkerOnline() }, { headers: corsHeaders });
+    }
+
+    // Admin: re-prove a stuck match from its stored transcript (worker API key required)
+    const reprovenMatch = url.pathname.match(/^\/api\/admin\/reprove\/([a-zA-Z0-9_-]+)$/);
+    if (req.method === "POST" && reprovenMatch) {
+      const apiKey = req.headers.get("x-api-key");
+      if (!apiKey || apiKey !== process.env.WORKER_API_KEY) {
+        return Response.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+      }
+      const matchId = reprovenMatch[1]!;
+      const record = getMatchById(matchId);
+      if (!record) return Response.json({ error: "Match not found" }, { status: 404, headers: corsHeaders });
+      if (record.proofStatus === "settled") {
+        return Response.json({ error: "Match already settled" }, { status: 400, headers: corsHeaders });
+      }
+      const transcript = getTranscriptByMatchId(matchId);
+      if (!transcript) return Response.json({ error: "No transcript stored for match" }, { status: 404, headers: corsHeaders });
+      updateProofStatus(matchId, "proving");
+      const proofRequestedAt = Date.now();
+      const onProofResult = (artifacts: ProofArtifacts | null, source?: string) => {
+        if (artifacts) {
+          updateProofTimestamps(matchId, proofRequestedAt, Date.now(), source || "unknown");
+          updateProofStatus(matchId, "verified", artifacts);
+          if (artifacts.boundlessRequestId) updateBoundlessRequestId(matchId, artifacts.boundlessRequestId);
+          const sessionId = record.sessionId ?? 0;
+          autoSettleMatch(matchId, sessionId, artifacts);
+        } else {
+          updateProofStatus(matchId, "pending");
+        }
+      };
+      proveMatch(
+        matchId,
+        transcript,
+        onProofResult,
+        (requestId) => updateBoundlessRequestId(matchId, requestId),
+        (txHash) => updateBoundlessTxHash(matchId, txHash),
+      );
+      console.log(`[admin] Re-prove triggered for ${matchId}`);
+      return Response.json({ ok: true, matchId }, { headers: corsHeaders });
     }
 
     // API status endpoint
