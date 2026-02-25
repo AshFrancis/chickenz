@@ -42,7 +42,7 @@ pnpm dev:server            # or: bun services/server/src/index.ts
 pnpm build:wasm
 
 # Tests
-bun test packages/sim      # 64 TS sim tests
+bun test packages/sim       # 64 TS sim tests
 cargo test -p chickenz-core # 50 Rust prover tests
 
 # Lint & format
@@ -70,27 +70,23 @@ Server requires these in `.env` at the project root (see `.env.example`):
 |---|---|---|
 | `STELLAR_ADMIN_SECRET` | For ranked | Stellar admin key for start_game/end_game txns |
 | `WORKER_API_KEY` | For proofs | Auth key for proof worker → server API |
-| `RPC_URL` | Boundless only | Ethereum RPC (e.g. Base Sepolia) |
+| `RPC_URL` | Boundless only | Ethereum RPC (e.g. Base mainnet) |
+| `BOUNDLESS_RPC_URL` | Boundless only | RPC for log polling (needs large block range support) |
 | `PRIVATE_KEY` | Boundless only | Ethereum wallet for Boundless market |
 | `PINATA_JWT` | Boundless only | IPFS upload for proof inputs |
-
-## Workflow Rules
-
-- **Deploy script** (`scripts/deploy.sh`): Always commit and push before deploying. Run directly with Bash (timeout 60000). Do NOT use `run_in_background`. Do NOT use TaskOutput to poll. Just call Bash directly and wait for the result inline. The script takes ~30-50 seconds.
-- **Short-lived commands** (~under 2 min): Always run inline with Bash, never as background tasks. Background tasks add minutes of polling overhead.
 
 ## Sim Update Checklist
 
 **Every time the sim is updated** (`services/prover/core/src/` — physics, types, constants, weapons, etc.), ALL of the following must be rebuilt/updated:
 
 1. **WASM** (client + server): `pnpm build:wasm`
-2. **Gaming PC worker**: `ssh user@192.168.50.81`, then in `/root/chickenz`: `git pull && cd services/prover && cargo build --release -p chickenz-host`
-3. **Get canonical image ID** (from gaming PC): `services/prover/target/release/chickenz-host --image-id`
+2. **Prover worker**: rebuild `chickenz-host` on the x86 Linux machine running the worker
+3. **Get canonical image ID**: `chickenz-host --image-id` (must use x86 Linux build — see ARM note below)
 4. **Update contract**: `stellar contract invoke --id <CONTRACT> --source default --rpc-url https://soroban-testnet.stellar.org --network-passphrase "Test SDF Network ; September 2015" -- set_image_id --image_id <NEW_ID>`
 5. **Update client display** (optional): `GUEST_IMAGE_ID` in `apps/client/src/main.ts`
-6. **Deploy to production servers** (us/eu/asia): `./scripts/deploy.sh server` (rebuilds host binary on each server)
+6. **Deploy to production servers**: `./scripts/deploy.sh server`
 
-**IMPORTANT — ARM vs x86 image ID mismatch**: `risc0-build` produces different guest ELFs on ARM (Mac) vs x86 (Linux), resulting in different image IDs even with identical source and toolchain versions. The **gaming PC (x86 Linux) image ID is canonical** — all production servers are also x86 Linux and will produce matching IDs. Never use a Mac-built image ID for the contract. The Mac host binary is fine for local development but its proofs won't verify on-chain.
+**IMPORTANT — ARM vs x86 image ID mismatch**: `risc0-build` produces different guest ELFs on ARM (Mac) vs x86 (Linux), resulting in different image IDs even with identical source and toolchain versions. The x86 Linux image ID is canonical — all production servers are x86 Linux and will produce matching IDs. Never use a Mac-built image ID for the contract.
 
 ## Critical Design Invariants
 
@@ -101,7 +97,7 @@ Server requires these in `.env` at the project root (see `.env.example`):
 5. **Multi-round ZK proof** — the ZK proof replays both winning rounds (same seed), verifies the same player won both, and commits combined transcript hashes + seed_commit. This is the core mechanic.
 6. **Game Hub integration** — every ranked match calls `start_game()` at match start and `end_game()` with the verified winner on the Game Hub contract.
 7. **Death linger** — 30-tick (0.5s) delay before `matchOver` after final kill, so both players see the death.
-8. **Ranked mode** — requires Freighter wallet verification (Stellar Signed Message prefix + SHA-256). No bots in ranked. Wallet disconnect leaves room.
+8. **Ranked mode** — requires passkey wallet verification. No bots in ranked. Wallet disconnect leaves room.
 9. **Bot indistinguishability** — bots use realistic names (gamer tags + animal names), appear as normal players in lobby and match history. No `[BOT]` prefix exposed to clients.
 10. **Audio separation** — SFX always on by default; music (BGM) off by default, toggled independently via music icon or settings checkbox.
 
@@ -136,9 +132,9 @@ See [ZK_SETTLEMENT.md](ZK_SETTLEMENT.md) for full details.
 
 See contract source in `contracts/chickenz/src/lib.rs`.
 
-- **Game Hub** (testnet): `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG`
 - `start_game()` at match start, `end_game()` after ZK proof verifies outcome
-- Wallet verification: Freighter `signMessage()` → server verifies with `"Stellar Signed Message:\n"` prefix + SHA-256
+- Wallet: passkey-based smart accounts via OpenZeppelin Smart Account Kit
+- Wallet verification: server verifies credential ID → contract address derivation + optional P-256 signature
 
 ## Bot System
 
@@ -156,16 +152,17 @@ Hidden matchmaking rating for casual/bot matches. Stored in `casual_elo` table (
 ## Mobile Controls
 
 - **Touch detection**: `"ontouchstart" in window || navigator.maxTouchPoints > 0` → adds `body.touch` class
-- **Virtual joystick** (`apps/client/src/input/TouchControls.ts`): bottom-left, follow-thumb pattern, dead zone 15%, maps to Left/Right/Jump/Taunt
-- **Shoot button**: fixed bottom-right, 80px square, visual press feedback
-- **Integration**: `InputManager.setTouchState()` — touch buttons OR'd with keyboard buttons each frame via `requestAnimationFrame` loop
+- **Virtual joystick** (`apps/client/src/input/TouchControls.ts`): fixed circle bottom-left, drag direction maps to movement/jump/taunt. Spin gesture triggers rapid L/R for stomp escape.
+- **Shoot button**: fixed circle bottom-right, visual press feedback
+- **Jump pulsing**: jump held for ~47 frames then released for 3 — creates rising edges so sim re-triggers jump on each landing
+- **Integration**: `InputManager.setTouchState()` — touch buttons OR'd with keyboard buttons each frame
 
 ## Tutorial
 
 - **First-time detection**: `localStorage.getItem("chickenz-tutorial-done")`
-- **6 steps**: movement → jump → weapon pickup → shoot → sudden death info → goal
-- **Completion tracking**: per-step conditions (movement ticks, jump detected, weapon pickup, shot fired, auto-advance timers)
-- **Integration**: `tutorial.update()` called each frame from main.ts rAF loop, reads player state from `GameScene.getPlayer0State()`
+- **8 steps**: movement → jump → double jump → weapon pickup → shoot → stomp escape → kill → done
+- **Completion tracking**: per-step conditions (movement ticks, jump detected, double jump, weapon pickup, shot fired, stomp escape, P2 killed, auto-advance timer)
+- **Integration**: `tutorial.tick()` called each WASM tick from GameScene, returns P2 input + optional state modifier
 
 ## Audio System
 
@@ -183,10 +180,12 @@ Hidden matchmaking rating for casual/bot matches. Stored in `casual_elo` table (
 
 ## Multi-Region Servers
 
-- **US**: `us.chickenz.io` (178.156.244.26), **EU**: `eu.chickenz.io` (89.167.92.60), **Asia**: `asia.chickenz.io` (5.223.61.107)
-- Client `RegionManager` measures pings, opens lobby WS to each region, merges room lists
+- Three regions: US, EU, Asia — each runs an independent Bun server
+- Client `RegionManager` measures pings to all regions, opens lobby WS to each reachable one, merges room lists
 - Home region persisted in localStorage, defaults to lowest ping
-- Ping threshold: 160ms (high-ping regions shown dimmed)
+- Ping threshold: 160ms (high-ping regions shown dimmed but still selectable)
+- Static files served by Bun from `services/server/public/` (not `apps/client/dist/`)
+- Each server needs `SERVER_REGION` and `CANONICAL_HOST` env vars set
 
 ## Additional Docs
 
