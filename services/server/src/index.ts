@@ -30,6 +30,8 @@ import {
   saveTranscript,
   getTranscriptByRoomId,
   getTranscriptByMatchId,
+  saveProverTranscript,
+  getProverTranscript,
   updateTranscriptCid,
   updateBoundlessRequestId,
   updateBoundlessTxHash,
@@ -381,6 +383,10 @@ function returnToLobby(
       saveTranscript(matchId, fullTranscript);
       // Pin to IPFS for immutable data availability (async, non-blocking)
       void pinTranscriptToIPFS(matchId, fullTranscript);
+      // Save prover-format transcript for reprove (config + winning rounds only)
+      if (mode === "ranked" && !room.isBotMatch) {
+        saveProverTranscript(matchId, room.getTranscript());
+      }
     }
 
     // Store timeline fields that insertMatch doesn't cover
@@ -988,8 +994,8 @@ const server = Bun.serve<SocketData>({
       if (record.proofStatus === "settled") {
         return Response.json({ error: "Match already settled" }, { status: 400, headers: corsHeaders });
       }
-      const transcript = getTranscriptByMatchId(matchId);
-      if (!transcript) return Response.json({ error: "No transcript stored for match" }, { status: 404, headers: corsHeaders });
+      const transcript = getProverTranscript(matchId);
+      if (!transcript) return Response.json({ error: "No prover transcript stored for match" }, { status: 404, headers: corsHeaders });
       updateProofStatus(matchId, "proving");
       const proofRequestedAt = Date.now();
       const onProofResult = (artifacts: ProofArtifacts | null, source?: string) => {

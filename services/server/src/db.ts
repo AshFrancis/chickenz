@@ -106,6 +106,7 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN boundless_request_id TEXT",
   "ALTER TABLE matches ADD COLUMN boundless_tx_hash TEXT",
   "ALTER TABLE matches ADD COLUMN bot_vs_bot INTEGER DEFAULT 0",
+  "ALTER TABLE matches ADD COLUMN prover_transcript_data TEXT",
 ];
 for (const sql of migrations) {
   try {
@@ -407,6 +408,27 @@ export function getTranscriptByMatchId(matchId: string): object | null {
   if (!row?.transcript_data) return null;
   try {
     return JSON.parse(row.transcript_data);
+  } catch {
+    return null;
+  }
+}
+
+const stmtSaveProverTranscript = db.prepare(
+  `UPDATE matches SET prover_transcript_data = $data WHERE id = $id`,
+);
+const stmtGetProverTranscript = db.prepare(
+  `SELECT prover_transcript_data FROM matches WHERE id = $id`,
+);
+
+export function saveProverTranscript(matchId: string, data: object) {
+  stmtSaveProverTranscript.run({ $id: matchId, $data: JSON.stringify(data) });
+}
+
+export function getProverTranscript(matchId: string): object | null {
+  const row = stmtGetProverTranscript.get({ $id: matchId }) as { prover_transcript_data: string | null } | null;
+  if (!row?.prover_transcript_data) return null;
+  try {
+    return JSON.parse(row.prover_transcript_data);
   } catch {
     return null;
   }
