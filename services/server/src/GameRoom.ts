@@ -458,16 +458,20 @@ export class GameRoom {
   /** Self-correcting game loop: runs multiple ticks if behind, skips if ahead. */
   private gameLoop() {
     if (this._status !== "playing") return;
+    try {
+      const elapsed = performance.now() - this.loopStartTime;
+      const targetTick = Math.floor(elapsed / (1000 / TICK_RATE));
 
-    const elapsed = performance.now() - this.loopStartTime;
-    const targetTick = Math.floor(elapsed / (1000 / TICK_RATE));
-
-    // Run ticks to catch up (max 4 per interval to avoid lag spikes)
-    // Use countdownTick (not WASM tick) since WASM doesn't advance during countdown
-    let ticked = 0;
-    while (this.countdownTick < targetTick && ticked < 4) {
-      this.tick();
-      ticked++;
+      // Run ticks to catch up (max 4 per interval to avoid lag spikes)
+      // Use countdownTick (not WASM tick) since WASM doesn't advance during countdown
+      let ticked = 0;
+      while (this.countdownTick < targetTick && ticked < 4) {
+        this.tick();
+        ticked++;
+      }
+    } catch (err) {
+      console.error(`[GameRoom ${this.id}] Unhandled error in gameLoop:`, err);
+      this.endMatch(-1);
     }
   }
 

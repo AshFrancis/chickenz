@@ -595,7 +595,7 @@ walletLoginBtn.addEventListener("click", () => {
 walletRegisterBtn.addEventListener("click", () => {
   walletRegisterBtn.disabled = true;
   walletRegisterBtn.textContent = "Deploying...";
-  void createWallet("Chickenz Player").finally(() => {
+  void createWallet(getOrCreateUsername()).finally(() => {
     walletRegisterBtn.disabled = false;
     walletRegisterBtn.textContent = "Register";
     updateWalletUI();
@@ -1570,7 +1570,7 @@ function explorerContractUrl(addr: string): string {
   return `https://stellar.expert/explorer/testnet/contract/${encodeURIComponent(addr)}`;
 }
 
-const GUEST_IMAGE_ID = "00ad836f4dcb2fa59cb5f5acbcf79fa6add4c8e70b7df3b5d9cf22ae485a0461";
+const GUEST_IMAGE_ID = "c69a2804afae47c1bee35e0a80013d9dad8a4f096d1b5bfa53d870c8e8d43746";
 
 function renderDataAvailability(m: MatchRecord): string {
   const rows: string[] = [];

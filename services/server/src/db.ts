@@ -483,7 +483,7 @@ const CASUAL_DEFAULT_ELO = 800;
 const CASUAL_K = 24;
 
 const stmtGetCasualElo = db.prepare(`SELECT elo FROM casual_elo WHERE username = $username`);
-const stmtGetCasualGamesPlayed = db.prepare(`SELECT games_played FROM casual_elo WHERE username = $username`);
+const stmtGetCasualRow = db.prepare(`SELECT elo, games_played FROM casual_elo WHERE username = $username`);
 const stmtUpsertCasualElo = db.prepare(`
   INSERT INTO casual_elo (username, elo, games_played, last_updated) VALUES ($username, $elo, $gamesPlayed, $lastUpdated)
   ON CONFLICT(username) DO UPDATE SET elo = $elo, games_played = $gamesPlayed, last_updated = $lastUpdated
@@ -499,12 +499,12 @@ export function getCasualElo(username: string): number {
 }
 
 export function updateCasualElo(username: string, won: boolean, opponentElo: number): number {
-  const currentElo = getCasualElo(username);
+  const existing = stmtGetCasualRow.get({ $username: username }) as { elo: number; games_played: number } | null;
+  const currentElo = existing?.elo ?? CASUAL_DEFAULT_ELO;
   const expected = 1 / (1 + Math.pow(10, (opponentElo - currentElo) / 400));
   const actual = won ? 1 : 0;
   const newElo = Math.max(0, Math.round(currentElo + CASUAL_K * (actual - expected)));
 
-  const existing = stmtGetCasualGamesPlayed.get({ $username: username }) as { games_played: number } | null;
   const gamesPlayed = (existing?.games_played ?? 0) + 1;
 
   stmtUpsertCasualElo.run({

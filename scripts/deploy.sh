@@ -83,7 +83,7 @@ deploy_to_server() {
 
   if [ "$MODE" = "server" ] || [ "$MODE" = "both" ]; then
     log "[$region] Restarting server..."
-    ssh $SSH_OPTS "$server" "kill \$(lsof -ti:3000) 2>/dev/null || true; sleep 0.5; cd $REMOTE_DIR && set -a && source .env && set +a && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & sleep 2; if lsof -ti:3000 > /dev/null 2>&1; then echo 'SERVER UP'; else echo 'FAILED'; cat /tmp/chickenz-server.log; exit 1; fi"
+    ssh $SSH_OPTS "$server" "pkill -f 'bun.*index.ts' 2>/dev/null || true; sleep 0.5; cd $REMOTE_DIR && set -a && source .env && set +a && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & sleep 2; if pgrep -f 'bun.*index.ts' > /dev/null 2>&1; then echo 'SERVER UP'; else echo 'FAILED'; cat /tmp/chickenz-server.log; exit 1; fi"
   fi
 
   log "[$region] Done."

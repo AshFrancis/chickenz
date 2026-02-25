@@ -29,7 +29,6 @@ import {
   updateWalletVerified,
   saveTranscript,
   getTranscriptByRoomId,
-  getTranscriptByMatchId,
   saveProverTranscript,
   getProverTranscript,
   updateTranscriptCid,
@@ -784,7 +783,7 @@ const server = Bun.serve<SocketData>({
       return Response.json(
         {
           ...record,
-          contractAddress: process.env.CHICKENZ_CONTRACT || "CBRDPRKUK3NH2HXOWSNZPG2ZSXXXZBR7GCMN7WLHWINMLNDCJ7NSREKG",
+          contractAddress: process.env.CHICKENZ_CONTRACT || "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
           verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
           gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
         },
@@ -881,7 +880,7 @@ const server = Bun.serve<SocketData>({
     if (req.method === "POST" && url.pathname === "/api/wallet/revalidate") {
       try {
         const body = (await req.json()) as { address: string; token: string };
-        if (!body.address || !body.token || !/^[CG][A-Z2-7]{55}$/.test(body.address)) {
+        if (!body.address || !body.token || !/^C[A-Z2-7]{55}$/.test(body.address)) {
           return Response.json({ verified: false }, { headers: corsHeaders });
         }
         const stored = verifiedTokens.get(body.address);

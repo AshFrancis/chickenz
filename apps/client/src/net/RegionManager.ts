@@ -111,14 +111,14 @@ export class RegionManager {
 
   /** Set which region the main NetworkManager is connected to (avoids duplicate lobby WS). */
   set activeRegionId(id: string) {
-    // If the active region changed, close the old lobby WS for the new active region
+    // If the active region changed, close the old lobby WS for the previously active region
     // (the NetworkManager will feed its rooms via updateRoomsForRegion)
     if (this._activeRegionId !== id) {
-      const oldWs = this.lobbyWs.get(id);
+      const oldWs = this.lobbyWs.get(this._activeRegionId);
       if (oldWs) {
         oldWs.onclose = null; // prevent reconnect
         oldWs.close();
-        this.lobbyWs.delete(id);
+        this.lobbyWs.delete(this._activeRegionId);
       }
       this._activeRegionId = id;
     }

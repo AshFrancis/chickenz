@@ -1,5 +1,5 @@
 import type { PlayerState, Projectile, GameMap } from "./types";
-import { WeaponType, PlayerStateFlag } from "./types";
+import { PlayerStateFlag } from "./types";
 import { PLAYER_WIDTH, PLAYER_HEIGHT } from "./constants";
 import { getProjectileDamage, isRocket, applySplashDamage } from "./weapons";
 
