@@ -39,6 +39,9 @@ apps/client/certs/
 .DS_Store
 *.log
 
+# Local SQLite databases (real data lives in services/server/data/ on servers)
+*.db
+
 # Dev artifacts (local only)
 initial.json
 new-test-transcript.json
