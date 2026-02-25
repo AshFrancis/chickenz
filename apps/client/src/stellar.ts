@@ -16,8 +16,15 @@ const RELAYER_URL = import.meta.env.VITE_RELAYER_URL ?? "";
 
 let kit: SmartAccountKit | null = null;
 
+/** Returns the wallet address — from active SDK session or cached localStorage.
+ *  For the lobby, the cached address is sufficient. SDK connection only needed for signing. */
 export function getConnectedAddress(): string | null {
-  return kit?.contractId ?? null;
+  return kit?.contractId ?? localStorage.getItem("chickenz-wallet-address") ?? null;
+}
+
+/** Returns true if the SDK has an active session (can sign transactions). */
+export function isSDKConnected(): boolean {
+  return kit?.isConnected ?? false;
 }
 
 // ── Auth proof caching (for server-side wallet verification) ─────────────────
@@ -66,12 +73,16 @@ export async function initPasskeyKit(): Promise<void> {
 }
 
 /** Create a new passkey wallet (registration prompt).
- *  Optimistically updates UI after passkey creation, deploys on-chain in background. */
+ *  Waits for on-chain deployment before updating UI. */
 export async function createWallet(username: string): Promise<string | null> {
   if (!kit) return null;
   try {
-    // Create passkey + get signed deploy tx (no on-chain submit yet)
-    const result = await kit.createWallet("Chickenz", username);
+    // Create passkey + deploy on-chain (autoSubmit waits for confirmation)
+    const result = await kit.createWallet("Chickenz", username, { autoSubmit: true });
+    if (result.submitResult && !result.submitResult.success) {
+      console.error("[stellar] wallet deploy failed:", result.submitResult.error);
+      return null;
+    }
     localStorage.removeItem("chickenz-wallet-disconnected");
     // Cache proof data for server verification (register path — no assertion needed)
     lastAuthProof = {
@@ -79,15 +90,8 @@ export async function createWallet(username: string): Promise<string | null> {
       credentialId: result.credentialId,
       publicKey: toBase64Url(result.publicKey),
     };
-    // Optimistic UI update — wallet is usable locally immediately
+    console.log("[stellar] wallet created and deployed:", result.contractId);
     window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: result.contractId } }));
-    // Deploy on-chain in background
-    if (result.signedTransaction) {
-      kit.relayer.sendXdr(result.signedTransaction).then((res) => {
-        if (!res.success) console.warn("[stellar] background deploy failed:", res.error);
-        else console.log("[stellar] wallet deployed on-chain:", res.hash);
-      }).catch((err) => console.warn("[stellar] background deploy error:", err));
-    }
     return result.contractId;
   } catch (err) {
     console.error("[stellar] createWallet failed:", err);
@@ -95,7 +99,8 @@ export async function createWallet(username: string): Promise<string | null> {
   }
 }
 
-/** Silent session restore (startup). Returns address or null. */
+/** Silent session restore (startup). Returns address or null.
+ *  If stored credential exists but contract isn't deployed, tries to deploy it silently. */
 export async function connectWallet(): Promise<string | null> {
   if (!kit) return null;
   if (localStorage.getItem("chickenz-wallet-disconnected")) return null;
@@ -113,16 +118,24 @@ export async function connectWallet(): Promise<string | null> {
       return result.contractId;
     }
     return null;
-  } catch {
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    // If the contract isn't deployed, try deploying pending credentials silently
+    if (errMsg.includes("not found on-chain") || errMsg.includes("not yet been deployed")) {
+      console.warn("[stellar] silent restore found undeployed contract, trying to deploy...");
+      const deployed = await tryDeployPending();
+      if (deployed) return deployed;
+    }
     return null;
   }
 }
 
-/** Interactive connect — prompts passkey selection if no stored session. */
+/** Interactive connect — always prompts passkey selection (ignores stored session).
+ *  If the contract isn't deployed yet (pending from failed registration), auto-deploys it. */
 export async function promptConnect(): Promise<string | null> {
   if (!kit) return null;
   try {
-    const result = await kit.connectWallet({ prompt: true });
+    const result = await kit.connectWallet({ fresh: true });
     if (result) {
       localStorage.removeItem("chickenz-wallet-disconnected");
       // Cache proof data for server verification (login path — includes assertion)
@@ -146,20 +159,65 @@ export async function promptConnect(): Promise<string | null> {
     }
     return null;
   } catch (err) {
-    console.error("[stellar] promptConnect failed:", err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes("not found on-chain") || errMsg.includes("not yet been deployed")) {
+      // Selected passkey's contract isn't deployed — try deploying pending credentials
+      console.warn("[stellar] selected passkey's contract not deployed, trying to deploy...");
+      const deployed = await tryDeployPending();
+      if (deployed) return deployed;
+      console.warn("[stellar] could not deploy. Try clicking 'Register' to create a new wallet.");
+    } else {
+      console.error("[stellar] promptConnect failed:", err);
+    }
     return null;
   }
 }
 
-/** Disconnect wallet and clear session. */
-export async function disconnectWallet(): Promise<void> {
-  if (!kit) return;
+/** Try to deploy any pending credentials. Returns contract address on success, null on failure. */
+async function tryDeployPending(): Promise<string | null> {
+  if (!kit) return null;
   try {
-    await kit.disconnect();
-  } catch {
-    // Ignore errors on disconnect
+    const pending = await kit.credentials.getPending();
+    if (pending.length === 0) return null;
+    console.log(`[stellar] found ${pending.length} pending credential(s), deploying first...`);
+    const cred = pending[0]!;
+    const result = await kit.credentials.deploy(cred.credentialId, { autoSubmit: true });
+    if (result.submitResult?.success) {
+      console.log("[stellar] pending credential deployed:", result.contractId);
+      // Now try connecting again
+      const connectResult = await kit.connectWallet({ credentialId: cred.credentialId });
+      if (connectResult) {
+        localStorage.removeItem("chickenz-wallet-disconnected");
+        lastAuthProof = {
+          address: connectResult.contractId,
+          credentialId: connectResult.credentialId,
+        };
+        window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: connectResult.contractId } }));
+        return connectResult.contractId;
+      }
+    } else {
+      console.error("[stellar] pending credential deploy failed:", result.submitResult?.error);
+    }
+  } catch (err) {
+    console.error("[stellar] tryDeployPending failed:", err);
   }
+  return null;
+}
+
+/** Disconnect wallet and clear session (always works, even if SDK isn't connected). */
+export async function disconnectWallet(): Promise<void> {
+  // Clear cached address first (so UI updates immediately)
+  localStorage.removeItem("chickenz-wallet-address");
   localStorage.setItem("chickenz-wallet-disconnected", "1");
+  lastAuthProof = null;
+  // Try to disconnect SDK session (best-effort)
+  if (kit) {
+    try {
+      await kit.disconnect();
+    } catch {
+      // Ignore — SDK might not be connected
+    }
+  }
   window.dispatchEvent(new CustomEvent("walletChanged", { detail: { address: null } }));
 }
 

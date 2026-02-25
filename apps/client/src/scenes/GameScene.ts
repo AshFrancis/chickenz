@@ -845,6 +845,8 @@ export class GameScene extends Phaser.Scene {
   stopTutorial() {
     this.tutorialMode = false;
     this.warmupState = null;
+    this.currState = null;
+    this.prevState = null;
     this.resetRagdolls();
     if (this.warmupWasm) {
       try {

@@ -412,10 +412,19 @@ function deferBGMStart() {
     walletLoginBtn.style.display = "";
   }
 
-  // Init passkey kit and try silent session restore
+  // Init passkey kit and try silent SDK session restore (non-disruptive).
+  // If cached address exists, user is already "logged in" — SDK restore is best-effort for signing.
   initPasskeyKit()
-    .then(() => connectWallet().then(() => { if (!cachedAddr || getConnectedAddress()) updateWalletUI(); }).catch(() => { if (!cachedAddr) updateWalletUI(); }))
-    .catch(() => { if (!cachedAddr) updateWalletUI(); });
+    .then(() => connectWallet().then((addr) => {
+      if (addr) updateWalletUI();
+      // If SDK restore failed but we have a cached address, don't disrupt the UI
+    }).catch(() => {
+      // SDK failed to connect — that's OK, cached address keeps user logged in
+      if (!cachedAddr) updateWalletUI();
+    }))
+    .catch(() => {
+      if (!cachedAddr) updateWalletUI();
+    });
 
   // Init touch controls + tutorial
   if (isTouchDevice) touchControls.init();
@@ -579,12 +588,18 @@ walletLoginBtn.addEventListener("click", () => {
   if (getConnectedAddress()) {
     void disconnectWallet();
   } else {
-    void promptConnect();
+    void promptConnect().finally(() => updateWalletUI());
   }
 });
 
 walletRegisterBtn.addEventListener("click", () => {
-  void createWallet("Chickenz Player");
+  walletRegisterBtn.disabled = true;
+  walletRegisterBtn.textContent = "Deploying...";
+  void createWallet("Chickenz Player").finally(() => {
+    walletRegisterBtn.disabled = false;
+    walletRegisterBtn.textContent = "Register";
+    updateWalletUI();
+  });
 });
 
 window.addEventListener("walletChanged", () => {
@@ -1576,8 +1591,9 @@ function renderDataAvailability(m: MatchRecord): string {
     );
   }
   if (m.boundlessRequestId) {
+    const boundlessExplorerUrl = `https://explorer.boundless.network/orders/0x${m.boundlessRequestId}`;
     rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</span></div>`,
+      `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value"><a href="${boundlessExplorerUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</a></span></div>`,
     );
   }
   if (rows.length <= 1) return ""; // only program ID, no proof data
@@ -1664,7 +1680,7 @@ function renderMatchDetail(m: MatchRecord) {
       addStep("Proof Verified", m.proofCompletedAt, "", "done");
     } else if (m.proofStatus === "proving") {
       const boundlessExtra = m.boundlessRequestId
-        ? `<span class="tl-badge">Boundless: ${escapeHtml(m.boundlessRequestId.slice(0, 12))}...</span>`
+        ? `<a href="https://explorer.boundless.network/orders/0x${m.boundlessRequestId}" target="_blank" rel="noopener" class="tl-badge">Boundless: ${escapeHtml(m.boundlessRequestId.slice(0, 12))}...</a>`
         : "";
       addStep("Proof Generating...", undefined, boundlessExtra, "active");
     } else if (m.proofStatus === "pending") {
@@ -1899,6 +1915,7 @@ function connectToServer(url: string): Promise<void> {
           needCloseLobby ? closeLobby : undefined,
         );
         applyAudioSettings(scene);
+        if (isTouchDevice) touchControls.show();
         scene.onLocalInput = (input, tick) => {
           networkManager?.sendInput(input, tick);
         };

@@ -29,6 +29,11 @@ export default defineConfig({
       cert: fs.readFileSync(resolve(__dirname, "certs/chickenz.local.pem")),
     },
     proxy: {
+      "/ws": {
+        target: "ws://localhost:3000",
+        ws: true,
+        changeOrigin: true,
+      },
       "/relayer": {
         target: "https://channels.openzeppelin.com",
         changeOrigin: true,

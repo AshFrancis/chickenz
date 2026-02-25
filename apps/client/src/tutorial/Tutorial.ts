@@ -58,7 +58,7 @@ const STEPS: TutorialStep[] = [
   },
   {
     text: "You've been stomped!\nMash LEFT and RIGHT to escape!",
-    mobileText: "You've been stomped!\nMash LEFT and RIGHT to escape!",
+    mobileText: "You've been stomped!\nSpin the joystick to escape!",
     condition: "stomp_escape",
   },
   {
@@ -201,8 +201,9 @@ export class Tutorial {
             const sp0 = s.players[0] as SerializedPlayer & Record<string, number>;
             const sp1 = s.players[1] as SerializedPlayer & Record<string, number>;
             if (!sp0 || !sp1) return;
-            // Keep P0 health at 100 so stomp doesn't kill
+            // Keep P0 health at 100 and reset damage tracking so stomp cap doesn't eject rider
             sp0.health = 100;
+            sp0["stompDamageTaken"] = 0;
             if (needSetup) {
               // Position P2 on P0's head
               sp1.x = sp0.x;
@@ -255,6 +256,7 @@ export class Tutorial {
                 sp0["stompLastShakeDir"] = 0;
                 sp0["stompAutoRunDir"] = 1;
                 sp0["stompAutoRunTimer"] = 0;
+                sp0["stompDamageTaken"] = 0;
                 sp1.stompedBy = -1;
                 sp1.stompingOn = -1;
                 sp1.stompShakeProgress = 0;
@@ -262,6 +264,7 @@ export class Tutorial {
                 sp1["stompLastShakeDir"] = 0;
                 sp1["stompAutoRunDir"] = 1;
                 sp1["stompAutoRunTimer"] = 0;
+                sp1["stompDamageTaken"] = 0;
                 // Position P2 nearby (120px in front of P0, same surface)
                 const facing = sp0.facing ?? 1;
                 sp1.x = sp0.x + facing * 120;
@@ -270,7 +273,7 @@ export class Tutorial {
                 sp1.vy = 0;
                 sp1.stateFlags = 1; // Alive
                 sp1.health = 15;
-                sp1.lives = 1;
+                sp1.lives = 99;
                 sp1.grounded = true;
               }
             : undefined,

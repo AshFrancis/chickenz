@@ -12,13 +12,16 @@ export const REGIONS: RegionConfig[] = [
   { id: "asia", name: "Asia", flag: "AS", wsUrl: "wss://asia.chickenz.io/ws", httpUrl: "https://asia.chickenz.io" },
 ];
 
-export const DEV_REGIONS: RegionConfig[] = [
-  { id: "local", name: "Local", flag: "DEV", wsUrl: "ws://localhost:3000/ws", httpUrl: "http://localhost:3000" },
-];
-
 export function getRegions(): RegionConfig[] {
   const isDev = location.port === "5173" || location.port === "5174";
-  return isDev ? DEV_REGIONS : REGIONS;
+  if (!isDev) return REGIONS;
+  // In dev, proxy WS through Vite (same origin) to avoid mixed-content blocks on HTTPS
+  const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  const httpProto = location.protocol;
+  const host = location.host; // includes port
+  return [
+    { id: "local", name: "Local", flag: "DEV", wsUrl: `${wsProto}//${host}/ws`, httpUrl: `${httpProto}//${host}` },
+  ];
 }
 
 export const PING_THRESHOLD_MS = 160;

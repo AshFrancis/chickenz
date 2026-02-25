@@ -61,7 +61,9 @@ export class RegionManager {
 
   /** Measure pings to all regions (3 samples, take median). All regions pinged in parallel. */
   async measurePings(): Promise<RegionPing[]> {
-    // Ping all regions in parallel
+    // Warmup: establish TCP+TLS connections to all regions (discarded, avoids cold-start bias)
+    await Promise.all(this.regions.map((r) => pingRegion(r.httpUrl)));
+    // Measure with warm connections
     const regionResults = await Promise.all(
       this.regions.map(async (region) => {
         const samples: number[] = [];

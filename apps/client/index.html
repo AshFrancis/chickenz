@@ -69,7 +69,7 @@
         gap: 10px;
         font-size: 12px;
       }
-      #btn-wallet {
+      #btn-wallet-login, #btn-wallet-register {
         font-size: 10px;
         padding: 4px 10px;
       }
@@ -100,10 +100,18 @@
         position: relative;
         overflow: hidden;
       }
-      #game-container canvas {
+      #game-container canvas:not(#touch-joystick) {
         width: 100% !important;
         height: 100% !important;
         display: block;
+      }
+      #touch-joystick {
+        position: absolute;
+        bottom: 0; left: 0;
+        width: 55%; height: 100%;
+      }
+      #touch-shoot {
+        border-radius: 50% !important;
       }
 
       /* Buttons */
@@ -1420,9 +1428,9 @@
         </div>
 
         <!-- Touch controls (visible on touch devices during gameplay) -->
-        <div id="touch-controls" style="display:none;position:absolute;bottom:0;left:0;width:100%;height:50%;z-index:45;pointer-events:none">
-          <canvas id="touch-joystick" style="position:absolute;bottom:0;left:0;width:50%;height:100%;pointer-events:auto;touch-action:none"></canvas>
-          <div id="touch-shoot" style="position:absolute;bottom:30px;right:30px;width:80px;height:80px;pointer-events:auto;touch-action:none;background:rgba(255,50,50,0.3);border:3px solid rgba(255,50,50,0.6);display:flex;align-items:center;justify-content:center;font-size:24px;color:rgba(255,255,255,0.7)">&#x1F4A5;</div>
+        <div id="touch-controls" style="display:none;position:fixed;bottom:0;left:0;width:100%;height:55%;z-index:100;pointer-events:none">
+          <canvas id="touch-joystick" style="position:absolute;bottom:0;left:0;width:55%;height:100%;pointer-events:auto;touch-action:none"></canvas>
+          <div id="touch-shoot" style="position:absolute;bottom:36px;right:36px;width:90px;height:90px;pointer-events:auto;touch-action:none;background:rgba(255,50,50,0.25);border:3px solid rgba(255,50,50,0.55);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:28px;color:rgba(255,255,255,0.75);transition:transform 0.06s,background 0.06s">&#x1F4A5;</div>
         </div>
 
         <!-- Settings overlay -->
@@ -1676,10 +1684,15 @@
         if (walletAddr && !walletDisconnected) {
           var short = walletAddr.slice(0, 6) + "..." + walletAddr.slice(-4);
           document.getElementById("top-bar-address").textContent = short;
-          var btn = document.getElementById("btn-wallet");
-          btn.textContent = "Disconnect";
-          btn.classList.remove("btn-primary");
-          btn.classList.add("btn-warn");
+          var loginBtn = document.getElementById("btn-wallet-login");
+          if (loginBtn) {
+            loginBtn.textContent = "Disconnect";
+            loginBtn.classList.remove("btn-primary");
+            loginBtn.classList.add("btn-warn");
+            loginBtn.style.display = "";
+          }
+          var regBtn = document.getElementById("btn-wallet-register");
+          if (regBtn) regBtn.style.display = "none";
           if (mode === "ranked") {
             document.getElementById("btn-mode-ranked").classList.remove("locked");
           }
