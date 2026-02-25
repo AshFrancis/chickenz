@@ -3,7 +3,7 @@ import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode, InputMessage } from "./protocol";
 import { generateJoinCode } from "./protocol";
-import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain } from "./stellar";
+import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain, verifySettleTxOnChain } from "./stellar";
 import {
   proveMatch,
   claimNextJob,
@@ -226,9 +226,7 @@ function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArt
   // Selector = first 4 bytes of Groth16ReceiptVerifierParameters digest (risc0 3.0.x)
   const GROTH16_SELECTOR = Buffer.from("73c457ba", "hex");
   const sealBytes =
-    rawSeal.length === 256
-      ? new Uint8Array(Buffer.concat([GROTH16_SELECTOR, rawSeal]))
-      : new Uint8Array(rawSeal); // already has selector (260 bytes)
+    rawSeal.length === 256 ? new Uint8Array(Buffer.concat([GROTH16_SELECTOR, rawSeal])) : new Uint8Array(rawSeal); // already has selector (260 bytes)
   const journalBytes = new Uint8Array(Buffer.from(artifacts.journal, "hex"));
   settleMatchOnChain(sessionId, sealBytes, journalBytes)
     .then((hash) => {
@@ -645,6 +643,13 @@ const server = Bun.serve<SocketData>({
 
     // Relayer proxy: forward /relayer/* to channels.openzeppelin.com/* (avoids CORS issues)
     if (url.pathname.startsWith("/relayer/")) {
+      // Gate: only allow requests from our own origin (prevents third parties from abusing our API key)
+      if (ALLOWED_ORIGIN !== "*") {
+        const origin = req.headers.get("origin") ?? "";
+        if (origin !== ALLOWED_ORIGIN) {
+          return Response.json({ error: "Forbidden" }, { status: 403, headers: corsHeaders });
+        }
+      }
       const relayerApiKey = process.env.RELAYER_API_KEY;
       if (!relayerApiKey) {
         return Response.json({ error: "Relayer not configured" }, { status: 503, headers: corsHeaders });
@@ -811,11 +816,15 @@ const server = Bun.serve<SocketData>({
       if (!/^[0-9a-fA-F]{64}$/.test(txHash)) {
         return Response.json({ error: "Invalid txHash format" }, { status: 400, headers: corsHeaders });
       }
-      // Verify the transaction on-chain before marking settled
-      const txVerified = await verifyTxOnChain(txHash);
+      // Verify the transaction on-chain: if sessionId is known, check it called settle_match
+      // on our contract with the right session ID; otherwise fall back to success-only check
+      const txVerified =
+        record.sessionId !== undefined
+          ? await verifySettleTxOnChain(txHash, record.sessionId)
+          : await verifyTxOnChain(txHash);
       if (!txVerified) {
         return Response.json(
-          { error: "Transaction not found or not successful on-chain" },
+          { error: "Transaction not found, not successful, or does not match this match" },
           { status: 400, headers: corsHeaders },
         );
       }
@@ -994,7 +1003,8 @@ const server = Bun.serve<SocketData>({
         return Response.json({ error: "Match already settled" }, { status: 400, headers: corsHeaders });
       }
       const transcript = getProverTranscript(matchId);
-      if (!transcript) return Response.json({ error: "No prover transcript stored for match" }, { status: 404, headers: corsHeaders });
+      if (!transcript)
+        return Response.json({ error: "No prover transcript stored for match" }, { status: 404, headers: corsHeaders });
       updateProofStatus(matchId, "proving");
       const proofRequestedAt = Date.now();
       const onProofResult = (artifacts: ProofArtifacts | null, source?: string) => {

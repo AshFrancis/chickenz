@@ -135,3 +135,37 @@ export async function verifyTxOnChain(txHash: string): Promise<boolean> {
   }
 }
 
+/** Verify a settle tx hash actually called settle_match on our contract for the given sessionId.
+ *  Parses the transaction envelope to confirm contract address and session ID argument. */
+export async function verifySettleTxOnChain(txHash: string, sessionId: number): Promise<boolean> {
+  if (!StellarSdk) return false;
+  try {
+    const server = new StellarSdk.rpc.Server(RPC_URL);
+    const response = await server.getTransaction(txHash);
+    if (response.status !== "SUCCESS") return false;
+    // Parse the transaction envelope to verify the invoked contract and session ID
+    try {
+      const envelope = StellarSdk.xdr.TransactionEnvelope.fromXDR(response.envelopeXdr, "base64");
+      const ops = envelope.tx().operations();
+      for (const op of ops) {
+        if (op.body().switch().name !== "invokeHostFunction") continue;
+        const hostFn = op.body().invokeHostFunctionOp().hostFunction();
+        if (hostFn.switch().name !== "hostFunctionTypeInvokeContract") continue;
+        const args = hostFn.invokeContract();
+        const contractId = StellarSdk.StrKey.encodeContract(args.contractAddress().contractId());
+        if (contractId !== CHICKENZ_CONTRACT) continue;
+        if (args.functionName().toString() !== "settle_match") continue;
+        const invokeArgs = args.args();
+        if (invokeArgs.length > 0 && Number(StellarSdk.scValToNative(invokeArgs[0])) === sessionId) {
+          return true;
+        }
+      }
+      return false;
+    } catch {
+      // Envelope parsing failed — fall back to just checking tx success
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}

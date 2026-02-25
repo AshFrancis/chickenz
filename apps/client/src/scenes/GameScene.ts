@@ -503,13 +503,7 @@ export class GameScene extends Phaser.Scene {
     this.hudCamera.setZoom(DPR);
 
     // Collect HUD elements (rendered only on hudCamera)
-    const hudElements = [
-      this.timerText,
-      this.suddenDeathText,
-      this.controlsText,
-      this.roundText,
-      this.replayInfoText,
-    ];
+    const hudElements = [this.timerText, this.suddenDeathText, this.controlsText, this.roundText, this.replayInfoText];
     // stompAlertTexts are world-space (not HUD) — HUD camera should ignore them
     for (const at of this.stompAlertTexts) this.hudCamera.ignore(at);
 
@@ -1602,14 +1596,7 @@ export class GameScene extends Phaser.Scene {
           : NULL_INPUT;
         const result: TutorialTickResult = this.tutorialRef.tick(this.warmupState!, input);
         const prevWarmup = this.warmupState;
-        this.warmupWasm.step(
-          input.buttons,
-          input.aimX,
-          input.aimY,
-          result.p2Buttons,
-          result.p2AimX,
-          result.p2AimY,
-        );
+        this.warmupWasm.step(input.buttons, input.aimX, input.aimY, result.p2Buttons, result.p2AimX, result.p2AimY);
         this.warmupState = this.warmupWasm.export_state();
         if (result.banishP2) {
           this.banishWarmupPlayer2(this.warmupState!);
@@ -2261,7 +2248,8 @@ export class GameScene extends Phaser.Scene {
         const hasGun = cp.weapon !== null && cp.weapon >= 0;
         // Determine crouch button state for edge detection
         // Local player: read inputManager directly (no round-trip delay)
-        const isLocal = (i === this.localPlayerId && !this.replayMode) || ((this.warmupMode || this.tutorialMode) && i === 0);
+        const isLocal =
+          (i === this.localPlayerId && !this.replayMode) || ((this.warmupMode || this.tutorialMode) && i === 0);
         const playerBtns = isLocal
           ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons
           : this.lastReceivedButtons[i];
@@ -2390,7 +2378,8 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < 2; i++) {
       const cp = playerStates[i];
       if (!cp) continue;
-      const isLocal = (i === this.localPlayerId && !this.replayMode) || ((this.warmupMode || this.tutorialMode) && i === 0);
+      const isLocal =
+        (i === this.localPlayerId && !this.replayMode) || ((this.warmupMode || this.tutorialMode) && i === 0);
       const btns = isLocal ? this.inputManager.getPlayer1Input(cp.x, cp.y).buttons : this.lastReceivedButtons[i];
       this.prevFrameButtons[i] = btns ?? 0;
     }
@@ -2658,8 +2647,10 @@ export class GameScene extends Phaser.Scene {
         this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
       } else {
         // Static zoom: show full arena
-        const mapW = (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.width : this.config?.map.width) ?? 960;
-        const mapH = (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.height : this.config?.map.height) ?? 540;
+        const mapW =
+          (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.width : this.config?.map.width) ?? 960;
+        const mapH =
+          (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.height : this.config?.map.height) ?? 540;
         const PAD = 40;
         const fitZoom = Math.min(VIEW_W / (mapW + PAD * 2), VIEW_H / (mapH + PAD * 2));
         this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.05, delta);

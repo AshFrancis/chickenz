@@ -200,10 +200,7 @@ async fn run_boundless_multi(seed: u32, rounds: &[Vec<[FpInput; 2]>]) {
         .with_stdin(stdin_bytes)
         .with_groth16_proof();
 
-    let (request_id, expires_at) = client
-        .submit(request)
-        .await
-        .expect("Failed to submit proof request");
+    let (request_id, expires_at) = client.submit(request).await.expect("Failed to submit proof request");
     eprintln!("Submitted! Request ID: {:x}", request_id);
     eprintln!("Expires at block: {}", expires_at);
     eprintln!("Waiting for proof generation (polling every 5s)...");
@@ -292,8 +289,7 @@ fn print_ids_and_artifacts(
     let seal = if use_groth16 {
         match receipt.inner.groth16() {
             Ok(g) => {
-                let verifier_params_digest = risc0_zkvm::Groth16ReceiptVerifierParameters::default()
-                    .digest();
+                let verifier_params_digest = risc0_zkvm::Groth16ReceiptVerifierParameters::default().digest();
                 let selector = &verifier_params_digest.as_bytes()[..4];
                 let mut full_seal = Vec::with_capacity(4 + g.seal.len());
                 full_seal.extend_from_slice(selector);
@@ -341,7 +337,10 @@ fn main() {
     // Print image ID and exit (no transcript needed)
     if args.iter().any(|a| a == "--image-id") {
         let id_hex = hex::encode(
-            CHICKENZ_GUEST_ID.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<_>>(),
+            CHICKENZ_GUEST_ID
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect::<Vec<_>>(),
         );
         println!("{id_hex}");
         return;

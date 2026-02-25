@@ -415,13 +415,17 @@ function deferBGMStart() {
   // Init passkey kit and try silent SDK session restore (non-disruptive).
   // If cached address exists, user is already "logged in" — SDK restore is best-effort for signing.
   initPasskeyKit()
-    .then(() => connectWallet().then((addr) => {
-      if (addr) updateWalletUI();
-      // If SDK restore failed but we have a cached address, don't disrupt the UI
-    }).catch(() => {
-      // SDK failed to connect — that's OK, cached address keeps user logged in
-      if (!cachedAddr) updateWalletUI();
-    }))
+    .then(() =>
+      connectWallet()
+        .then((addr) => {
+          if (addr) updateWalletUI();
+          // If SDK restore failed but we have a cached address, don't disrupt the UI
+        })
+        .catch(() => {
+          // SDK failed to connect — that's OK, cached address keeps user logged in
+          if (!cachedAddr) updateWalletUI();
+        }),
+    )
     .catch(() => {
       if (!cachedAddr) updateWalletUI();
     });
@@ -443,9 +447,13 @@ function deferBGMStart() {
       const scene = getGameScene();
       if (scene) {
         // GameScene.stopTutorial() calls this callback when done
-        scene.startTutorial(tutorial, () => {
-          openLobby();
-        }, pendingCharacter);
+        scene.startTutorial(
+          tutorial,
+          () => {
+            openLobby();
+          },
+          pendingCharacter,
+        );
         applyAudioSettings(scene);
         if (isTouchDevice) touchControls.show();
         // Tutorial.complete() calls this callback when steps finish → triggers stopTutorial
@@ -1210,7 +1218,6 @@ function renderMergedRoomList(mergedRooms: RegionRoomInfo[]) {
     roomListEl.appendChild(createRoomElement(rr.room, rr.regionId, rr.regionFlag));
   }
 }
-
 
 function createRoomElement(room: RoomInfo, roomRegionId?: string, roomRegionFlag?: string): HTMLDivElement {
   const el = document.createElement("div");
@@ -1979,9 +1986,9 @@ function connectToServer(url: string): Promise<void> {
         lobbyStatus.textContent = "";
         setLobbyButtons(true);
         // Re-send identity so the server knows who we are
-        if (currentUsername) networkManager.sendSetUsername(currentUsername);
+        if (currentUsername) networkManager?.sendSetUsername(currentUsername);
         const walletAddr = getConnectedAddress();
-        if (walletAddr) networkManager.sendSetWallet(walletAddr);
+        if (walletAddr) networkManager?.sendSetWallet(walletAddr);
       },
 
       // ── Tournament callbacks ──────────────────────────────
@@ -2250,9 +2257,13 @@ menuTutorial.addEventListener("click", () => {
   closeLobby();
   const scene = getGameScene();
   if (scene) {
-    scene.startTutorial(tutorial, () => {
-      openLobby();
-    }, pendingCharacter);
+    scene.startTutorial(
+      tutorial,
+      () => {
+        openLobby();
+      },
+      pendingCharacter,
+    );
     applyAudioSettings(scene);
     if (isTouchDevice) touchControls.show();
     tutorial.start(() => {
@@ -2346,25 +2357,25 @@ window.addEventListener("replayEnded", () => {
     if (lastOwnCode && lastOwnCode.toUpperCase() === joinCode.toUpperCase()) {
       localStorage.removeItem("chickenz-last-join-code");
     } else {
-    // Auto-join via code after connection is ready
-    const waitJoin = setInterval(() => {
-      if (networkManager?.connected) {
-        clearInterval(waitJoin);
-        pendingCharacter = homeCharacter;
-        // Check if code is on another region
-        const targetRegion = regionManager.findRegionWithCode(joinCode.toUpperCase());
-        if (targetRegion && targetRegion.id !== activeRegionId) {
-          void switchToRegion(targetRegion).then(() => {
-            networkManager?.sendJoinByCode(joinCode.toUpperCase(), pendingCharacter, awayCharacter);
-          });
-        } else {
-          networkManager.sendJoinByCode(joinCode.toUpperCase(), pendingCharacter, awayCharacter);
+      // Auto-join via code after connection is ready
+      const waitJoin = setInterval(() => {
+        if (networkManager?.connected) {
+          clearInterval(waitJoin);
+          pendingCharacter = homeCharacter;
+          // Check if code is on another region
+          const targetRegion = regionManager.findRegionWithCode(joinCode.toUpperCase());
+          if (targetRegion && targetRegion.id !== activeRegionId) {
+            void switchToRegion(targetRegion).then(() => {
+              networkManager?.sendJoinByCode(joinCode.toUpperCase(), pendingCharacter, awayCharacter);
+            });
+          } else {
+            networkManager.sendJoinByCode(joinCode.toUpperCase(), pendingCharacter, awayCharacter);
+          }
+          lobbyStatus.textContent = `Joining with code ${joinCode.toUpperCase()}...`;
+          setLobbyButtons(false);
         }
-        lobbyStatus.textContent = `Joining with code ${joinCode.toUpperCase()}...`;
-        setLobbyButtons(false);
-      }
-    }, 200);
-    setTimeout(() => clearInterval(waitJoin), 10000);
+      }, 200);
+      setTimeout(() => clearInterval(waitJoin), 10000);
     } // end else (not own room)
   } else if (replayId) {
     // Auto-load replay after connection is ready

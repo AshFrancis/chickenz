@@ -1000,8 +1000,7 @@ export class EditorScene extends Phaser.Scene {
 
     const selInfo = this.propsPanel.querySelector("#selection-info") as HTMLElement;
     selInfo.style.display = "block";
-    (this.propsPanel.querySelector("#sel-frame") as HTMLElement).textContent =
-      `Spawn: ${entry.data.type}`;
+    (this.propsPanel.querySelector("#sel-frame") as HTMLElement).textContent = `Spawn: ${entry.data.type}`;
     (this.propsPanel.querySelector("#sel-pos") as HTMLElement).textContent =
       `Pos: ${entry.data.gridX}, ${entry.data.gridY}`;
   }

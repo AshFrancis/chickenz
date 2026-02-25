@@ -223,10 +223,7 @@ export async function disconnectWallet(): Promise<void> {
 
 // ── Contract helpers ───────────────────────────────────────────────────────
 
-async function callContract(
-  method: string,
-  args: StellarSdk.xdr.ScVal[],
-): Promise<string | null> {
+async function callContract(method: string, args: StellarSdk.xdr.ScVal[]): Promise<string | null> {
   if (!kit?.contractId) throw new Error("Wallet not connected");
 
   const tx = await StellarSdk.contract.AssembledTransaction.build({

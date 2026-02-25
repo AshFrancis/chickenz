@@ -73,10 +73,7 @@ export class TestScene extends Phaser.Scene {
     }
 
     // Player rectangle (simple colored box) — origin top-left to match sim coords
-    this.playerRect = this.add
-      .rectangle(0, 0, PLAYER_WIDTH, PLAYER_HEIGHT, 0x4fc3f7, 0.8)
-      .setDepth(20)
-      .setOrigin(0, 0);
+    this.playerRect = this.add.rectangle(0, 0, PLAYER_WIDTH, PLAYER_HEIGHT, 0x4fc3f7, 0.8).setDepth(20).setOrigin(0, 0);
 
     // Spawn markers
     for (const spawn of this.editorMap.spawns) {

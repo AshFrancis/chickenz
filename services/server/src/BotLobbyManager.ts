@@ -91,10 +91,13 @@ export class BotLobbyManager {
     const botName = this.fakeRooms[idx]!.botName;
     this.fakeRooms.splice(idx, 1);
     // Spawn replacement after short delay
-    setTimeout(() => {
-      this.spawnFakeRoom();
-      this.broadcastLobby();
-    }, 2000 + Math.random() * 3000);
+    setTimeout(
+      () => {
+        this.spawnFakeRoom();
+        this.broadcastLobby();
+      },
+      2000 + Math.random() * 3000,
+    );
     return botName;
   }
 
@@ -122,10 +125,7 @@ export class BotLobbyManager {
     const botName = randomBotName();
     let joinCode = generateJoinCode();
     // Ensure unique join code across real rooms, tournaments, and other fake rooms
-    while (
-      this.isJoinCodeInUse(joinCode) ||
-      this.fakeRooms.some((r) => r.joinCode === joinCode)
-    ) {
+    while (this.isJoinCodeInUse(joinCode) || this.fakeRooms.some((r) => r.joinCode === joinCode)) {
       joinCode = generateJoinCode();
     }
     const ttl = Date.now() + this.MIN_TTL + Math.random() * (this.MAX_TTL - this.MIN_TTL);

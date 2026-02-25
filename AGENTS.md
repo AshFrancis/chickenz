@@ -42,8 +42,8 @@ pnpm dev:server            # or: bun services/server/src/index.ts
 pnpm build:wasm
 
 # Tests
-bun test packages/sim       # 64 TS sim tests
-cargo test -p chickenz-core # 50 Rust prover tests
+bun test packages/sim                                          # 64 TS sim tests
+cargo test -p chickenz-core --manifest-path services/prover/Cargo.toml # 50 Rust prover tests
 
 # Lint & format
 pnpm lint                  # ESLint (errors on any, unused vars, floating promises)

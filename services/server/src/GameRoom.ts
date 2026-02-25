@@ -86,7 +86,14 @@ export class GameRoom {
   /** DB match ID — set once match record is created, used for late async updates */
   matchRecordId: string | null = null;
 
-  constructor(id: string, name: string, creator: GameSocket, isPrivate: boolean = false, mode: GameMode = "casual", skipWaiting: boolean = false) {
+  constructor(
+    id: string,
+    name: string,
+    creator: GameSocket,
+    isPrivate: boolean = false,
+    mode: GameMode = "casual",
+    skipWaiting: boolean = false,
+  ) {
     this.id = id;
     this.name = name;
     this.joinCode = generateJoinCode();
@@ -654,7 +661,11 @@ export class GameRoom {
     // round_end message + roundWins already sent/incremented at matchOverTick detection
 
     // Check if match is won (casual: first to 3, ranked: first to 2), with safety cap
-    if (this.roundWins[0] >= this.winsNeeded || this.roundWins[1] >= this.winsNeeded || this.currentRound >= this.totalRounds * 2) {
+    if (
+      this.roundWins[0] >= this.winsNeeded ||
+      this.roundWins[1] >= this.winsNeeded ||
+      this.currentRound >= this.totalRounds * 2
+    ) {
       const matchWinner = this.roundWins[0] >= this.roundWins[1] ? 0 : 1;
       this.pendingTimeouts.push(setTimeout(() => this.endMatch(matchWinner), 100));
     } else {

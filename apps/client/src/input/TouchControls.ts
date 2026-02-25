@@ -31,8 +31,8 @@ export class TouchControls {
   // Spin/shake detection for stomp escape
   private lastAngle = 0;
   private angularSpeed = 0; // smoothed rad/frame EMA
-  private shakeTimer = 0;   // frames remaining in shake mode
-  private shakeFrame = 0;   // cycle counter for L/R alternation
+  private shakeTimer = 0; // frames remaining in shake mode
+  private shakeFrame = 0; // cycle counter for L/R alternation
 
   // Shoot state
   private shootPressed = false;
@@ -126,7 +126,7 @@ export class TouchControls {
         // Shake mode: rapid L/R alternation every 3 frames (~10 switches/sec)
         this.shakeTimer--;
         this.shakeFrame++;
-        buttons |= (this.shakeFrame % 6 < 3) ? Button.Left : Button.Right;
+        buttons |= this.shakeFrame % 6 < 3 ? Button.Left : Button.Right;
       } else if (norm > this.deadZone) {
         const nx = this.knobX / dist; // positive = right
         const ny = this.knobY / dist; // positive = down (screen coords)

@@ -214,9 +214,7 @@ function rowToMatch(row: MatchRow): MatchRecord {
     winner: row.winner,
     scores: [row.score1, row.score2],
     timestamp: row.timestamp,
-    proofStatus: VALID_PROOF_STATUSES.has(row.proof_status)
-      ? (row.proof_status as MatchRecord["proofStatus"])
-      : "none",
+    proofStatus: VALID_PROOF_STATUSES.has(row.proof_status) ? (row.proof_status as MatchRecord["proofStatus"]) : "none",
     roomId: row.room_id,
     mode: row.mode,
   };
@@ -266,7 +264,11 @@ export function insertMatch(record: MatchRecord): void {
   });
 }
 
-export function updateProofStatus(matchId: string, status: MatchRecord["proofStatus"], artifacts?: ProofArtifacts): void {
+export function updateProofStatus(
+  matchId: string,
+  status: MatchRecord["proofStatus"],
+  artifacts?: ProofArtifacts,
+): void {
   if (artifacts) {
     stmtUpdateProof.run({
       $id: matchId,
@@ -413,12 +415,8 @@ export function getTranscriptByMatchId(matchId: string): object | null {
   }
 }
 
-const stmtSaveProverTranscript = db.prepare(
-  `UPDATE matches SET prover_transcript_data = $data WHERE id = $id`,
-);
-const stmtGetProverTranscript = db.prepare(
-  `SELECT prover_transcript_data FROM matches WHERE id = $id`,
-);
+const stmtSaveProverTranscript = db.prepare(`UPDATE matches SET prover_transcript_data = $data WHERE id = $id`);
+const stmtGetProverTranscript = db.prepare(`SELECT prover_transcript_data FROM matches WHERE id = $id`);
 
 export function saveProverTranscript(matchId: string, data: object) {
   stmtSaveProverTranscript.run({ $id: matchId, $data: JSON.stringify(data) });
