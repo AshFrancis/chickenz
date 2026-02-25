@@ -783,7 +783,7 @@ const server = Bun.serve<SocketData>({
       return Response.json(
         {
           ...record,
-          contractAddress: process.env.CHICKENZ_CONTRACT || "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP",
+          contractAddress: process.env.CHICKENZ_CONTRACT || "CBRDPRKUK3NH2HXOWSNZPG2ZSXXXZBR7GCMN7WLHWINMLNDCJ7NSREKG",
           verifierAddress: "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
           gameHubAddress: "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
         },

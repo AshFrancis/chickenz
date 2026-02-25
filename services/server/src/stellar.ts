@@ -9,7 +9,7 @@ try {
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
-const CHICKENZ_CONTRACT = process.env.CHICKENZ_CONTRACT || "CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP";
+const CHICKENZ_CONTRACT = process.env.CHICKENZ_CONTRACT || "CBRDPRKUK3NH2HXOWSNZPG2ZSXXXZBR7GCMN7WLHWINMLNDCJ7NSREKG";
 const ADMIN_SECRET = process.env.STELLAR_ADMIN_SECRET;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic SDK type
