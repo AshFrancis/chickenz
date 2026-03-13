@@ -374,6 +374,9 @@ function deferBGMStart() {
   topBarUsername.textContent = name;
 
   // Init regions: connect to cached region instantly, measure pings in background
+  // Check for join URL param BEFORE first await (URL gets cleared later by deep link code)
+  const hasJoinParam = new URLSearchParams(window.location.search).has("join");
+
   void (async () => {
     // 1. Try cached home region for instant connect
     const cached = regionManager.getCachedHomeRegion();
@@ -386,14 +389,18 @@ function deferBGMStart() {
 
     // 2. Measure pings in background (all regions in parallel)
     await regionManager.measurePings();
-    const bestRegion = regionManager.getBestRegion();
 
-    // 3. If best region differs from cached (or no cache), switch
-    if (bestRegion.id !== activeRegionId) {
-      activeRegionId = bestRegion.id;
-      regionManager.activeRegionId = bestRegion.id;
-      await connectToServer(bestRegion.wsUrl);
-      if (!cached) flushPendingActions();
+    // 3. If best region differs from cached (or no cache), switch —
+    //    UNLESS a ?join= URL param is present (the deep link handler will
+    //    switch to the correct region; switching here would kill the game connection)
+    if (!hasJoinParam) {
+      const bestRegion = regionManager.getBestRegion();
+      if (bestRegion.id !== activeRegionId) {
+        activeRegionId = bestRegion.id;
+        regionManager.activeRegionId = bestRegion.id;
+        await connectToServer(bestRegion.wsUrl);
+        if (!cached) flushPendingActions();
+      }
     }
 
     regionManager.connectLobbyStreams();
@@ -1955,11 +1962,20 @@ function connectToServer(url: string): Promise<void> {
         if (scene) scene.endOnlineMatch(winner);
 
         // Show result screen, then transition to lobby
+        // If we're on a foreign region (cross-region join), switch back to home
+        const returnToLobby = async () => {
+          const homeId = regionManager.homeRegionId;
+          if (homeId && homeId !== activeRegionId) {
+            const homeRegion = regionManager.getRegionById(homeId);
+            if (homeRegion) await switchToRegion(homeRegion);
+          }
+          openLobby();
+        };
         setTimeout(() => {
           if (scene) {
-            scene.playTransition(() => openLobby());
+            scene.playTransition(() => void returnToLobby());
           } else {
-            openLobby();
+            void returnToLobby();
           }
         }, 2500);
       },
@@ -2084,12 +2100,19 @@ function connectToServer(url: string): Promise<void> {
         tournamentResults.classList.add("visible");
         renderStandings(standings);
 
-        // Return to lobby after 8s
+        // Return to lobby (and home region if cross-region) after 8s
         setTimeout(() => {
           hideAllTournamentOverlays();
           currentTournamentId = null;
           tournamentSpectating = false;
-          openLobby();
+          void (async () => {
+            const homeId = regionManager.homeRegionId;
+            if (homeId && homeId !== activeRegionId) {
+              const homeRegion = regionManager.getRegionById(homeId);
+              if (homeRegion) await switchToRegion(homeRegion);
+            }
+            openLobby();
+          })();
         }, 8000);
       },
     });
