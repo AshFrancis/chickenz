@@ -641,6 +641,31 @@ const server = Bun.serve<SocketData>({
       return new Response("ok", { headers: corsHeaders });
     }
 
+    // Resolve a join code — returns whether this server has a matching room/tournament
+    {
+      const resolveMatch = url.pathname.match(/^\/api\/resolve-code\/([A-Za-z]{5})$/);
+      if (resolveMatch) {
+        const code = resolveMatch[1]!.toUpperCase();
+        // Check game rooms (including private)
+        const room = findRoomByJoinCode(code);
+        if (room) {
+          return Response.json({ found: true, type: "room" }, { headers: corsHeaders });
+        }
+        // Check bot lobby fake rooms
+        const fakeRoom = botLobbyManager.findByJoinCode(code);
+        if (fakeRoom) {
+          return Response.json({ found: true, type: "room" }, { headers: corsHeaders });
+        }
+        // Check tournaments
+        for (const t of tournaments.values()) {
+          if (t.joinCode === code && t.status === "waiting") {
+            return Response.json({ found: true, type: "tournament" }, { headers: corsHeaders });
+          }
+        }
+        return Response.json({ found: false }, { headers: corsHeaders });
+      }
+    }
+
     // Relayer proxy: forward /relayer/* to channels.openzeppelin.com/* (avoids CORS issues)
     if (url.pathname.startsWith("/relayer/")) {
       // Gate: only allow requests from our own origin (prevents third parties from abusing our API key)

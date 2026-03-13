@@ -2215,8 +2215,12 @@ joinCodeBtn.addEventListener("click", () => {
       if (!ok) return;
     }
 
-    // Check if we can see this code in any region's room list
-    const targetRegion = regionManager.findRegionWithCode(code);
+    // Check if we can see this code in any region's room list (public rooms)
+    let targetRegion = regionManager.findRegionWithCode(code);
+    // Fallback: query all servers via HTTP (finds private rooms + tournaments)
+    if (!targetRegion) {
+      targetRegion = await regionManager.resolveCodeAcrossRegions(code);
+    }
     if (targetRegion && targetRegion.id !== activeRegionId) {
       await switchToRegion(targetRegion);
     }
@@ -2362,17 +2366,20 @@ window.addEventListener("replayEnded", () => {
         if (networkManager?.connected) {
           clearInterval(waitJoin);
           pendingCharacter = homeCharacter;
-          // Check if code is on another region
-          const targetRegion = regionManager.findRegionWithCode(joinCode.toUpperCase());
-          if (targetRegion && targetRegion.id !== activeRegionId) {
-            void switchToRegion(targetRegion).then(() => {
-              networkManager?.sendJoinByCode(joinCode.toUpperCase(), pendingCharacter, awayCharacter);
-            });
-          } else {
-            networkManager.sendJoinByCode(joinCode.toUpperCase(), pendingCharacter, awayCharacter);
-          }
-          lobbyStatus.textContent = `Joining with code ${joinCode.toUpperCase()}...`;
+          const upperCode = joinCode.toUpperCase();
+          lobbyStatus.textContent = `Joining with code ${upperCode}...`;
           setLobbyButtons(false);
+          void (async () => {
+            // Check lobby cache first (public rooms), then HTTP resolve (private/tournaments)
+            let targetRegion = regionManager.findRegionWithCode(upperCode);
+            if (!targetRegion) {
+              targetRegion = await regionManager.resolveCodeAcrossRegions(upperCode);
+            }
+            if (targetRegion && targetRegion.id !== activeRegionId) {
+              await switchToRegion(targetRegion);
+            }
+            networkManager?.sendJoinByCode(upperCode, pendingCharacter, awayCharacter);
+          })();
         }
       }, 200);
       setTimeout(() => clearInterval(waitJoin), 10000);

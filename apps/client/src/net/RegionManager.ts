@@ -246,6 +246,33 @@ export class RegionManager {
     return undefined;
   }
 
+  /**
+   * Query all region servers via HTTP to find which one has a matching join code.
+   * Used for private rooms and tournaments that don't appear in lobby broadcasts.
+   */
+  async resolveCodeAcrossRegions(code: string): Promise<RegionConfig | undefined> {
+    const upperCode = code.toUpperCase();
+    // Query all regions in parallel
+    const results = await Promise.all(
+      this.regions.map(async (region) => {
+        try {
+          const res = await fetch(`${region.httpUrl}/api/resolve-code/${upperCode}`, { cache: "no-store" });
+          if (!res.ok) return null;
+          const data = await res.json();
+          if (data.found) return region;
+        } catch {
+          // Region unreachable
+        }
+        return null;
+      }),
+    );
+    // Return first region that has the code (prefer lower ping)
+    const sorted = results
+      .filter((r): r is RegionConfig => r !== null)
+      .sort((a, b) => (this.pings.get(a.id) ?? Infinity) - (this.pings.get(b.id) ?? Infinity));
+    return sorted[0];
+  }
+
   /** Find a region that has a quickplay-eligible room (waiting, public, matching mode). */
   findRegionWithWaitingRoom(mode: string): RegionConfig | undefined {
     // Check home region first
