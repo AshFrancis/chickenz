@@ -724,7 +724,7 @@
         top: 0; left: 0;
         width: 100%; height: 100%;
         background: rgba(10, 10, 20, 0.95);
-        z-index: 175;
+        z-index: 210;
         align-items: center;
         justify-content: center;
       }
@@ -949,7 +949,9 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 16px;
+        gap: 14px;
+        overflow-y: auto;
+        padding: 20px;
       }
       #tournament-overlay.visible { display: flex; }
       #tournament-overlay h2 {
@@ -966,26 +968,118 @@
       }
       .tournament-players {
         display: flex;
-        gap: 12px;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        max-width: 600px;
+      }
+      .slots-section-label {
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: #888;
+        text-transform: uppercase;
+        margin-top: 6px;
+      }
+      .slots-grid {
+        display: flex;
+        gap: 8px;
         flex-wrap: wrap;
         justify-content: center;
       }
       .tournament-slot {
-        width: 120px;
-        padding: 12px;
+        width: 110px;
+        padding: 8px 6px;
         background: #1a1a2e;
-        border: 2px solid #333;
+        border: 2px solid #282840;
         text-align: center;
-        font-size: 14px;
+        font-size: 12px;
+        color: #555;
+        transition: border-color 0.2s;
+      }
+      .tournament-slot.empty {
+        color: #444;
+        border-style: dashed;
+      }
+      .tournament-slot.empty[style*="cursor"] {
+        border-color: #555;
+      }
+      .tournament-slot.empty[style*="cursor"]:hover {
+        border-color: #ffee58;
         color: #888;
       }
       .tournament-slot.filled {
         color: #fff;
+        border-color: #555;
+      }
+      .tournament-slot.host {
         border-color: #ffee58;
       }
+      .tournament-slot.spectator-slot.filled {
+        border-color: #555;
+        color: #ccc;
+      }
+      .tournament-slot.disconnected {
+        opacity: 0.4;
+      }
+      .tournament-slot .slot-name {
+        font-weight: 700;
+        font-size: 12px;
+      }
+      .tournament-slot .slot-badge {
+        display: block;
+        font-size: 9px;
+        letter-spacing: 1px;
+        margin-top: 2px;
+      }
+      .host-badge { color: #ffee58; }
       #tournament-status {
         font-size: 12px;
         color: #888;
+      }
+      #tournament-host-controls {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .tournament-config-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-size: 12px;
+        color: #ccc;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      #tournament-host-controls .btn-sm {
+        padding: 4px 10px;
+        font-size: 11px;
+        background: #1a1a2e;
+        border: 1px solid #555;
+        color: #ccc;
+        cursor: pointer;
+      }
+      #tournament-host-controls .btn-sm.active {
+        background: #333;
+        border-color: #ffee58;
+        color: #ffee58;
+      }
+      #tournament-host-controls.readonly .btn-sm {
+        cursor: default;
+        pointer-events: none;
+        transform: none !important;
+        box-shadow: 2px 2px 0 #111 !important;
+      }
+      #tournament-host-controls.readonly .btn-sm.inactive {
+        opacity: 0.3;
+      }
+      #tournament-host-controls.readonly .btn-sm:hover,
+      #tournament-host-controls.readonly .btn-sm:active {
+        transform: none !important;
+        box-shadow: 2px 2px 0 #111 !important;
+        background: inherit !important;
       }
 
       /* Bracket overlay (between matches) */
@@ -994,41 +1088,166 @@
         position: absolute;
         top: 0; left: 0;
         width: 100%; height: 100%;
-        background: rgba(10, 10, 20, 0.95);
+        background: rgba(10, 10, 20, 0.97);
         z-index: 100;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 12px;
-        padding: 24px;
+        gap: 8px;
+        padding: 12px;
+        overflow: hidden;
       }
       #bracket-overlay.visible { display: flex; }
       #bracket-overlay h2 {
         font-size: 20px;
         color: #ffee58;
         text-shadow: 2px 2px 0 #c9a800;
+        letter-spacing: 3px;
+        margin: 0;
+        flex-shrink: 0;
       }
-      .bracket-grid {
+      /* ── Bracket visual layout ── */
+      #bracket-grid {
+        position: relative;
+        width: 100%;
+        flex: 1;
+        min-height: 0;
         display: flex;
         flex-direction: column;
-        gap: 8px;
-        width: 100%;
-        max-width: 500px;
-      }
-      .bracket-match {
-        display: flex;
-        justify-content: space-between;
         align-items: center;
-        padding: 10px 14px;
+        justify-content: center;
+        overflow: visible;
+      }
+      .bk-canvas {
+        position: relative;
+        flex-shrink: 0;
+      }
+      .bk-canvas svg.bk-lines {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        pointer-events: none;
+        z-index: 0;
+      }
+      .bk-canvas svg.bk-lines line { stroke: #555; stroke-width: 2; }
+      .bk-match {
+        position: absolute;
         background: #1a1a2e;
-        border: 2px solid #333;
+        border: 2px solid #444;
+        border-radius: 4px;
+        font-size: 13px;
+        z-index: 1;
+        transition: border-color 0.3s, box-shadow 0.3s;
+        box-sizing: border-box;
+      }
+      .bk-match.done { border-color: #66bb6a; }
+      .bk-match.playing { border-color: #ffa726; box-shadow: 0 0 12px rgba(255,167,38,0.4); animation: bk-pulse 1.5s infinite; }
+      .bk-match.ready { border-color: #ffee58; box-shadow: 0 0 8px rgba(255,238,88,0.25); }
+      .bk-match.final-match { border-color: #ffee58; }
+      .bk-match.final-match.done { border-color: #66bb6a; }
+      @keyframes bk-pulse {
+        0%, 100% { border-color: #ffa726; box-shadow: 0 0 12px rgba(255,167,38,0.4); }
+        50% { border-color: #ff6f00; box-shadow: 0 0 18px rgba(255,111,0,0.6); }
+      }
+      .bk-seed {
+        padding: 5px 10px;
+        color: #aaa;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        border-bottom: 1px solid #333;
         font-size: 12px;
       }
-      .bracket-match.completed { border-color: #66bb6a; }
-      .bracket-match.current { border-color: #ffa726; }
-      .bracket-match .match-label { color: #ffa726; min-width: 120px; }
-      .bracket-match .match-players-text { color: #ccc; flex: 1; text-align: center; }
-      .bracket-match .match-winner { color: #66bb6a; min-width: 80px; text-align: right; }
+      .bk-seed:last-child { border-bottom: none; }
+      .bk-seed.won { color: #66bb6a; font-weight: bold; }
+      .bk-final-label {
+        position: absolute;
+        font-size: 10px;
+        letter-spacing: 3px;
+        color: #ffee58;
+        text-shadow: 1px 1px 0 #c9a800;
+        text-align: center;
+        z-index: 2;
+      }
+      .bk-consolation-section {
+        padding-top: 10px;
+        border-top: 1px solid #444;
+      }
+      .bk-consolation-title {
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: #888;
+        text-transform: uppercase;
+        text-align: center;
+        margin-bottom: 8px;
+      }
+      .bk-consolation-row {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+      }
+      .bk-consolation-row .bk-match {
+        position: relative;
+        width: 140px;
+        height: auto;
+        left: auto !important;
+        top: auto !important;
+      }
+      /* VS overlay (tournament match intro) */
+      .bk-vs-overlay {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 20;
+        opacity: 0;
+        transition: opacity 0.4s ease-in;
+      }
+      .bk-vs-overlay.visible { opacity: 1; }
+      .bk-vs-label {
+        font-size: 14px;
+        color: #888;
+        letter-spacing: 4px;
+        text-transform: uppercase;
+        margin-bottom: 16px;
+      }
+      .bk-vs-names {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+      .bk-vs-p1, .bk-vs-p2 {
+        font-size: 28px;
+        color: #fff;
+        font-weight: bold;
+        text-shadow: 0 0 20px rgba(255,238,88,0.3);
+        animation: bk-vs-slide-in 0.5s ease-out both;
+      }
+      .bk-vs-p1 { animation-name: bk-vs-slide-left; }
+      .bk-vs-p2 { animation-name: bk-vs-slide-right; }
+      .bk-vs-vs {
+        font-size: 36px;
+        color: #ffee58;
+        font-weight: bold;
+        text-shadow: 0 0 30px rgba(255,238,88,0.6), 2px 2px 0 #c9a800;
+        animation: bk-vs-pop 0.4s ease-out 0.3s both;
+      }
+      @keyframes bk-vs-slide-left {
+        from { transform: translateX(-60px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes bk-vs-slide-right {
+        from { transform: translateX(60px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes bk-vs-pop {
+        from { transform: scale(0.3); opacity: 0; }
+        to { transform: scale(1); opacity: 1; }
+      }
 
       /* Spectate overlay (during match) */
       #spectate-overlay {
@@ -1420,17 +1639,30 @@
 
         <!-- Tutorial overlay -->
         <div id="tutorial-overlay" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;z-index:195;pointer-events:none">
-          <div id="tutorial-prompt" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(10,10,20,0.95);border:2px solid #ffee58;padding:24px;text-align:center;pointer-events:auto;max-width:320px">
-            <p style="color:#ffee58;font-size:16px;margin-bottom:6px;text-shadow:2px 2px 0 #c9a800">Welcome to Chickenz!</p>
-            <p style="color:#aaa;font-size:11px;margin-bottom:16px">Learn the controls in a quick tutorial</p>
-            <div style="display:flex;gap:8px;justify-content:center">
-              <button id="btn-tutorial-play" class="btn btn-primary">Play Tutorial</button>
-              <button id="btn-tutorial-skip" class="btn">Skip</button>
+          <div id="tutorial-prompt" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(10,10,20,0.95);pointer-events:auto;align-items:center;justify-content:center">
+            <div id="tutorial-prompt-frame" style="position:relative;max-width:360px;width:90%;image-rendering:pixelated;overflow:hidden">
+              <div id="tutorial-prompt-card" style="position:relative;padding:28px 32px;margin:12px;background:#0d0d1a;border:2px solid #333;z-index:2;text-align:center">
+                <p style="color:#ffee58;font-size:18px;margin-bottom:8px">Looks like you're new here</p>
+                <p style="color:#aaa;font-size:12px;margin-bottom:20px">Learn the basics in a quick tutorial</p>
+                <button id="btn-tutorial-play" class="btn btn-primary" style="width:100%;margin-bottom:10px;font-size:14px">Play Tutorial</button>
+                <button id="btn-tutorial-skip" class="btn" style="width:100%;font-size:12px;opacity:0.6">Skip</button>
+              </div>
             </div>
           </div>
           <div id="tutorial-step" style="display:none;position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(10,10,20,0.85);border:2px solid #ffee58;padding:12px 20px;text-align:center;pointer-events:auto;max-width:400px">
-            <p id="tutorial-step-text" style="color:#fff;font-size:12px;margin-bottom:8px"></p>
-            <button id="btn-tutorial-skip-step" class="btn btn-sm" style="font-size:10px">Skip Tutorial</button>
+            <p id="tutorial-step-text" style="color:#fff;font-size:12px;margin-bottom:0"></p>
+          </div>
+          <div id="username-prompt" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(10,10,20,0.95);pointer-events:auto;align-items:center;justify-content:center">
+            <div id="username-prompt-frame" style="position:relative;max-width:360px;width:90%;image-rendering:pixelated;overflow:hidden">
+              <div id="username-prompt-card" style="position:relative;padding:28px 32px;margin:12px;background:#0d0d1a;border:2px solid #333;z-index:2;text-align:center">
+                <p style="color:#ffee58;font-size:18px;margin-bottom:6px">Choose a Username</p>
+                <p style="color:#aaa;font-size:11px;margin-bottom:16px">1-7 characters, letters/numbers/underscore</p>
+                <input type="text" id="username-prompt-input" maxlength="7" spellcheck="false" autocomplete="off"
+                  style="background:#111;color:#fff;border:2px solid #444;padding:8px 12px;font-size:14px;width:100%;box-sizing:border-box;text-align:center;font-family:inherit;margin-bottom:8px" placeholder="Username">
+                <div id="username-prompt-error" style="color:#ef5350;font-size:11px;min-height:14px;margin-bottom:8px"></div>
+                <button id="btn-username-confirm" class="btn btn-primary" style="width:100%">LET'S GO!</button>
+              </div>
+            </div>
           </div>
         </div>
 

@@ -2,7 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode, InputMessage } from "./protocol";
-import { generateJoinCode } from "./protocol";
+import { generateJoinCode, validateTournamentConfig, validatePartialTournamentConfig } from "./protocol";
 import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain, verifySettleTxOnChain } from "./stellar";
 import {
   proveMatch,
@@ -1182,7 +1182,7 @@ const server = Bun.serve<SocketData>({
             ws.data.tournamentId = null;
             lobbySockets.add(ws);
             sendLobby(ws);
-            if (tournament.playerCount === 0) tournaments.delete(tournamentId);
+            if (tournament.participantCount === 0) tournaments.delete(tournamentId);
           }
         }
         return;
@@ -1422,7 +1422,8 @@ const server = Bun.serve<SocketData>({
         do {
           tournamentId = crypto.randomUUID().slice(0, 8);
         } while (tournaments.has(tournamentId));
-        const tournament = new TournamentRoom(tournamentId, ws);
+        const config = validateTournamentConfig((msg as { config?: unknown }).config);
+        const tournament = new TournamentRoom(tournamentId, ws, config);
         ensureUniqueJoinCode(tournament);
         ws.data.tournamentId = tournamentId;
         tournament.onEnded = (sockets) => {
@@ -1436,6 +1437,39 @@ const server = Bun.serve<SocketData>({
         };
         tournaments.set(tournamentId, tournament);
         lobbySockets.delete(ws);
+        return;
+      }
+
+      // ── Start tournament (host only) ─────────────────────────
+      if (msg.type === "start_tournament") {
+        const tournamentId = ws.data.tournamentId;
+        if (!tournamentId) return;
+        const tournament = tournaments.get(tournamentId);
+        if (!tournament) return;
+        if (!tournament.startTournament(ws)) {
+          ws.send(JSON.stringify({ type: "error", message: "Cannot start tournament" }));
+        }
+        return;
+      }
+
+      // ── Toggle player/spectator role ──────────────────────────
+      if (msg.type === "toggle_role") {
+        const tournamentId = ws.data.tournamentId;
+        if (!tournamentId) return;
+        const tournament = tournaments.get(tournamentId);
+        if (!tournament) return;
+        tournament.toggleRole(ws);
+        return;
+      }
+
+      // ── Update tournament config (host only) ──────────────────
+      if (msg.type === "update_tournament_config") {
+        const tournamentId = ws.data.tournamentId;
+        if (!tournamentId) return;
+        const tournament = tournaments.get(tournamentId);
+        if (!tournament) return;
+        const partial = validatePartialTournamentConfig((msg as { config?: unknown }).config);
+        if (partial) tournament.updateConfig(ws, partial);
         return;
       }
 
@@ -1527,7 +1561,7 @@ const server = Bun.serve<SocketData>({
         const tournament = tournaments.get(tournamentId);
         if (tournament) {
           tournament.handleDisconnect(ws);
-          if (tournament.playerCount === 0) {
+          if (tournament.participantCount === 0) {
             tournaments.delete(tournamentId);
           }
         }

@@ -1413,14 +1413,16 @@ export class GameScene extends Phaser.Scene {
     this.pendingServerButtons = lastButtons as [number, number] | undefined;
   }
 
-  endOnlineMatch(winner: number) {
+  endOnlineMatch(winner: number, silent = false) {
     this.playing = false;
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
-    if (winner === -1) {
-      showAnnounce("DRAW!");
-    } else {
-      const name = this.playerUsernames[winner]?.toUpperCase();
-      showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
+    if (!silent) {
+      if (winner === -1) {
+        showAnnounce("DRAW!");
+      } else {
+        const name = this.playerUsernames[winner]?.toUpperCase();
+        showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
+      }
     }
     this.playSound("match-end");
     this.pendingServerState = null;
@@ -1488,6 +1490,18 @@ export class GameScene extends Phaser.Scene {
     this.spectateMode = false;
     this.playing = false;
     document.getElementById("spectate-overlay")?.classList.remove("visible");
+  }
+
+  /** Clear rendered game visuals (used between tournament matches to avoid flashes). */
+  clearVisuals() {
+    this.gfx.clear();
+    this.gfxOverlay.clear();
+    for (const sprite of this.playerSprites) {
+      if (sprite) sprite.setVisible(false);
+    }
+    for (const [, sprite] of this.pickupSprites) {
+      sprite.setVisible(false);
+    }
   }
 
   get isSpectating(): boolean {
@@ -2257,7 +2271,7 @@ export class GameScene extends Phaser.Scene {
         const tauntPrev = !!((this.prevFrameButtons[i] ?? 0) & Button.Taunt);
         const tauntEdge = tauntNow && !tauntPrev && cp.grounded;
         const tauntPlaying = sprite.anims.currentAnim?.key === `${slug}-crouch` && sprite.anims.isPlaying;
-        if (!this.playing && !this.replayMode && !this.spectateMode) {
+        if (!this.playing && !this.replayMode && !this.spectateMode && !this.tutorialMode && !this.warmupMode) {
           // During countdown freeze, force idle animation
           animKey = `${slug}-idle`;
         } else if (tauntEdge) {

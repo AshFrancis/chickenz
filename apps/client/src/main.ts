@@ -6,7 +6,14 @@ import { TouchControls } from "./input/TouchControls";
 import { Tutorial } from "./tutorial/Tutorial";
 import { initChickenzWasm } from "./wasm";
 
-import { NetworkManager, type RoomInfo, type GameMode, type TournamentBracket } from "./net/NetworkManager";
+import {
+  NetworkManager,
+  type RoomInfo,
+  type GameMode,
+  type TournamentBracket,
+  type BracketMatch,
+  type TournamentLobbyMessage,
+} from "./net/NetworkManager";
 import { RegionManager, type RegionPing, type RegionRoomInfo } from "./net/RegionManager";
 import { getRegions, type RegionConfig } from "./net/regions";
 
@@ -127,6 +134,8 @@ const spectateOverlay = document.getElementById("spectate-overlay") as HTMLDivEl
 const spectateLabel = document.getElementById("spectate-label") as HTMLSpanElement;
 const tournamentResults = document.getElementById("tournament-results") as HTMLDivElement;
 const standingsList = document.getElementById("standings-list") as HTMLDivElement;
+let currentTournamentSlot = -1; // our slot in the tournament
+let _currentTournamentHostSlot = -1;
 
 // Match detail overlay
 const matchDetailOverlay = document.getElementById("match-detail-overlay") as HTMLDivElement;
@@ -169,6 +178,7 @@ let currentUsername = "";
 let currentMode: GameMode = "casual";
 let currentTournamentId: string | null = null;
 let tournamentSpectating = false;
+let inTutorialFlow = false; // true while new user is in tutorial + username prompt
 
 // ── Queued actions (executed once connected) ──────────────────────────────────
 let pendingQuickplay = false; // true if user clicked Quick Play before connected
@@ -345,9 +355,20 @@ function generateAnimalName(): string {
 function getOrCreateUsername(): string {
   const saved = localStorage.getItem("chickenz-username");
   if (saved) return saved;
-  const name = generateAnimalName();
+  // New users get no name — they'll pick one after the tutorial.
+  // Returning users who lost their username (cleared storage) get a random one.
+  if (!Tutorial.shouldShow()) {
+    const name = generateAnimalName();
+    localStorage.setItem("chickenz-username", name);
+    return name;
+  }
+  return "";
+}
+
+function saveUsername(name: string) {
   localStorage.setItem("chickenz-username", name);
-  return name;
+  currentUsername = name;
+  topBarUsername.textContent = name;
 }
 
 // ── Gate flow: instant play, wallet optional ────────────────────────────────
@@ -369,7 +390,7 @@ function deferBGMStart() {
   window.addEventListener("keydown", startBGMOnce);
 }
 
-// Always skip gate — generate name if needed, go straight to lobby
+// Init gate — returning users go straight to lobby, new users get tutorial first
 {
   const name = getOrCreateUsername();
   currentUsername = name;
@@ -432,41 +453,95 @@ function deferBGMStart() {
   if (isTouchDevice) touchControls.init();
   tutorial.init(isTouchDevice);
 
-  // Show tutorial prompt for first-time users (before lobby)
+  // New users: show tutorial prompt
   if (Tutorial.shouldShow()) {
+    inTutorialFlow = true;
     const tutorialOverlay = document.getElementById("tutorial-overlay")!;
     const tutorialPrompt = document.getElementById("tutorial-prompt")!;
     tutorialOverlay.style.display = "block";
-    tutorialPrompt.style.display = "block";
+    tutorialPrompt.style.display = "flex";
 
-    document.getElementById("btn-tutorial-play")?.addEventListener("click", () => {
+    const launchTutorial = () => {
       tutorialPrompt.style.display = "none";
       closeLobby();
-      const scene = getGameScene();
-      if (scene) {
-        // GameScene.stopTutorial() calls this callback when done
+      const startWhenReady = () => {
+        const scene = getGameScene();
+        if (!scene) {
+          requestAnimationFrame(startWhenReady);
+          return;
+        }
         scene.startTutorial(
           tutorial,
           () => {
-            openLobby();
+            showUsernamePrompt();
           },
           pendingCharacter,
         );
         applyAudioSettings(scene);
         if (isTouchDevice) touchControls.show();
-        // Tutorial.complete() calls this callback when steps finish → triggers stopTutorial
         tutorial.start(() => {
           scene.stopTutorial();
         });
-      }
-    });
+      };
+      requestAnimationFrame(startWhenReady);
+    };
+
+    document.getElementById("btn-tutorial-play")?.addEventListener("click", launchTutorial);
 
     document.getElementById("btn-tutorial-skip")?.addEventListener("click", () => {
       Tutorial.markDone();
       tutorialOverlay.style.display = "none";
       tutorialPrompt.style.display = "none";
+      inTutorialFlow = false;
+      showUsernamePrompt();
     });
   }
+}
+
+// ── Username prompt (shown after tutorial for new users) ─────────────────────
+
+function showUsernamePrompt() {
+  const overlay = document.getElementById("tutorial-overlay")!;
+  const prompt = document.getElementById("username-prompt")!;
+  const input = document.getElementById("username-prompt-input") as HTMLInputElement;
+  const error = document.getElementById("username-prompt-error")!;
+  const confirmBtn = document.getElementById("btn-username-confirm") as HTMLButtonElement;
+
+  inTutorialFlow = true;
+  overlay.style.display = "block";
+  prompt.style.display = "flex";
+  input.value = "";
+  error.textContent = "";
+  input.focus();
+
+  const validate = (val: string): string | null => {
+    if (val.length === 0) return "Username is required";
+    if (val.length > 7) return "Max 7 characters";
+    if (!/^[a-zA-Z0-9_]+$/.test(val)) return "Letters, numbers, underscore only";
+    return null;
+  };
+
+  const submit = () => {
+    const val = input.value.trim();
+    const err = validate(val);
+    if (err) {
+      error.textContent = err;
+      return;
+    }
+    saveUsername(val);
+    prompt.style.display = "none";
+    overlay.style.display = "none";
+    inTutorialFlow = false;
+    if (networkManager?.connected) {
+      networkManager.sendSetUsername(val);
+    }
+    openLobby();
+  };
+
+  confirmBtn.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
 }
 
 // Wallet disconnect just updates UI — user keeps playing as casual
@@ -650,20 +725,16 @@ modeRankedBtn.addEventListener("click", () => {
 
 let settingsOpen = false;
 
-// Build tiled border around settings card using terrain spritesheet
-function buildSettingsFrame() {
-  const frame = document.getElementById("settings-frame")!;
-  const card = document.getElementById("settings-card")!;
-  // Terrain spritesheet: 22 cols, 16x16 tiles
+// Build tiled border around a card using terrain spritesheet
+function buildTiledFrame(frame: HTMLElement, card: HTMLElement) {
   const COLS = 22;
   const TILE = 16;
-  // Frame indices: (col, row) → row * 22 + col
-  const TOP_L = 4 * COLS + 12; // (12,4)
-  const TOP_M = 4 * COLS + 13; // (13,4)
-  const TOP_R = 4 * COLS + 14; // (14,4)
-  const SIDE_T = 4 * COLS + 15; // (15,4)
-  const SIDE_M = 5 * COLS + 15; // (15,5)
-  const SIDE_B = 6 * COLS + 15; // (15,6)
+  const TOP_L = 4 * COLS + 12;
+  const TOP_M = 4 * COLS + 13;
+  const TOP_R = 4 * COLS + 14;
+  const SIDE_T = 4 * COLS + 15;
+  const SIDE_M = 5 * COLS + 15;
+  const SIDE_B = 6 * COLS + 15;
 
   function makeTile(frameIdx: number, x: number, y: number): HTMLDivElement {
     const d = document.createElement("div");
@@ -676,38 +747,31 @@ function buildSettingsFrame() {
     return d;
   }
 
-  // Use ResizeObserver to rebuild tiles when card size changes
   const observer = new ResizeObserver(() => {
-    // Remove old tiles
     frame.querySelectorAll(".frame-tile").forEach((t) => t.remove());
-
     const w = frame.offsetWidth;
     const h = frame.offsetHeight;
 
-    // Top row: left cap at 0, right cap flush at w-TILE, fill middle
     frame.appendChild(makeTile(TOP_L, 0, 0));
     for (let x = TILE; x < w - TILE; x += TILE) {
       frame.appendChild(makeTile(TOP_M, x, 0));
     }
     frame.appendChild(makeTile(TOP_R, w - TILE, 0));
 
-    // Bottom row: same layout at y = h - TILE
     frame.appendChild(makeTile(TOP_L, 0, h - TILE));
     for (let x = TILE; x < w - TILE; x += TILE) {
       frame.appendChild(makeTile(TOP_M, x, h - TILE));
     }
     frame.appendChild(makeTile(TOP_R, w - TILE, h - TILE));
 
-    // Left column: between top and bottom rows
     frame.appendChild(makeTile(SIDE_T, 0, TILE));
     for (let y = 2 * TILE; y < h - 2 * TILE; y += TILE) {
       frame.appendChild(makeTile(SIDE_M, 0, y));
     }
     frame.appendChild(makeTile(SIDE_B, 0, h - 2 * TILE));
 
-    // Right column: mirrored
-    const addFlipped = (idx: number, x: number, y: number) => {
-      const tile = makeTile(idx, x, y);
+    const addFlipped = (idx: number, fx: number, fy: number) => {
+      const tile = makeTile(idx, fx, fy);
       tile.style.transform = "scaleX(-1)";
       frame.appendChild(tile);
     };
@@ -720,7 +784,18 @@ function buildSettingsFrame() {
   observer.observe(card);
 }
 
-buildSettingsFrame();
+buildTiledFrame(
+  document.getElementById("settings-frame")!,
+  document.getElementById("settings-card")!,
+);
+buildTiledFrame(
+  document.getElementById("tutorial-prompt-frame")!,
+  document.getElementById("tutorial-prompt-card")!,
+);
+buildTiledFrame(
+  document.getElementById("username-prompt-frame")!,
+  document.getElementById("username-prompt-card")!,
+);
 
 // Version display
 declare const __COMMIT_HASH__: string;
@@ -764,6 +839,11 @@ settingsBtn.addEventListener("click", () => {
   else openSettings();
 });
 settingsClose.addEventListener("click", closeSettings);
+
+// Click outside settings card to close
+settingsOverlay.addEventListener("click", (e) => {
+  if (e.target === settingsOverlay) closeSettings();
+});
 
 // Close settings/detail on Escape
 window.addEventListener("keydown", (e) => {
@@ -1112,6 +1192,8 @@ document.getElementById("btn-tournament-back")!.addEventListener("click", () => 
   networkManager?.sendLeave();
   hideAllTournamentOverlays();
   currentTournamentId = null;
+  currentTournamentSlot = -1;
+  _currentTournamentHostSlot = -1;
   tournamentSpectating = false;
   openLobby();
 });
@@ -1815,53 +1897,443 @@ function hideAllTournamentOverlays() {
   tournamentResults.classList.remove("visible");
 }
 
-function renderBracket(bracket: TournamentBracket, currentMatchIndex?: number) {
+function renderBracket(bracket: TournamentBracket, highlightMatchIndex?: number) {
   bracketGrid.innerHTML = "";
-  for (const m of bracket.matches) {
-    const el = document.createElement("div");
-    el.className = "bracket-match";
-    if (m.winnerSlot !== -1) el.classList.add("completed");
-    else if (currentMatchIndex !== undefined && m.matchIndex === currentMatchIndex) el.classList.add("current");
 
-    // Determine player names for this match
-    let p1: string, p2: string;
-    if (m.matchIndex < 2) {
-      // Semi-finals: fixed slots
-      const slots = m.matchIndex === 0 ? [0, 1] : [2, 3];
-      p1 = bracket.playerNames[slots[0]!] || "???";
-      p2 = bracket.playerNames[slots[1]!] || "???";
-    } else if (m.matchIndex === 2) {
-      // Winners final
-      const w0 = bracket.matches[0]?.winnerSlot ?? -1;
-      const w1 = bracket.matches[1]?.winnerSlot ?? -1;
-      p1 = w0 >= 0 ? bracket.playerNames[w0] || "???" : "TBD";
-      p2 = w1 >= 0 ? bracket.playerNames[w1] || "???" : "TBD";
-    } else {
-      // Losers final
-      const l0 = bracket.matches[0]?.loserSlot ?? -1;
-      const l1 = bracket.matches[1]?.loserSlot ?? -1;
-      p1 = l0 >= 0 ? bracket.playerNames[l0] || "???" : "TBD";
-      p2 = l1 >= 0 ? bracket.playerNames[l1] || "???" : "TBD";
+  // Separate winners/final vs consolation matches; skip pure bye matches (no real players)
+  const allWinners = bracket.matches.filter(
+    (m) => (m.bracketSide === "winners" || m.bracketSide === "final") && m.status !== "bye",
+  );
+  const consolationMatches = bracket.matches.filter(
+    (m) => (m.bracketSide === "consolation" || m.bracketSide === "third_place") && m.status !== "bye",
+  );
+
+  if (allWinners.length === 0) return;
+
+  // Group by round
+  const maxRound = Math.max(...allWinners.map((m) => m.round));
+  const roundGroups: BracketMatch[][] = [];
+  for (let r = 0; r <= maxRound; r++) {
+    roundGroups.push(allWinners.filter((m) => m.round === r).sort((a, b) => a.matchIndex - b.matchIndex));
+  }
+
+  // Classify matches into left/right side
+  const r0 = roundGroups[0] || [];
+  const halfR0 = Math.ceil(r0.length / 2);
+  const leftR0Set = new Set(r0.slice(0, halfR0).map((m) => m.matchIndex));
+  const side = new Map<number, "left" | "right">();
+  for (const m of r0) side.set(m.matchIndex, leftR0Set.has(m.matchIndex) ? "left" : "right");
+  for (let r = 1; r <= maxRound; r++) {
+    for (const m of roundGroups[r]!) {
+      const sA = m.sourceA.type === "winner" || m.sourceA.type === "loser" ? side.get(m.sourceA.matchIndex) : undefined;
+      const sB = m.sourceB.type === "winner" || m.sourceB.type === "loser" ? side.get(m.sourceB.matchIndex) : undefined;
+      // Final is center, not a side
+      if (m.bracketSide === "final")
+        side.set(m.matchIndex, "left"); // placeholder
+      else side.set(m.matchIndex, sA === "left" || sB === "left" ? "left" : "right");
+    }
+  }
+
+  // Layout constants
+  const MW = 150; // match width
+  const MH = 52; // match height (2 rows × 26)
+  const COL_GAP = 60; // horizontal gap between rounds (for connector lines)
+  const FINAL_GAP = 70; // extra gap around final
+  const VPAD = 16; // vertical padding
+
+  const numSideRounds = maxRound;
+  const isFinalOnly = maxRound === 0;
+
+  const leftRound = (r: number) =>
+    (roundGroups[r] || []).filter((m) => side.get(m.matchIndex) === "left" && m.bracketSide !== "final");
+  const rightRound = (r: number) =>
+    (roundGroups[r] || []).filter((m) => side.get(m.matchIndex) === "right" && m.bracketSide !== "final");
+  const finalMatches = allWinners.filter((m) => m.bracketSide === "final");
+
+  const leftR0Count = leftRound(0).length || 1;
+  const rightR0Count = rightRound(0).length || 1;
+  const maxR0 = Math.max(leftR0Count, rightR0Count);
+  const baseSpacing = MH + VPAD * 2;
+  const totalHeight = isFinalOnly ? MH + 60 : Math.max(maxR0 * baseSpacing + VPAD * 2, 240);
+
+  const totalWidth = isFinalOnly
+    ? MW + 40
+    : numSideRounds * (MW + COL_GAP) + MW + FINAL_GAP * 2 + numSideRounds * (MW + COL_GAP);
+
+  // Position each match. Track positions by matchIndex for line drawing.
+  const pos = new Map<number, { x: number; y: number; w: number; h: number }>();
+
+  function placeRound(matches: BracketMatch[], colX: number, availTop: number, availHeight: number) {
+    const n = matches.length;
+    if (n === 0) return;
+    const spacing = availHeight / n;
+    for (let i = 0; i < n; i++) {
+      const y = availTop + spacing * i + (spacing - MH) / 2;
+      pos.set(matches[i]!.matchIndex, { x: colX, y, w: MW, h: MH });
+    }
+  }
+
+  if (isFinalOnly) {
+    // Just the final centered
+    const fm = r0[0];
+    if (fm) pos.set(fm.matchIndex, { x: 20, y: 30, w: MW, h: MH });
+  } else {
+    // Left side: round 0 is leftmost, increasing rounds go right
+    for (let r = 0; r < numSideRounds; r++) {
+      const colX = r * (MW + COL_GAP);
+      placeRound(leftRound(r), colX, 0, totalHeight);
     }
 
-    const winnerName = m.winnerSlot >= 0 ? bracket.playerNames[m.winnerSlot] || "???" : "";
-    el.innerHTML = `
-      <span class="match-label">${escapeHtml(m.matchLabel)}</span>
-      <span class="match-players-text">${escapeHtml(p1)} vs ${escapeHtml(p2)}</span>
-      <span class="match-winner">${winnerName ? escapeHtml(winnerName) + " ✓" : ""}</span>
-    `;
-    bracketGrid.appendChild(el);
+    // Final in center
+    const centerX = totalWidth / 2 - MW / 2;
+    for (const fm of finalMatches) {
+      pos.set(fm.matchIndex, { x: centerX, y: totalHeight / 2 - MH / 2, w: MW, h: MH });
+    }
+
+    // Right side: round 0 is rightmost, increasing rounds go left (mirror)
+    for (let r = 0; r < numSideRounds; r++) {
+      const colX = totalWidth - (r + 1) * (MW + COL_GAP) + COL_GAP;
+      placeRound(rightRound(r), colX, 0, totalHeight);
+    }
+  }
+
+  // Build match HTML helper
+  function matchHtml(m: BracketMatch): string {
+    const p = pos.get(m.matchIndex);
+    if (!p) return "";
+    const p1Name = m.playerA?.name || "TBD";
+    const p2Name = m.playerB?.name || "TBD";
+    const winSlot = m.winner;
+    const p1Won = winSlot !== undefined && m.playerA && winSlot === m.playerA.slot;
+    const p2Won = winSlot !== undefined && m.playerB && winSlot === m.playerB.slot;
+    let cls = "bk-match";
+    if (m.status === "done") cls += " done";
+    else if (m.status === "playing") cls += " playing";
+    else if (m.status === "ready") cls += " ready";
+    if (m.bracketSide === "final") cls += " final-match";
+    if (highlightMatchIndex === m.matchIndex) cls += " playing";
+    return `<div class="${cls}" data-mi="${m.matchIndex}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;">
+      <div class="bk-seed${p1Won ? " won" : ""}">${escapeHtml(p1Name)}</div>
+      <div class="bk-seed${p2Won ? " won" : ""}">${escapeHtml(p2Name)}</div>
+    </div>`;
+  }
+
+  // Build SVG connector lines
+  let lines = "";
+  for (const m of allWinners) {
+    if (m.status === "bye") continue;
+    const mPos = pos.get(m.matchIndex);
+    if (!mPos) continue;
+    const _mSide = side.get(m.matchIndex);
+    const isFinal = m.bracketSide === "final";
+
+    // Draw line from each source match to this match
+    for (const src of [m.sourceA, m.sourceB]) {
+      if (src.type !== "winner" && src.type !== "loser") continue;
+      // Find actual source — skip through byes
+      let srcIdx = src.matchIndex;
+      let srcMatch = bracket.matches.find((mm) => mm.matchIndex === srcIdx);
+      while (srcMatch && srcMatch.status === "bye") {
+        // Follow the winning source of the bye
+        const byeSrc = srcMatch.winner === srcMatch.playerA?.slot ? srcMatch.sourceA : srcMatch.sourceB;
+        if (!byeSrc || byeSrc.type === "seed" || byeSrc.type === "bye") break;
+        srcIdx = byeSrc.matchIndex;
+        srcMatch = bracket.matches.find((mm) => mm.matchIndex === srcIdx);
+      }
+      const srcPos = pos.get(srcIdx);
+      if (!srcPos) continue;
+
+      const srcSide = side.get(srcIdx);
+      // Source output point: right edge if left side, left edge if right side
+      let x1: number, y1: number, x2: number, y2: number;
+
+      if (srcSide === "left" || isFinal) {
+        x1 = srcPos.x + srcPos.w; // right edge of source
+        y1 = srcPos.y + srcPos.h / 2;
+        x2 = mPos.x; // left edge of target
+        y2 = mPos.y + mPos.h / 2;
+      } else {
+        x1 = srcPos.x; // left edge of source
+        y1 = srcPos.y + srcPos.h / 2;
+        x2 = mPos.x + mPos.w; // right edge of target
+        y2 = mPos.y + mPos.h / 2;
+      }
+
+      // Draw L-shaped connector: horizontal from source, then vertical, then horizontal to target
+      const midX = (x1 + x2) / 2;
+      lines += `<line x1="${x1}" y1="${y1}" x2="${midX}" y2="${y1}"/>`;
+      lines += `<line x1="${midX}" y1="${y1}" x2="${midX}" y2="${y2}"/>`;
+      lines += `<line x1="${midX}" y1="${y2}" x2="${x2}" y2="${y2}"/>`;
+    }
+  }
+
+  // Consolation rows (rendered below the bracket canvas)
+  let consolationHeight = 0;
+  let consolationHtml = "";
+  if (consolationMatches.length > 0) {
+    consolationHeight = 80;
+    consolationHtml = `<div class="bk-consolation-section" style="position:absolute;left:0;top:${totalHeight}px;width:${totalWidth}px;">`;
+    consolationHtml += `<div class="bk-consolation-title">CONSOLATION</div><div class="bk-consolation-row">`;
+    for (const m of consolationMatches) {
+      const p1 = m.playerA?.name || "TBD";
+      const p2 = m.playerB?.name || "TBD";
+      const p1Won = m.winner !== undefined && m.playerA && m.winner === m.playerA.slot;
+      const p2Won = m.winner !== undefined && m.playerB && m.winner === m.playerB.slot;
+      let cls = "bk-match";
+      if (m.status === "done") cls += " done";
+      else if (m.status === "playing") cls += " playing";
+      else if (m.status === "ready") cls += " ready";
+      consolationHtml += `<div class="${cls}" data-mi="${m.matchIndex}">
+        <div class="bk-seed${p1Won ? " won" : ""}">${escapeHtml(p1)}</div>
+        <div class="bk-seed${p2Won ? " won" : ""}">${escapeHtml(p2)}</div>
+      </div>`;
+    }
+    consolationHtml += `</div></div>`;
+  }
+
+  const canvasH = totalHeight + consolationHeight;
+
+  // Assemble
+  let html = `<div class="bk-canvas" style="width:${totalWidth}px;height:${canvasH}px;">`;
+  html += `<svg class="bk-lines" viewBox="0 0 ${totalWidth} ${totalHeight}" style="height:${totalHeight}px;">${lines}</svg>`;
+
+  // Final label
+  if (!isFinalOnly && finalMatches.length > 0) {
+    const fp = pos.get(finalMatches[0]!.matchIndex);
+    if (fp) {
+      html += `<div class="bk-final-label" style="left:${fp.x}px;top:${fp.y - 20}px;width:${fp.w}px;">FINAL</div>`;
+    }
+  }
+
+  // All match boxes
+  for (const m of allWinners) {
+    if (m.status === "bye") continue;
+    html += matchHtml(m);
+  }
+
+  html += consolationHtml;
+  html += `</div>`;
+
+  bracketGrid.innerHTML = html;
+
+  // Auto-scale bracket to fit the overlay
+  const canvasEl = bracketGrid.querySelector(".bk-canvas") as HTMLElement;
+  if (canvasEl) {
+    requestAnimationFrame(() => {
+      const parentW = bracketGrid.clientWidth || 800;
+      const parentH = bracketGrid.clientHeight || 400;
+      const scaleX = parentW / totalWidth;
+      const scaleY = parentH / canvasH;
+      const scale = Math.min(scaleX, scaleY, 1.4);
+      canvasEl.style.transform = `scale(${scale})`;
+      canvasEl.style.transformOrigin = "center center";
+    });
   }
 }
 
-function renderStandings(standings: string[]) {
-  const labels = ["1st", "2nd", "3rd", "4th"];
+function renderStandings(standings: { place: number; name: string }[]) {
+  const ordinal = (n: number) => (n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`);
+  // Count how many players share each place
+  const placeCounts = new Map<number, number>();
+  for (const s of standings) placeCounts.set(s.place, (placeCounts.get(s.place) || 0) + 1);
+
   standingsList.innerHTML = "";
-  for (let i = 0; i < standings.length; i++) {
+  for (const s of standings) {
     const el = document.createElement("div");
     el.className = "standing-row";
-    el.innerHTML = `<span class="place">${labels[i]}</span><span class="name">${escapeHtml(standings[i] || "???")}</span>`;
+    const tied = (placeCounts.get(s.place) || 0) > 1;
+    const label = (tied ? "=" : "") + ordinal(s.place);
+    el.innerHTML = `<span class="place">${label}</span><span class="name">${escapeHtml(s.name)}</span>`;
     standingsList.appendChild(el);
+  }
+}
+
+function renderTournamentLobby(msg: TournamentLobbyMessage) {
+  currentTournamentId = msg.tournamentId;
+  _currentTournamentHostSlot = msg.hostSlot;
+
+  currentTournamentSlot = msg.mySlot;
+  const myRole = currentTournamentSlot >= 0 ? msg.participants[currentTournamentSlot]!.role : null;
+
+  closeLobby();
+  hideAllTournamentOverlays();
+  tournamentOverlay.classList.add("visible");
+  tournamentCode.textContent = msg.joinCode;
+
+  const players = msg.participants.filter((p) => p.role === "player");
+  const spectators = msg.participants.filter((p) => p.role === "spectator");
+  const isWaiting = msg.status === "waiting";
+
+  if (msg.status === "playing") {
+    tournamentStatus.textContent = "Tournament in progress...";
+  } else if (msg.status === "ended") {
+    tournamentStatus.textContent = "Tournament ended";
+  } else {
+    tournamentStatus.textContent = `${players.length}/8 players, ${spectators.length}/5 spectators`;
+  }
+
+  // ── Render slot grid ──
+  tournamentPlayers.innerHTML = "";
+
+  // Player slots (8 max)
+  const playerLabel = document.createElement("div");
+  playerLabel.className = "slots-section-label";
+  playerLabel.textContent = "PLAYERS";
+  tournamentPlayers.appendChild(playerLabel);
+
+  const playerGrid = document.createElement("div");
+  playerGrid.className = "slots-grid";
+  for (let i = 0; i < 8; i++) {
+    const p = players[i];
+    const el = document.createElement("div");
+    if (p) {
+      el.className = "tournament-slot filled";
+      if (p.slot === msg.hostSlot) el.classList.add("host");
+      if (!p.connected) el.classList.add("disconnected");
+      el.innerHTML = `<span class="slot-name">${escapeHtml(p.name)}</span>`;
+      if (p.slot === msg.hostSlot) el.innerHTML += `<span class="slot-badge host-badge">HOST</span>`;
+    } else {
+      el.className = "tournament-slot empty";
+      el.textContent = "---";
+      // If I'm a spectator, clicking an empty player slot switches me to player
+      if (isWaiting && myRole === "spectator") {
+        el.style.cursor = "pointer";
+        el.addEventListener("click", () => networkManager?.sendToggleRole());
+      }
+    }
+    playerGrid.appendChild(el);
+  }
+  tournamentPlayers.appendChild(playerGrid);
+
+  // Spectator slots (5 max)
+  const spectatorLabel = document.createElement("div");
+  spectatorLabel.className = "slots-section-label";
+  spectatorLabel.textContent = "SPECTATORS";
+  tournamentPlayers.appendChild(spectatorLabel);
+
+  const spectatorGrid = document.createElement("div");
+  spectatorGrid.className = "slots-grid";
+  for (let i = 0; i < 5; i++) {
+    const s = spectators[i];
+    const el = document.createElement("div");
+    if (s) {
+      el.className = "tournament-slot filled spectator-slot";
+      if (!s.connected) el.classList.add("disconnected");
+      el.innerHTML = `<span class="slot-name">${escapeHtml(s.name)}</span>`;
+    } else {
+      el.className = "tournament-slot empty spectator-slot";
+      el.textContent = "---";
+      // If I'm a player, clicking an empty spectator slot switches me to spectator
+      if (isWaiting && myRole === "player") {
+        el.style.cursor = "pointer";
+        el.addEventListener("click", () => networkManager?.sendToggleRole());
+      }
+    }
+    spectatorGrid.appendChild(el);
+  }
+  tournamentPlayers.appendChild(spectatorGrid);
+
+  // ── Host controls ──
+  let controlsEl = document.getElementById("tournament-host-controls");
+  if (controlsEl) controlsEl.remove();
+
+  if (currentTournamentSlot === msg.hostSlot && isWaiting) {
+    controlsEl = document.createElement("div");
+    controlsEl.id = "tournament-host-controls";
+
+    // Config row
+    const configRow = document.createElement("div");
+    configRow.className = "tournament-config-row";
+
+    const fmtLabel = document.createElement("span");
+    fmtLabel.textContent = "Format:";
+    const fmtBo3 = document.createElement("button");
+    fmtBo3.className = "btn btn-sm" + (msg.config.matchFormat === "bo3" ? " active" : "");
+    fmtBo3.textContent = "Bo3";
+    fmtBo3.addEventListener("click", () => networkManager?.sendUpdateTournamentConfig({ matchFormat: "bo3" }));
+    const fmtBo5 = document.createElement("button");
+    fmtBo5.className = "btn btn-sm" + (msg.config.matchFormat === "bo5" ? " active" : "");
+    fmtBo5.textContent = "Bo5";
+    fmtBo5.addEventListener("click", () => networkManager?.sendUpdateTournamentConfig({ matchFormat: "bo5" }));
+    configRow.append(fmtLabel, fmtBo3, fmtBo5);
+
+    const bracketLabel = document.createElement("span");
+    bracketLabel.textContent = "Bracket:";
+    bracketLabel.style.marginLeft = "12px";
+    const btWinners = document.createElement("button");
+    btWinners.className = "btn btn-sm" + (msg.config.bracketType === "winners_only" ? " active" : "");
+    btWinners.textContent = "Winners";
+    btWinners.addEventListener("click", () =>
+      networkManager?.sendUpdateTournamentConfig({ bracketType: "winners_only" }),
+    );
+    const btPartial = document.createElement("button");
+    btPartial.className = "btn btn-sm" + (msg.config.bracketType === "partial_consolation" ? " active" : "");
+    btPartial.textContent = "4th Place";
+    btPartial.addEventListener("click", () =>
+      networkManager?.sendUpdateTournamentConfig({ bracketType: "partial_consolation" }),
+    );
+    const btFull = document.createElement("button");
+    btFull.className = "btn btn-sm" + (msg.config.bracketType === "full_consolation" ? " active" : "");
+    btFull.textContent = "Full";
+    btFull.addEventListener("click", () =>
+      networkManager?.sendUpdateTournamentConfig({ bracketType: "full_consolation" }),
+    );
+    configRow.append(bracketLabel, btWinners, btPartial, btFull);
+    controlsEl.appendChild(configRow);
+
+    const startBtn = document.createElement("button");
+    startBtn.className = "btn btn-primary";
+    startBtn.textContent = "START TOURNAMENT";
+    startBtn.disabled = players.length < 2;
+    startBtn.style.marginTop = "8px";
+    startBtn.addEventListener("click", () => networkManager?.sendStartTournament());
+    controlsEl.appendChild(startBtn);
+
+    tournamentOverlay.appendChild(controlsEl);
+  } else if (isWaiting) {
+    controlsEl = document.createElement("div");
+    controlsEl.id = "tournament-host-controls";
+    controlsEl.classList.add("readonly");
+
+    const configRow = document.createElement("div");
+    configRow.className = "tournament-config-row";
+
+    const fmtLabel = document.createElement("span");
+    fmtLabel.textContent = "Format:";
+    for (const [val, label] of [
+      ["bo3", "Bo3"],
+      ["bo5", "Bo5"],
+    ] as const) {
+      const btn = document.createElement("span");
+      btn.className = "btn btn-sm" + (msg.config.matchFormat === val ? " active" : " inactive");
+      btn.textContent = label;
+      configRow.appendChild(btn);
+    }
+
+    const bracketLabel = document.createElement("span");
+    bracketLabel.textContent = "Bracket:";
+    bracketLabel.style.marginLeft = "12px";
+    configRow.appendChild(fmtLabel);
+    configRow.appendChild(bracketLabel);
+    for (const [val, label] of [
+      ["winners_only", "Winners"],
+      ["partial_consolation", "4th Place"],
+      ["full_consolation", "Full"],
+    ] as const) {
+      const btn = document.createElement("span");
+      btn.className = "btn btn-sm" + (msg.config.bracketType === val ? " active" : " inactive");
+      btn.textContent = label;
+      configRow.appendChild(btn);
+    }
+
+    controlsEl.appendChild(configRow);
+
+    const waitText = document.createElement("div");
+    waitText.style.cssText = "font-size:11px;color:#888;margin-top:4px;";
+    waitText.textContent = "Waiting for host to start...";
+    controlsEl.appendChild(waitText);
+
+    tournamentOverlay.appendChild(controlsEl);
   }
 }
 
@@ -2005,25 +2477,8 @@ function connectToServer(url: string): Promise<void> {
       },
 
       // ── Tournament callbacks ──────────────────────────────
-      onTournamentLobby(tournamentId, joinCode, players, status) {
-        currentTournamentId = tournamentId;
-        closeLobby();
-        hideAllTournamentOverlays();
-        tournamentOverlay.classList.add("visible");
-        tournamentCode.textContent = joinCode;
-        tournamentStatus.textContent =
-          status === "playing"
-            ? "Tournament in progress..."
-            : status === "ended"
-              ? "Tournament ended"
-              : `Waiting for players... (${players.length}/4)`;
-        tournamentPlayers.innerHTML = "";
-        for (let i = 0; i < 4; i++) {
-          const slot = document.createElement("div");
-          slot.className = "tournament-slot" + (i < players.length ? " filled" : "");
-          slot.textContent = i < players.length ? players[i]! : "...";
-          tournamentPlayers.appendChild(slot);
-        }
+      onTournamentLobby(msg) {
+        renderTournamentLobby(msg);
       },
 
       onTournamentMatchStart(
@@ -2036,25 +2491,88 @@ function connectToServer(url: string): Promise<void> {
         mapIndex,
         totalRounds,
         characters,
+        bracket,
       ) {
-        hideAllTournamentOverlays();
-        const scene = getGameScene();
-        if (!scene) return;
+        // Animation flow:
+        // 1. Show full bracket (0.4s fade in)
+        // 2. Zoom into highlighted match (0.6s)
+        // 3. VS overlay with names (1s)
+        // 4. Fade out → start game
+        // Total: ~2.8s (server MATCH_INTRO_MS = 3s gives buffer)
 
-        if (role === "fighter" && playerId !== undefined) {
-          tournamentSpectating = false;
-          networkManager?.resetThrottle();
-          scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
-          applyAudioSettings(scene);
-          scene.onLocalInput = (input, tick) => {
-            networkManager?.sendInput(input, tick);
-          };
-        } else {
-          tournamentSpectating = true;
-          scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
-          applyAudioSettings(scene);
-          spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
+        hideAllTournamentOverlays();
+        bracketOverlay.classList.add("visible");
+        renderBracket(bracket, matchIndex);
+
+        // Stage 1: Bracket appears with scale-in
+        const canvas = bracketGrid.querySelector(".bk-canvas") as HTMLElement;
+        if (canvas) {
+          canvas.style.transition = "none";
+          canvas.style.opacity = "0";
+          canvas.style.transform = "scale(0.8)";
+          requestAnimationFrame(() => {
+            canvas.style.transition = "opacity 0.3s, transform 0.4s ease-out";
+            canvas.style.opacity = "1";
+            canvas.style.transform = "scale(1)";
+          });
         }
+
+        // Stage 2: After 0.8s, zoom into the highlighted match
+        setTimeout(() => {
+          const matchEl = bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
+          if (matchEl && canvas) {
+            const canvasRect = canvas.getBoundingClientRect();
+            const matchRect = matchEl.getBoundingClientRect();
+            const cx = matchRect.left + matchRect.width / 2 - canvasRect.left;
+            const cy = matchRect.top + matchRect.height / 2 - canvasRect.top;
+            const ox = (cx / canvasRect.width) * 100;
+            const oy = (cy / canvasRect.height) * 100;
+            canvas.style.transformOrigin = `${ox}% ${oy}%`;
+            canvas.style.transition = "transform 0.6s ease-in-out, opacity 0.6s";
+            canvas.style.transform = "scale(2.5)";
+            canvas.style.opacity = "0.3";
+          }
+        }, 800);
+
+        // Stage 3: VS overlay
+        setTimeout(() => {
+          const vsOverlay = document.createElement("div");
+          vsOverlay.className = "bk-vs-overlay";
+          vsOverlay.innerHTML = `
+            <div class="bk-vs-label">${escapeHtml(matchLabel.toUpperCase())}</div>
+            <div class="bk-vs-names">
+              <span class="bk-vs-p1">${escapeHtml(usernames[0])}</span>
+              <span class="bk-vs-vs">VS</span>
+              <span class="bk-vs-p2">${escapeHtml(usernames[1])}</span>
+            </div>
+          `;
+          bracketOverlay.appendChild(vsOverlay);
+          requestAnimationFrame(() => vsOverlay.classList.add("visible"));
+        }, 1600);
+
+        // Stage 4: Start the game
+        setTimeout(() => {
+          hideAllTournamentOverlays();
+          bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
+
+          const scene = getGameScene();
+          if (!scene) return;
+
+          if (role === "fighter" && playerId !== undefined) {
+            tournamentSpectating = false;
+            networkManager?.resetThrottle();
+            scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
+            applyAudioSettings(scene);
+            scene.onLocalInput = (input, tick) => {
+              networkManager?.sendInput(input, tick);
+            };
+          } else {
+            tournamentSpectating = true;
+            scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
+            applyAudioSettings(scene);
+            spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
+          }
+        }, 2800);
       },
 
       onSpectateState(state, lastButtons) {
@@ -2078,20 +2596,22 @@ function connectToServer(url: string): Promise<void> {
           if (tournamentSpectating) {
             scene.stopSpectating();
           } else {
-            scene.endOnlineMatch(-1); // suppress generic win text — bracket shows it
+            scene.endOnlineMatch(-1, true); // silent — bracket overlay shows result
           }
+          scene.clearVisuals(); // prevent flash of old match
         }
         // Show bracket between matches
         hideAllTournamentOverlays();
         bracketOverlay.classList.add("visible");
-        renderBracket(bracket, matchIndex + 1); // highlight next match
+        renderBracket(bracket);
       },
 
       onTournamentEnd(standings, _bracket) {
         const scene = getGameScene();
         if (scene) {
           if (tournamentSpectating) scene.stopSpectating();
-          else scene.endOnlineMatch(-1);
+          else scene.endOnlineMatch(-1, true);
+          scene.clearVisuals();
         }
         hideAllTournamentOverlays();
         tournamentResults.classList.add("visible");
@@ -2101,6 +2621,8 @@ function connectToServer(url: string): Promise<void> {
         setTimeout(() => {
           hideAllTournamentOverlays();
           currentTournamentId = null;
+          currentTournamentSlot = -1;
+          _currentTournamentHostSlot = -1;
           tournamentSpectating = false;
           void (async () => {
             const homeId = regionManager.homeRegionId;
@@ -2128,7 +2650,7 @@ function connectToServer(url: string): Promise<void> {
         if (walletAddr) {
           networkManager.sendSetWallet(walletAddr);
         }
-        openLobby();
+        if (!inTutorialFlow) openLobby();
         if (!resolved) {
           resolved = true;
           resolveConnect();
@@ -2272,7 +2794,7 @@ moreMenuDropdown.addEventListener("click", (e) => e.stopPropagation());
 menuTournament.addEventListener("click", () => {
   moreMenuDropdown.classList.remove("visible");
   if (!networkManager?.connected) return;
-  networkManager.sendCreateTournament();
+  networkManager.sendCreateTournament({ bracketType: "partial_consolation", matchFormat: "bo5" });
   lobbyStatus.textContent = "Creating tournament...";
 });
 

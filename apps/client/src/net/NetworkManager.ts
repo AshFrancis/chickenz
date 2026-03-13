@@ -5,14 +5,29 @@ import type {
   SpectateStateMessage,
   RoomInfo,
   GameMode,
+  BracketMatch,
   TournamentBracket,
+  TournamentConfig,
+  TournamentParticipant,
   TournamentLobbyMessage,
   TournamentMatchStartMessage,
   TournamentMatchEndMessage,
   TournamentEndMessage,
+  BracketType,
+  MatchFormat,
 } from "../../../../services/server/src/protocol";
 
-export type { RoomInfo, GameMode, TournamentBracket };
+export type {
+  RoomInfo,
+  GameMode,
+  BracketMatch,
+  TournamentBracket,
+  TournamentConfig,
+  TournamentParticipant,
+  TournamentLobbyMessage,
+  BracketType,
+  MatchFormat,
+};
 
 export interface NetworkCallbacks {
   onWaiting: (roomId: string, roomName: string, joinCode: string) => void;
@@ -41,7 +56,7 @@ export interface NetworkCallbacks {
   onDisconnect: () => void;
   onReconnect?: () => void;
   // Tournament callbacks
-  onTournamentLobby?: (tournamentId: string, joinCode: string, players: string[], status: string) => void;
+  onTournamentLobby?: (msg: TournamentLobbyMessage) => void;
   onTournamentMatchStart?: (
     matchLabel: string,
     matchIndex: number,
@@ -52,6 +67,7 @@ export interface NetworkCallbacks {
     mapIndex: number,
     totalRounds: number,
     characters: [number, number],
+    bracket: TournamentBracket,
   ) => void;
   onSpectateState?: (state: SpectateStateMessage, lastButtons?: [number, number]) => void;
   onSpectateRoundEnd?: (round: number, winner: number, roundWins: [number, number]) => void;
@@ -62,7 +78,7 @@ export interface NetworkCallbacks {
     winnerName: string,
     bracket: TournamentBracket,
   ) => void;
-  onTournamentEnd?: (standings: string[], bracket: TournamentBracket) => void;
+  onTournamentEnd?: (standings: { place: number; name: string }[], bracket: TournamentBracket) => void;
 }
 
 export class NetworkManager {
@@ -148,7 +164,7 @@ export class NetworkManager {
           break;
         case "tournament_lobby": {
           const tl = msg as TournamentLobbyMessage;
-          this.callbacks.onTournamentLobby?.(tl.tournamentId, tl.joinCode, tl.players, tl.status);
+          this.callbacks.onTournamentLobby?.(tl);
           break;
         }
         case "tournament_match_start": {
@@ -163,6 +179,7 @@ export class NetworkManager {
             tms.mapIndex,
             tms.totalRounds,
             tms.characters,
+            tms.bracket,
           );
           break;
         }
@@ -284,8 +301,20 @@ export class NetworkManager {
     this.send({ type: "leave" });
   }
 
-  sendCreateTournament() {
-    this.send({ type: "create_tournament" });
+  sendCreateTournament(config?: TournamentConfig) {
+    this.send({ type: "create_tournament", config });
+  }
+
+  sendStartTournament() {
+    this.send({ type: "start_tournament" });
+  }
+
+  sendToggleRole() {
+    this.send({ type: "toggle_role" });
+  }
+
+  sendUpdateTournamentConfig(config: Partial<TournamentConfig>) {
+    this.send({ type: "update_tournament_config", config });
   }
 
   sendJoinTournamentByCode(code: string) {

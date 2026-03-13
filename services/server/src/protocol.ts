@@ -3,6 +3,52 @@ import type { PlayerInput } from "@chickenz/sim";
 // ── Client → Server ────────────────────────────────────────
 
 export type GameMode = "casual" | "ranked";
+export type BracketType = "winners_only" | "partial_consolation" | "full_consolation";
+export type MatchFormat = "bo3" | "bo5";
+
+const VALID_BRACKET_TYPES: ReadonlySet<string> = new Set<BracketType>([
+  "winners_only",
+  "partial_consolation",
+  "full_consolation",
+]);
+const VALID_MATCH_FORMATS: ReadonlySet<string> = new Set<MatchFormat>(["bo3", "bo5"]);
+
+export function isValidBracketType(v: unknown): v is BracketType {
+  return typeof v === "string" && VALID_BRACKET_TYPES.has(v);
+}
+
+export function isValidMatchFormat(v: unknown): v is MatchFormat {
+  return typeof v === "string" && VALID_MATCH_FORMATS.has(v);
+}
+
+/** Validate and return a clean TournamentConfig, or undefined if nothing valid. */
+export function validateTournamentConfig(raw: unknown): TournamentConfig | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const bracketType = isValidBracketType(obj.bracketType) ? obj.bracketType : undefined;
+  const matchFormat = isValidMatchFormat(obj.matchFormat) ? obj.matchFormat : undefined;
+  if (!bracketType && !matchFormat) return undefined;
+  return {
+    bracketType: bracketType ?? "partial_consolation",
+    matchFormat: matchFormat ?? "bo5",
+  };
+}
+
+/** Validate a partial config update, returning only the valid fields. */
+export function validatePartialTournamentConfig(raw: unknown): Partial<TournamentConfig> | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+  const result: Partial<TournamentConfig> = {};
+  if (isValidBracketType(obj.bracketType)) result.bracketType = obj.bracketType;
+  if (isValidMatchFormat(obj.matchFormat)) result.matchFormat = obj.matchFormat;
+  if (Object.keys(result).length === 0) return undefined;
+  return result;
+}
+
+export interface TournamentConfig {
+  bracketType: BracketType;
+  matchFormat: MatchFormat;
+}
 
 export interface QuickplayMessage {
   type: "quickplay";
@@ -57,6 +103,20 @@ export interface SetUsernameMessage {
 
 export interface CreateTournamentMessage {
   type: "create_tournament";
+  config?: TournamentConfig;
+}
+
+export interface StartTournamentMessage {
+  type: "start_tournament";
+}
+
+export interface ToggleRoleMessage {
+  type: "toggle_role";
+}
+
+export interface UpdateTournamentConfigMessage {
+  type: "update_tournament_config";
+  config: Partial<TournamentConfig>;
 }
 
 export interface JoinTournamentCodeMessage {
@@ -87,6 +147,9 @@ export type ClientMessage =
   | SetUsernameMessage
   | SetWalletMessage
   | CreateTournamentMessage
+  | StartTournamentMessage
+  | ToggleRoleMessage
+  | UpdateTournamentConfigMessage
   | JoinTournamentCodeMessage
   | LeaveMessage
   | AddBotMessage
@@ -177,24 +240,50 @@ export interface ErrorMessage {
 
 // ── Tournament messages ──────────────────────────────────
 
-export interface TournamentMatchResult {
+export type MatchSource =
+  | { type: "seed"; seed: number }
+  | { type: "winner"; matchIndex: number }
+  | { type: "loser"; matchIndex: number }
+  | { type: "bye" };
+
+export interface BracketMatch {
   matchIndex: number;
-  matchLabel: string;
-  winnerSlot: number; // slot index (0-3) of winner, or -1 if not played
-  loserSlot: number;
+  round: number;
+  bracketSide: "winners" | "consolation" | "final" | "third_place";
+  label: string;
+  sourceA: MatchSource;
+  sourceB: MatchSource;
+  playerA?: { slot: number; name: string } | null;
+  playerB?: { slot: number; name: string } | null;
+  winner?: number; // slot of winner
+  loser?: number; // slot of loser
+  scores?: [number, number];
+  status: "pending" | "ready" | "bye" | "playing" | "done";
+}
+
+export interface TournamentParticipant {
+  slot: number;
+  name: string;
+  role: "player" | "spectator";
+  connected: boolean;
 }
 
 export interface TournamentBracket {
-  matches: TournamentMatchResult[];
+  matches: BracketMatch[];
   playerNames: string[];
+  config: TournamentConfig;
 }
 
 export interface TournamentLobbyMessage {
   type: "tournament_lobby";
   tournamentId: string;
   joinCode: string;
-  players: string[];
+  participants: TournamentParticipant[];
+  config: TournamentConfig;
+  hostSlot: number;
+  mySlot: number;
   status: "waiting" | "playing" | "ended";
+  bracket?: TournamentBracket;
 }
 
 export interface TournamentMatchStartMessage {
@@ -208,6 +297,7 @@ export interface TournamentMatchStartMessage {
   mapIndex: number;
   totalRounds: number;
   characters: [number, number];
+  bracket: TournamentBracket;
 }
 
 export interface SpectateStateMessage {
@@ -251,7 +341,7 @@ export interface TournamentMatchEndMessage {
 
 export interface TournamentEndMessage {
   type: "tournament_end";
-  standings: string[]; // 1st, 2nd, 3rd, 4th
+  standings: { place: number; name: string }[];
   bracket: TournamentBracket;
 }
 

@@ -65,6 +65,7 @@ export class GameRoom {
   // Round system
   private totalRounds: number;
   private winsNeeded: number;
+  private _overrideGameParams?: { seed: number; mapIndex: number; characters: [number, number] };
   private currentRound = 0;
   private roundWins: [number, number] = [0, 0];
   private mapOrder: number[] = []; // indices into MAP_POOL
@@ -93,14 +94,17 @@ export class GameRoom {
     isPrivate: boolean = false,
     mode: GameMode = "casual",
     skipWaiting: boolean = false,
+    overrideRounds?: { totalRounds: number; winsNeeded: number },
+    overrideGameParams?: { seed: number; mapIndex: number; characters: [number, number] },
   ) {
     this.id = id;
     this.name = name;
     this.joinCode = generateJoinCode();
     this.isPrivate = isPrivate;
     this.mode = mode;
-    this.totalRounds = mode === "ranked" ? RANKED_TOTAL_ROUNDS : CASUAL_TOTAL_ROUNDS;
-    this.winsNeeded = mode === "ranked" ? RANKED_WINS_NEEDED : CASUAL_WINS_NEEDED;
+    this.totalRounds = overrideRounds?.totalRounds ?? (mode === "ranked" ? RANKED_TOTAL_ROUNDS : CASUAL_TOTAL_ROUNDS);
+    this.winsNeeded = overrideRounds?.winsNeeded ?? (mode === "ranked" ? RANKED_WINS_NEEDED : CASUAL_WINS_NEEDED);
+    this._overrideGameParams = overrideGameParams;
 
     creator.data.roomId = id;
     creator.data.playerId = 0;
@@ -387,9 +391,18 @@ export class GameRoom {
     }
     this.characterSlots = [p1Char, p2Char];
 
+    // Apply tournament overrides if provided
+    if (this._overrideGameParams) {
+      this.seed = this._overrideGameParams.seed;
+      this.mapOrder = [this._overrideGameParams.mapIndex];
+      this.characterSlots = this._overrideGameParams.characters;
+      this._overrideGameParams = undefined; // consume once
+    } else {
+      this.seed = Date.now() >>> 0;
+    }
+
     // Notify both players with initial round info
     const usernames: [string, string] = [this.sockets[0]?.data.username || "", this.sockets[1]?.data.username || ""];
-    this.seed = Date.now() >>> 0;
     // Unique session ID: full 32 random bits for collision resistance
     this._sessionId = crypto.getRandomValues(new Uint32Array(1))[0]!;
 

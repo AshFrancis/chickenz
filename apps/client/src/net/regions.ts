@@ -13,7 +13,7 @@ export const REGIONS: RegionConfig[] = [
 ];
 
 export function getRegions(): RegionConfig[] {
-  const isDev = location.port === "5173" || location.port === "5174";
+  const isDev = location.port === "5173" || location.port === "5174" || location.port === "3000";
   if (!isDev) return REGIONS;
   // In dev, proxy WS through Vite (same origin) to avoid mixed-content blocks on HTTPS
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
