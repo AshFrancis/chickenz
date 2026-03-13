@@ -60,6 +60,8 @@ interface MatchRecord {
   boundlessRequestId?: string;
   boundlessTxHash?: string;
   sessionId?: number;
+  _regionUrl?: string; // client-side: which region server this match came from
+  _regionId?: string;
 }
 
 // Wallet verification state
@@ -1348,6 +1350,7 @@ function fetchMatchHistory() {
   const fetches = regions.map((r) =>
     fetch(`${r.httpUrl}/api/matches`)
       .then((res) => res.json() as Promise<MatchRecord[]>)
+      .then((matches) => matches.map((m) => ({ ...m, _regionUrl: r.httpUrl, _regionId: r.id })))
       .catch(() => [] as MatchRecord[]),
   );
   Promise.all(fetches)
@@ -1413,7 +1416,7 @@ function renderMatchHistory(matches: MatchRecord[]) {
         <span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span>
         ${showSettle ? `<button class="btn btn-sm btn-primary btn-settle" data-match-id="${escapeHtml(m.id)}">Settle</button>` : ""}
         <button class="btn btn-sm btn-replay" data-room-id="${escapeHtml(m.roomId)}">Replay</button>
-        <button class="btn btn-sm btn-share" data-room-id="${escapeHtml(m.roomId)}" data-region="${escapeHtml(activeRegionId)}">Share</button>
+        <button class="btn btn-sm btn-share" data-room-id="${escapeHtml(m.roomId)}" data-region="${escapeHtml(m._regionId || activeRegionId)}">Share</button>
         <button class="btn btn-sm btn-download" data-room-id="${escapeHtml(m.roomId)}">DL</button>
       </div>
     `;
@@ -1421,7 +1424,7 @@ function renderMatchHistory(matches: MatchRecord[]) {
     if (replayBtn) {
       replayBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        startReplay(m.roomId);
+        startReplay(m.roomId, m._regionUrl);
       });
     }
     const shareBtn = el.querySelector(".btn-share");
@@ -1443,21 +1446,21 @@ function renderMatchHistory(matches: MatchRecord[]) {
     if (downloadBtn) {
       downloadBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        downloadTranscript(m.roomId);
+        downloadTranscript(m.roomId, m._regionUrl);
       });
     }
     const settleBtn = el.querySelector(".btn-settle");
     if (settleBtn) {
       settleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        void handleSettleMatch(m.id);
+        void handleSettleMatch(m.id, m._regionUrl);
       });
     }
     // Click row to open detail
     el.addEventListener("click", (e) => {
       // Don't open detail if clicking a button
       if ((e.target as HTMLElement).closest("button")) return;
-      openMatchDetail(m.id);
+      openMatchDetail(m.id, m._regionUrl);
     });
     matchHistoryList.appendChild(el);
   }
@@ -1493,9 +1496,9 @@ interface TranscriptResponse {
   characters?: [number, number];
 }
 
-function startReplay(roomId: string) {
-  if (!networkManager) return;
-  const origin = networkManager.httpOrigin;
+function startReplay(roomId: string, regionUrl?: string) {
+  const origin = regionUrl || networkManager?.httpOrigin;
+  if (!origin) return;
   fetch(`${origin}/transcript/${roomId}`)
     .then((r) => r.json())
     .then((data: TranscriptResponse) => {
@@ -1510,9 +1513,9 @@ function startReplay(roomId: string) {
     });
 }
 
-function downloadTranscript(roomId: string) {
-  if (!networkManager) return;
-  const origin = networkManager.httpOrigin;
+function downloadTranscript(roomId: string, regionUrl?: string) {
+  const origin = regionUrl || networkManager?.httpOrigin;
+  if (!origin) return;
   fetch(`${origin}/transcript/${roomId}`)
     .then((r) => r.json())
     .then((data) => {
@@ -1531,9 +1534,9 @@ function downloadTranscript(roomId: string) {
 
 // ── Match Detail Modal ────────────────────────────────────────────────────────
 
-function openMatchDetail(matchId: string) {
-  if (!networkManager) return;
-  const origin = networkManager.httpOrigin;
+function openMatchDetail(matchId: string, regionUrl?: string) {
+  const origin = regionUrl || networkManager?.httpOrigin;
+  if (!origin) return;
   fetch(`${origin}/api/matches/${matchId}/detail`)
     .then((r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -2290,9 +2293,9 @@ menuTutorial.addEventListener("click", () => {
 
 // ── Settlement Flow (Ranked) ─────────────────────────────────────────────────
 
-async function handleSettleMatch(matchId: string) {
-  if (!networkManager) return;
-  const origin = networkManager.httpOrigin;
+async function handleSettleMatch(matchId: string, regionUrl?: string) {
+  const origin = regionUrl || networkManager?.httpOrigin;
+  if (!origin) return;
   const addr = getConnectedAddress();
   if (!addr) {
     lobbyStatus.textContent = "Connect wallet to settle on-chain.";
