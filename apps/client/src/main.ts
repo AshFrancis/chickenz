@@ -601,9 +601,14 @@ walletLoginBtn.addEventListener("click", () => {
 walletRegisterBtn.addEventListener("click", () => {
   walletRegisterBtn.disabled = true;
   walletRegisterBtn.textContent = "Deploying...";
+  walletLoginBtn.disabled = true;
+  walletLoginBtn.textContent = "creating account...";
+  walletLoginBtn.classList.add("pulsing");
   void createWallet(getOrCreateUsername()).finally(() => {
     walletRegisterBtn.disabled = false;
     walletRegisterBtn.textContent = "Register";
+    walletLoginBtn.disabled = false;
+    walletLoginBtn.classList.remove("pulsing");
     updateWalletUI();
   });
 });
