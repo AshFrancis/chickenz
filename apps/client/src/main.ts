@@ -420,22 +420,11 @@ function deferBGMStart() {
   }
 
   // Init passkey kit and try silent SDK session restore (non-disruptive).
-  // If cached address exists, user is already "logged in" — SDK restore is best-effort for signing.
+  // Always call updateWalletUI at the end so Log In / Register buttons become visible.
   initPasskeyKit()
-    .then(() =>
-      connectWallet()
-        .then((addr) => {
-          if (addr) updateWalletUI();
-          // If SDK restore failed but we have a cached address, don't disrupt the UI
-        })
-        .catch(() => {
-          // SDK failed to connect — that's OK, cached address keeps user logged in
-          if (!cachedAddr) updateWalletUI();
-        }),
-    )
-    .catch(() => {
-      if (!cachedAddr) updateWalletUI();
-    });
+    .then(() => connectWallet())
+    .catch(() => {})
+    .finally(() => updateWalletUI());
 
   // Init touch controls + tutorial
   if (isTouchDevice) touchControls.init();
