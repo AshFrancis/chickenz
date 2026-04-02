@@ -3,7 +3,7 @@ import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode, InputMessage } from "./protocol";
 import { generateJoinCode, validateTournamentConfig, validatePartialTournamentConfig } from "./protocol";
-import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain, verifySettleTxOnChain } from "./stellar";
+import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain, verifySettleTxOnChain, extendContractTtls } from "./stellar";
 import {
   proveMatch,
   claimNextJob,
@@ -1600,6 +1600,13 @@ setInterval(() => {
     }
   }
 }, 60_000);
+
+// Extend contract TTLs every 24h (only US server to avoid duplicate txs)
+if ((process.env.SERVER_REGION || "us") === "us") {
+  // Run once on startup, then every 24 hours
+  void extendContractTtls();
+  setInterval(() => void extendContractTtls(), 24 * 60 * 60_000);
+}
 
 // Start bot lobby system
 botLobbyManager.start();

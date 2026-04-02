@@ -123,6 +123,89 @@ export async function settleMatchOnChain(
   }
 }
 
+// All contracts whose instance + WASM TTL we keep alive
+const CONTRACTS_TO_EXTEND = [
+  CHICKENZ_CONTRACT,
+  process.env.VERIFIER_CONTRACT || "CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH",
+  process.env.GAME_HUB_CONTRACT || "CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG",
+];
+
+const EXTEND_TTL_LEDGERS = 518_400; // ~30 days
+
+/** Extend instance + WASM code TTL for all deployed contracts. */
+export async function extendContractTtls(): Promise<void> {
+  const admin = getAdmin();
+  if (!admin || !StellarSdk) {
+    console.warn("[stellar] No admin key or SDK, skipping TTL extension");
+    return;
+  }
+
+  const server = new StellarSdk.rpc.Server(RPC_URL);
+
+  for (const contractId of CONTRACTS_TO_EXTEND) {
+    try {
+      // Get the contract instance entry to find the WASM hash
+      const contractAddress = new StellarSdk.Address(contractId);
+      const instanceKey = StellarSdk.xdr.LedgerKey.contractData(
+        new StellarSdk.xdr.LedgerKeyContractData({
+          contract: contractAddress.toScAddress(),
+          key: StellarSdk.xdr.ScVal.scvLedgerKeyContractInstance(),
+          durability: StellarSdk.xdr.ContractDataDurability.persistent(),
+        }),
+      );
+
+      // Build extend footprint TTL operation for the instance
+      const account = await server.getAccount(admin.publicKey());
+      const tx = new StellarSdk.TransactionBuilder(account, {
+        fee: "1000000",
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          StellarSdk.Operation.extendFootprintTtl({
+            extendTo: EXTEND_TTL_LEDGERS,
+          }),
+        )
+        .setTimeout(60)
+        .setSorobanData(
+          new StellarSdk.SorobanDataBuilder().setReadOnly([instanceKey]).build(),
+        )
+        .build();
+
+      const simResult = await server.simulateTransaction(tx);
+      if (StellarSdk.rpc.Api.isSimulationError(simResult)) {
+        console.error(`[stellar] TTL extend simulation failed for ${contractId}: ${simResult.error}`);
+        continue;
+      }
+
+      const prepared = StellarSdk.rpc.assembleTransaction(tx, simResult as any).build();
+      prepared.sign(admin);
+
+      const sendResult = await server.sendTransaction(prepared);
+      if (sendResult.status === "ERROR") {
+        console.error(`[stellar] TTL extend send failed for ${contractId}`);
+        continue;
+      }
+
+      // Wait for confirmation
+      let response = await server.getTransaction(sendResult.hash);
+      let retries = 0;
+      while (response.status === "NOT_FOUND") {
+        if (++retries > 30) break;
+        await new Promise((r) => setTimeout(r, 1000));
+        response = await server.getTransaction(sendResult.hash);
+      }
+
+      if (response.status === "SUCCESS") {
+        console.log(`[stellar] TTL extended for ${contractId}: ${sendResult.hash}`);
+      } else {
+        console.error(`[stellar] TTL extend failed for ${contractId}: ${response.status}`);
+      }
+    } catch (err) {
+      console.error(`[stellar] TTL extend error for ${contractId}:`, err);
+    }
+  }
+}
+
 /** Verify a Stellar transaction hash is successful on-chain. */
 export async function verifyTxOnChain(txHash: string): Promise<boolean> {
   if (!StellarSdk) return false;

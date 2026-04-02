@@ -2493,6 +2493,13 @@ function connectToServer(url: string): Promise<void> {
         characters,
         bracket,
       ) {
+        // Clear previous match visuals immediately to prevent flash
+        const scene = getGameScene();
+        if (scene) {
+          scene.clearVisuals();
+          scene.endOnlineMatch(-1, true);
+        }
+
         // Animation flow:
         // 1. Show full bracket (0.4s fade in)
         // 2. Zoom into highlighted match (0.6s)
