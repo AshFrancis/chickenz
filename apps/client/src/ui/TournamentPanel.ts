@@ -16,6 +16,7 @@ export interface TournamentPanelDeps {
   tournamentCode: HTMLElement;
   tournamentStatus: HTMLElement;
   tournamentPlayers: HTMLElement;
+  spectateLabel: HTMLElement;
   onToggleRole: () => void;
   onUpdateConfig: (config: Partial<TournamentConfig>) => void;
   onStartTournament: () => void;

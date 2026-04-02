@@ -5,15 +5,11 @@ import { TouchControls } from "./input/TouchControls";
 import { Tutorial } from "./tutorial/Tutorial";
 import { initChickenzWasm } from "./wasm";
 
-import {
-  NetworkManager,
-  type GameMode,
-} from "./net/NetworkManager";
+import { type GameMode } from "./net/NetworkManager";
 import { RegionManager, type RegionPing } from "./net/RegionManager";
 import { getRegions, type RegionConfig } from "./net/regions";
 import type { MatchRecord } from "./types";
 import {
-  escapeHtml,
   truncateAddress,
   formatPing,
   pingClass,
@@ -28,14 +24,11 @@ import {
   type MatchHistoryCallbacks,
 } from "./ui/MatchHistoryPanel";
 import {
-  tournamentTimers,
   hideAllTournamentOverlays,
-  renderBracket,
-  renderStandings,
-  renderTournamentLobby,
   type TournamentPanelDeps,
 } from "./ui/TournamentPanel";
 import { session } from "./session";
+import { connectToServer, type ServerConnectorDeps } from "./net/ServerConnector";
 import { initSettingsPanel } from "./ui/SettingsPanel";
 import { initWalletController } from "./ui/WalletController";
 import { initLobbyPanel } from "./ui/LobbyPanel";
@@ -123,10 +116,12 @@ const spectateOverlay = document.getElementById("spectate-overlay") as HTMLDivEl
 const spectateLabel = document.getElementById("spectate-label") as HTMLSpanElement;
 const tournamentResults = document.getElementById("tournament-results") as HTMLDivElement;
 const standingsList = document.getElementById("standings-list") as HTMLDivElement;
-let currentTournamentSlot = -1; // our slot in the tournament
-let _currentTournamentHostSlot = -1;
 
-// Tournament panel dependency object (lazily captures session.session.networkManager via closures)
+// Declared here, assigned after lobbyAPI/settingsAPI are initialized below.
+// eslint-disable-next-line prefer-const
+let connectorDeps!: ServerConnectorDeps;
+
+// Tournament panel dependency object (lazily captures session.networkManager via closures)
 const tournamentDeps: TournamentPanelDeps = {
   tournamentOverlay,
   bracketOverlay,
@@ -137,6 +132,7 @@ const tournamentDeps: TournamentPanelDeps = {
   tournamentCode,
   tournamentStatus,
   tournamentPlayers,
+  spectateLabel,
   onToggleRole: () => session.networkManager?.sendToggleRole(),
   onUpdateConfig: (config) => session.networkManager?.sendUpdateTournamentConfig(config),
   onStartTournament: () => session.networkManager?.sendStartTournament(),
@@ -263,7 +259,7 @@ function switchToRegion(region: RegionConfig): Promise<void> {
   regionPing.className = `region-ping ${pingClass(ping)}`;
   // Reconnect lobby streams so the new active region is excluded from duplicate WS
   regionManager.connectLobbyStreams();
-  return connectToServer(region.wsUrl);
+  return connectToServer(region.wsUrl, connectorDeps);
 }
 
 // ── Queued action flush ──────────────────────────────────────────────────────
@@ -320,7 +316,7 @@ function deferBGMStart() {
     if (cached) {
       session.activeRegionId = cached.id;
       regionManager.activeRegionId = cached.id;
-      await connectToServer(cached.wsUrl);
+      await connectToServer(cached.wsUrl, connectorDeps);
       flushPendingActions();
     }
 
@@ -335,7 +331,7 @@ function deferBGMStart() {
       if (bestRegion.id !== session.activeRegionId) {
         session.activeRegionId = bestRegion.id;
         regionManager.activeRegionId = bestRegion.id;
-        await connectToServer(bestRegion.wsUrl);
+        await connectToServer(bestRegion.wsUrl, connectorDeps);
         if (!cached) flushPendingActions();
       }
     }
@@ -579,8 +575,8 @@ document.getElementById("btn-tournament-back")!.addEventListener("click", () => 
   session.networkManager?.sendLeave();
   hideAllTournamentOverlays(tournamentDeps);
   session.currentTournamentId = null;
-  currentTournamentSlot = -1;
-  _currentTournamentHostSlot = -1;
+  session.currentTournamentSlot = -1;
+  session.tournamentHostSlot = -1;
   session.tournamentSpectating = false;
   lobbyAPI.open();
 });
@@ -640,6 +636,20 @@ const lobbyAPI = initLobbyPanel({
   ensureRankedReady: (force) => walletAPI.ensureRankedReady(force),
   getConnectedAddress,
 });
+
+// ── Server Connector deps (assigned after all API objects are ready) ──────────
+
+connectorDeps = {
+  getGameScene,
+  regionManager,
+  lobbyAPI,
+  settingsAPI,
+  tournamentDeps,
+  lobbyStatus,
+  isTouchDevice,
+  touchControls,
+  switchToRegion,
+};
 
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
@@ -727,358 +737,6 @@ function openMatchDetail(matchId: string, regionUrl?: string) {
     });
 }
 
-
-// ── Network ────────────────────────────────────────────────────────────────────
-
-function connectToServer(url: string): Promise<void> {
-  return new Promise<void>((resolveConnect) => {
-    if (session.networkManager) {
-      session.networkManager.disconnect();
-    }
-
-    session.networkManager = new NetworkManager({
-      onLobby(rooms) {
-        // Feed into RegionManager for cross-region merged room list
-        regionManager.updateRoomsForRegion(session.activeRegionId, rooms);
-      },
-
-      onWaiting(roomId, roomName, joinCode) {
-        // Suppress when in tournament (GameRoom sends "waiting" internally)
-        if (session.currentTournamentId) return;
-        // Show join code in URL bar so the address is a shareable link
-        history.replaceState(null, "", "?join=" + joinCode);
-        // Remember our own join code so refresh doesn't show "room not found"
-        localStorage.setItem("chickenz-last-join-code", joinCode);
-        // Hide bot button in ranked mode
-        const botBtn = document.getElementById("btn-add-bot");
-        if (botBtn) botBtn.style.display = session.currentMode === "ranked" ? "none" : "";
-        const scene = getGameScene();
-        if (scene) {
-          scene.startWarmup(
-            joinCode,
-            session.currentUsername,
-            () => {
-              lobbyAPI.close();
-              settingsAPI.applyAudioSettings(scene);
-              // Show touch controls during gameplay
-              if (isTouchDevice) touchControls.show();
-            },
-            session.pendingCharacter,
-          );
-        }
-      },
-
-      onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode, characters) {
-        // Suppress when in tournament (tournament_match_start handles this)
-        if (session.currentTournamentId) return;
-
-        const scene = getGameScene();
-        if (!scene) return;
-
-        session.networkManager?.resetThrottle();
-        // Don't close lobby yet — let the transition overlay cover the screen first
-        // to prevent a flash of the uninitialized game scene
-        const needCloseLobby = !scene.isWarmup;
-        scene.startOnlineMatch(
-          playerId,
-          seed,
-          usernames,
-          mapIndex,
-          totalRounds,
-          characters,
-          needCloseLobby ? () => lobbyAPI.close() : undefined,
-        );
-        settingsAPI.applyAudioSettings(scene);
-        if (isTouchDevice) touchControls.show();
-        scene.onLocalInput = (input, tick) => {
-          session.networkManager?.sendInput(input, tick);
-        };
-      },
-
-      onState(state, lastButtons) {
-        const scene = getGameScene();
-        if (scene) {
-          if (session.networkManager) scene.setNetworkRtt(session.networkManager.rtt);
-          scene.receiveState(state, lastButtons);
-        }
-      },
-
-      onRoundEnd(round, winner, roundWins) {
-        const scene = getGameScene();
-        if (scene) scene.handleRoundEnd(round, winner, roundWins);
-      },
-
-      onRoundStart(round, seed, mapIndex) {
-        session.networkManager?.resetThrottle();
-        const scene = getGameScene();
-        if (scene) scene.startNewRound(seed, mapIndex, round);
-      },
-
-      onEnded(winner, _scores, _roundWins, _roomId, _mode) {
-        // Suppress when in tournament (tournament_match_end handles this)
-        if (session.currentTournamentId) return;
-
-        const scene = getGameScene();
-        if (scene) scene.endOnlineMatch(winner);
-
-        // Show result screen, then transition to lobby
-        // If we're on a foreign region (cross-region join), switch back to home
-        const returnToLobby = async () => {
-          const homeId = regionManager.homeRegionId;
-          if (homeId && homeId !== session.activeRegionId) {
-            const homeRegion = regionManager.getRegionById(homeId);
-            if (homeRegion) await switchToRegion(homeRegion);
-          }
-          lobbyAPI.open();
-        };
-        setTimeout(() => {
-          if (scene) {
-            scene.playTransition(() => void returnToLobby());
-          } else {
-            void returnToLobby();
-          }
-        }, 2500);
-      },
-
-      onError(message) {
-        lobbyStatus.textContent = `Error: ${message}`;
-        lobbyAPI.setButtons(true);
-      },
-
-      onDisconnect() {
-        lobbyStatus.textContent = "Disconnected from server. Reconnecting...";
-        lobbyAPI.setButtons(false);
-        // Clean up tournament state
-        if (session.currentTournamentId) {
-          hideAllTournamentOverlays(tournamentDeps);
-          session.currentTournamentId = null;
-          session.tournamentSpectating = false;
-          const scene = getGameScene();
-          if (scene?.isSpectating) scene.stopSpectating();
-        }
-      },
-
-      onReconnect() {
-        lobbyStatus.textContent = "";
-        lobbyAPI.setButtons(true);
-        // Re-send identity so the server knows who we are
-        if (session.currentUsername) session.networkManager?.sendSetUsername(session.currentUsername);
-        const walletAddr = getConnectedAddress();
-        if (walletAddr) session.networkManager?.sendSetWallet(walletAddr);
-      },
-
-      // ── Tournament callbacks ──────────────────────────────
-      onTournamentLobby(msg) {
-        const tlState = renderTournamentLobby(tournamentDeps, msg, currentTournamentSlot);
-        session.currentTournamentId = tlState.tournamentId;
-        _currentTournamentHostSlot = tlState.hostSlot;
-        currentTournamentSlot = tlState.mySlot;
-      },
-
-      onTournamentMatchStart(
-        matchLabel,
-        matchIndex,
-        role,
-        playerId,
-        seed,
-        usernames,
-        mapIndex,
-        totalRounds,
-        characters,
-        bracket,
-      ) {
-        // Clear previous match visuals immediately to prevent flash
-        const scene = getGameScene();
-        if (scene) {
-          scene.clearVisuals();
-          scene.endOnlineMatch(-1, true);
-        }
-
-        // Animation flow:
-        // 1. Show full bracket (0.4s fade in)
-        // 2. Zoom into highlighted match (0.6s)
-        // 3. VS overlay with names (1s)
-        // 4. Fade out → start game
-        // Total: ~2.8s (server MATCH_INTRO_MS = 3s gives buffer)
-
-        hideAllTournamentOverlays(tournamentDeps);
-        bracketOverlay.classList.add("visible");
-        renderBracket(tournamentDeps, bracket, matchIndex);
-
-        // Stage 1: Bracket appears with scale-in
-        const canvas = bracketGrid.querySelector(".bk-canvas") as HTMLElement;
-        if (canvas) {
-          canvas.style.transition = "none";
-          canvas.style.opacity = "0";
-          canvas.style.transform = "scale(0.8)";
-          requestAnimationFrame(() => {
-            canvas.style.transition = "opacity 0.3s, transform 0.4s ease-out";
-            canvas.style.opacity = "1";
-            canvas.style.transform = "scale(1)";
-          });
-        }
-
-        // Stage 2: After 0.8s, zoom into the highlighted match
-        tournamentTimers.push(
-          setTimeout(() => {
-            const matchEl = tournamentDeps.bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
-            if (matchEl && canvas) {
-              const canvasRect = canvas.getBoundingClientRect();
-              const matchRect = matchEl.getBoundingClientRect();
-              const cx = matchRect.left + matchRect.width / 2 - canvasRect.left;
-              const cy = matchRect.top + matchRect.height / 2 - canvasRect.top;
-              const ox = (cx / canvasRect.width) * 100;
-              const oy = (cy / canvasRect.height) * 100;
-              canvas.style.transformOrigin = `${ox}% ${oy}%`;
-              canvas.style.transition = "transform 0.6s ease-in-out, opacity 0.6s";
-              canvas.style.transform = "scale(2.5)";
-              canvas.style.opacity = "0.3";
-            }
-          }, 800),
-        );
-
-        // Stage 3: VS overlay
-        tournamentTimers.push(
-          setTimeout(() => {
-            const vsOverlay = document.createElement("div");
-            vsOverlay.className = "bk-vs-overlay";
-            vsOverlay.innerHTML = `
-            <div class="bk-vs-label">${escapeHtml(matchLabel.toUpperCase())}</div>
-            <div class="bk-vs-names">
-              <span class="bk-vs-p1">${escapeHtml(usernames[0])}</span>
-              <span class="bk-vs-vs">VS</span>
-              <span class="bk-vs-p2">${escapeHtml(usernames[1])}</span>
-            </div>
-          `;
-            tournamentDeps.bracketOverlay.appendChild(vsOverlay);
-            requestAnimationFrame(() => vsOverlay.classList.add("visible"));
-          }, 1600),
-        );
-
-        // Stage 4: Start the game
-        tournamentTimers.push(
-          setTimeout(() => {
-            hideAllTournamentOverlays(tournamentDeps);
-            tournamentDeps.bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
-
-            const scene = getGameScene();
-            if (!scene) return;
-
-            if (role === "fighter" && playerId !== undefined) {
-              session.tournamentSpectating = false;
-              session.networkManager?.resetThrottle();
-              scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
-              settingsAPI.applyAudioSettings(scene);
-              scene.onLocalInput = (input, tick) => {
-                session.networkManager?.sendInput(input, tick);
-              };
-            } else {
-              session.tournamentSpectating = true;
-              scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
-              settingsAPI.applyAudioSettings(scene);
-              spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
-            }
-          }, 2800),
-        );
-      },
-
-      onSpectateState(state, lastButtons) {
-        const scene = getGameScene();
-        if (scene) scene.receiveSpectateState(state, lastButtons);
-      },
-
-      onSpectateRoundEnd(round, winner, roundWins) {
-        const scene = getGameScene();
-        if (scene) scene.handleRoundEnd(round, winner, roundWins);
-      },
-
-      onSpectateRoundStart(round, seed, mapIndex) {
-        const scene = getGameScene();
-        if (scene) scene.startNewRound(seed, mapIndex, round);
-      },
-
-      onTournamentMatchEnd(matchIndex, matchLabel, winnerName, bracket) {
-        const scene = getGameScene();
-        if (scene) {
-          if (session.tournamentSpectating) {
-            scene.stopSpectating();
-          } else {
-            scene.endOnlineMatch(-1, true); // silent — bracket overlay shows result
-          }
-          scene.clearVisuals(); // prevent flash of old match
-        }
-        // Show bracket between matches
-        hideAllTournamentOverlays(tournamentDeps);
-        bracketOverlay.classList.add("visible");
-        renderBracket(tournamentDeps, bracket);
-      },
-
-      onTournamentEnd(standings, _bracket) {
-        const scene = getGameScene();
-        if (scene) {
-          if (session.tournamentSpectating) scene.stopSpectating();
-          else scene.endOnlineMatch(-1, true);
-          scene.clearVisuals();
-        }
-        hideAllTournamentOverlays(tournamentDeps);
-        tournamentResults.classList.add("visible");
-        renderStandings(tournamentDeps, standings);
-
-        // Return to lobby (and home region if cross-region) after 8s
-        setTimeout(() => {
-          hideAllTournamentOverlays(tournamentDeps);
-          session.currentTournamentId = null;
-          currentTournamentSlot = -1;
-          _currentTournamentHostSlot = -1;
-          session.tournamentSpectating = false;
-          void (async () => {
-            const homeId = regionManager.homeRegionId;
-            if (homeId && homeId !== session.activeRegionId) {
-              const homeRegion = regionManager.getRegionById(homeId);
-              if (homeRegion) await switchToRegion(homeRegion);
-            }
-            lobbyAPI.open();
-          })();
-        }, 8000);
-      },
-    });
-
-    session.networkManager.connect(url);
-
-    // Once connected, set username and open lobby
-    let resolved = false;
-    const waitForConnect = setInterval(() => {
-      if (session.networkManager?.connected) {
-        clearInterval(waitForConnect);
-        if (session.currentUsername) {
-          session.networkManager.sendSetUsername(session.currentUsername);
-        }
-        const walletAddr = getConnectedAddress();
-        if (walletAddr) {
-          session.networkManager.sendSetWallet(walletAddr);
-        }
-        if (!session.inTutorialFlow) lobbyAPI.open();
-        if (!resolved) {
-          resolved = true;
-          resolveConnect();
-        }
-      }
-    }, 100);
-
-    // Safety timeout: stop polling after 10s and show error
-    setTimeout(() => {
-      clearInterval(waitForConnect);
-      if (!session.networkManager?.connected) {
-        lobbyStatus.textContent = "Could not connect to server. Check your connection and try again.";
-        lobbyAPI.setButtons(true);
-      }
-      if (!resolved) {
-        resolved = true;
-        resolveConnect();
-      }
-    }, 10000);
-  }); // end Promise
-}
 
 // ── Button handlers ────────────────────────────────────────────────────────────
 

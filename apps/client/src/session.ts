@@ -7,6 +7,8 @@ export const session = {
   currentUsername: "",
   currentMode: "casual" as GameMode,
   currentTournamentId: null as string | null,
+  currentTournamentSlot: -1,
+  tournamentHostSlot: -1,
   tournamentSpectating: false,
   inTutorialFlow: false,
   lastVerifiedAddr: null as string | null,
