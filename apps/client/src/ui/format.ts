@@ -65,3 +65,14 @@ export function proofStatusLabel(status: string): string {
       return status;
   }
 }
+
+export function formatPing(ms: number): string {
+  if (ms === Infinity) return "---";
+  return `${Math.round(ms)}ms`;
+}
+
+export function pingClass(ms: number): string {
+  if (ms === Infinity) return "unreachable";
+  if (ms > 160) return "high";
+  return "";
+}

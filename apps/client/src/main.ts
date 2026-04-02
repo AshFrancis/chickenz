@@ -10,9 +10,6 @@ import {
   NetworkManager,
   type RoomInfo,
   type GameMode,
-  type TournamentBracket,
-  type BracketMatch,
-  type TournamentLobbyMessage,
 } from "./net/NetworkManager";
 import { RegionManager, type RegionPing, type RegionRoomInfo } from "./net/RegionManager";
 import { getRegions, type RegionConfig } from "./net/regions";
@@ -20,10 +17,26 @@ import type { MatchRecord } from "./types";
 import {
   escapeHtml,
   truncateAddress,
-  formatTimeAgo,
-  proofStatusLabel,
+  formatPing,
+  pingClass,
 } from "./ui/format";
 import { renderMatchDetail } from "./ui/MatchDetailView";
+import { buildTiledFrame } from "./ui/TiledFrame";
+import { getOrCreateUsername } from "./ui/AnimalNameGenerator";
+import { fetchLeaderboard } from "./ui/LeaderboardPanel";
+import {
+  fetchMatchHistory,
+  type TranscriptResponse,
+  type MatchHistoryCallbacks,
+} from "./ui/MatchHistoryPanel";
+import {
+  tournamentTimers,
+  hideAllTournamentOverlays,
+  renderBracket,
+  renderStandings,
+  renderTournamentLobby,
+  type TournamentPanelDeps,
+} from "./ui/TournamentPanel";
 
 const NUM_CHARACTERS = 4;
 const CHARACTER_NAMES = ["NINJA FROG", "MASK DUDE", "PINK MAN", "VIRTUAL GUY"];
@@ -112,6 +125,23 @@ const standingsList = document.getElementById("standings-list") as HTMLDivElemen
 let currentTournamentSlot = -1; // our slot in the tournament
 let _currentTournamentHostSlot = -1;
 
+// Tournament panel dependency object (lazily captures networkManager via closures)
+const tournamentDeps: TournamentPanelDeps = {
+  tournamentOverlay,
+  bracketOverlay,
+  bracketGrid,
+  spectateOverlay,
+  tournamentResults,
+  standingsList,
+  tournamentCode,
+  tournamentStatus,
+  tournamentPlayers,
+  onToggleRole: () => networkManager?.sendToggleRole(),
+  onUpdateConfig: (config) => networkManager?.sendUpdateTournamentConfig(config),
+  onStartTournament: () => networkManager?.sendStartTournament(),
+  onCloseLobby: () => closeLobby(),
+};
+
 // Match detail overlay
 const matchDetailOverlay = document.getElementById("match-detail-overlay") as HTMLDivElement;
 const matchDetailBody = document.getElementById("match-detail-body") as HTMLDivElement;
@@ -174,17 +204,6 @@ const regionFlag = document.getElementById("region-flag") as HTMLSpanElement;
 const regionName = document.getElementById("region-name") as HTMLSpanElement;
 const regionPing = document.getElementById("region-ping") as HTMLSpanElement;
 const regionDropdown = document.getElementById("region-dropdown") as HTMLDivElement;
-
-function formatPing(ms: number): string {
-  if (ms === Infinity) return "---";
-  return `${Math.round(ms)}ms`;
-}
-
-function pingClass(ms: number): string {
-  if (ms === Infinity) return "unreachable";
-  if (ms > 160) return "high";
-  return "";
-}
 
 function updateRegionUI(pings: RegionPing[]) {
   const homeId = regionManager.homeRegionId;
@@ -265,79 +284,6 @@ function flushPendingActions() {
     lobbyStatus.textContent = "";
     setLobbyButtons(false);
   }
-}
-
-// ── Animal name generator ────────────────────────────────────────────────────
-
-const ANIMALS = [
-  "Moose",
-  "Fox",
-  "Cat",
-  "Dog",
-  "Lion",
-  "Monkey",
-  "Zebra",
-  "Bear",
-  "Wolf",
-  "Eagle",
-  "Hawk",
-  "Otter",
-  "Panda",
-  "Koala",
-  "Raven",
-  "Shark",
-  "Whale",
-  "Tiger",
-  "Cobra",
-  "Viper",
-  "Gecko",
-  "Lemur",
-  "Bison",
-  "Crane",
-  "Heron",
-  "Finch",
-  "Robin",
-  "Llama",
-  "Goose",
-  "Duck",
-  "Deer",
-  "Frog",
-  "Toad",
-  "Crab",
-  "Crow",
-  "Dove",
-  "Lynx",
-  "Mole",
-  "Moth",
-  "Wasp",
-  "Wren",
-  "Swan",
-  "Yak",
-  "Newt",
-  "Puma",
-  "Seal",
-  "Slug",
-  "Mink",
-];
-
-function generateAnimalName(): string {
-  const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]!;
-  const maxDigits = 7 - animal.length;
-  const num = Math.floor(Math.random() * Math.pow(10, maxDigits));
-  return `${animal}${num}`;
-}
-
-function getOrCreateUsername(): string {
-  const saved = localStorage.getItem("chickenz-username");
-  if (saved) return saved;
-  // New users get no name — they'll pick one after the tutorial.
-  // Returning users who lost their username (cleared storage) get a random one.
-  if (!Tutorial.shouldShow()) {
-    const name = generateAnimalName();
-    localStorage.setItem("chickenz-username", name);
-    return name;
-  }
-  return "";
 }
 
 function saveUsername(name: string) {
@@ -694,65 +640,6 @@ modeRankedBtn.addEventListener("click", () => {
 // ── Settings Panel ────────────────────────────────────────────────────────────
 
 let settingsOpen = false;
-
-// Build tiled border around a card using terrain spritesheet
-function buildTiledFrame(frame: HTMLElement, card: HTMLElement) {
-  const COLS = 22;
-  const TILE = 16;
-  const TOP_L = 4 * COLS + 12;
-  const TOP_M = 4 * COLS + 13;
-  const TOP_R = 4 * COLS + 14;
-  const SIDE_T = 4 * COLS + 15;
-  const SIDE_M = 5 * COLS + 15;
-  const SIDE_B = 6 * COLS + 15;
-
-  function makeTile(frameIdx: number, x: number, y: number): HTMLDivElement {
-    const d = document.createElement("div");
-    d.className = "frame-tile";
-    const col = frameIdx % COLS;
-    const row = Math.floor(frameIdx / COLS);
-    d.style.backgroundPosition = `-${col * TILE}px -${row * TILE}px`;
-    d.style.left = `${x}px`;
-    d.style.top = `${y}px`;
-    return d;
-  }
-
-  const observer = new ResizeObserver(() => {
-    frame.querySelectorAll(".frame-tile").forEach((t) => t.remove());
-    const w = frame.offsetWidth;
-    const h = frame.offsetHeight;
-
-    frame.appendChild(makeTile(TOP_L, 0, 0));
-    for (let x = TILE; x < w - TILE; x += TILE) {
-      frame.appendChild(makeTile(TOP_M, x, 0));
-    }
-    frame.appendChild(makeTile(TOP_R, w - TILE, 0));
-
-    frame.appendChild(makeTile(TOP_L, 0, h - TILE));
-    for (let x = TILE; x < w - TILE; x += TILE) {
-      frame.appendChild(makeTile(TOP_M, x, h - TILE));
-    }
-    frame.appendChild(makeTile(TOP_R, w - TILE, h - TILE));
-
-    frame.appendChild(makeTile(SIDE_T, 0, TILE));
-    for (let y = 2 * TILE; y < h - 2 * TILE; y += TILE) {
-      frame.appendChild(makeTile(SIDE_M, 0, y));
-    }
-    frame.appendChild(makeTile(SIDE_B, 0, h - 2 * TILE));
-
-    const addFlipped = (idx: number, fx: number, fy: number) => {
-      const tile = makeTile(idx, fx, fy);
-      tile.style.transform = "scaleX(-1)";
-      frame.appendChild(tile);
-    };
-    addFlipped(SIDE_T, w - TILE, TILE);
-    for (let y = 2 * TILE; y < h - 2 * TILE; y += TILE) {
-      addFlipped(SIDE_M, w - TILE, y);
-    }
-    addFlipped(SIDE_B, w - TILE, h - 2 * TILE);
-  });
-  observer.observe(card);
-}
 
 buildTiledFrame(document.getElementById("settings-frame")!, document.getElementById("settings-card")!);
 buildTiledFrame(document.getElementById("tutorial-prompt-frame")!, document.getElementById("tutorial-prompt-card")!);
@@ -1151,7 +1038,7 @@ document.getElementById("btn-warmup-share")?.addEventListener("click", () => {
 
 document.getElementById("btn-tournament-back")!.addEventListener("click", () => {
   networkManager?.sendLeave();
-  hideAllTournamentOverlays();
+  hideAllTournamentOverlays(tournamentDeps);
   currentTournamentId = null;
   currentTournamentSlot = -1;
   _currentTournamentHostSlot = -1;
@@ -1206,8 +1093,8 @@ function switchTab(tabName: string) {
   activeTabEl?.setAttribute("aria-selected", "true");
   document.getElementById(`tab-${tabName}`)?.classList.add("visible");
 
-  if (tabName === "leaderboard") fetchLeaderboard();
-  if (tabName === "history") fetchMatchHistory();
+  if (tabName === "leaderboard") fetchLeaderboard(leaderboardContent, currentUsername);
+  if (tabName === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
 }
 
 // ── Lobby UI ───────────────────────────────────────────────────────────────────
@@ -1231,8 +1118,8 @@ function openLobby() {
     networkManager.sendListRooms();
   }
 
-  if (activeTab === "leaderboard") fetchLeaderboard();
-  if (activeTab === "history") fetchMatchHistory();
+  if (activeTab === "leaderboard") fetchLeaderboard(leaderboardContent, currentUsername);
+  if (activeTab === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
 }
 
 function closeLobby() {
@@ -1337,204 +1224,28 @@ function createRoomElement(room: RoomInfo, roomRegionId?: string, roomRegionFlag
 
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
-let fetchingLeaderboard = false;
-let fetchingHistory = false;
-
-function fetchLeaderboard() {
-  if (fetchingLeaderboard) return;
-  fetchingLeaderboard = true;
-  const regions = getRegions();
-  const fetches = regions.map((r) =>
-    fetch(`${r.httpUrl}/api/leaderboard`)
-      .then((res) => res.json() as Promise<{ name: string; elo: number; wins: number; losses: number }[]>)
-      .catch(() => [] as { name: string; elo: number; wins: number; losses: number }[]),
-  );
-  Promise.all(fetches)
-    .then((results) => {
-      // Merge by name: keep highest ELO, sum wins/losses across regions
-      const merged = new Map<string, { name: string; elo: number; wins: number; losses: number }>();
-      for (const entries of results) {
-        for (const e of entries) {
-          const existing = merged.get(e.name);
-          if (existing) {
-            existing.elo = Math.max(existing.elo, e.elo);
-            existing.wins += e.wins;
-            existing.losses += e.losses;
-          } else {
-            merged.set(e.name, { ...e });
-          }
-        }
-      }
-      const sorted = [...merged.values()].sort((a, b) => b.elo - a.elo);
-      renderLeaderboard(sorted);
-    })
-    .catch(() => {
-      leaderboardContent.innerHTML = `<div class="empty-state">Failed to load leaderboard</div>`;
-    })
-    .finally(() => {
-      fetchingLeaderboard = false;
-    });
-}
-
-function renderLeaderboard(data: { name: string; elo: number; wins: number; losses: number }[]) {
-  if (data.length === 0) {
-    leaderboardContent.innerHTML = `<div class="empty-state">No ranked players yet</div>`;
-    return;
-  }
-  let html = `<table><tr><th>#</th><th>Name</th><th>ELO</th><th>W</th><th>L</th></tr>`;
-  data.forEach((entry, i) => {
-    const highlight = entry.name === currentUsername ? ' class="highlight"' : "";
-    html += `<tr${highlight}><td>${i + 1}</td><td>${escapeHtml(entry.name)}</td><td>${entry.elo}</td><td>${entry.wins}</td><td>${entry.losses}</td></tr>`;
-  });
-  html += `</table>`;
-  leaderboardContent.innerHTML = html;
-}
-
 // ── Match History ──────────────────────────────────────────────────────────────
 
-function fetchMatchHistory() {
-  if (fetchingHistory) return;
-  fetchingHistory = true;
-  const regions = getRegions();
-  const fetches = regions.map((r) =>
-    fetch(`${r.httpUrl}/api/matches`)
-      .then((res) => res.json() as Promise<MatchRecord[]>)
-      .then((matches) => matches.map((m) => ({ ...m, _regionUrl: r.httpUrl, _regionId: r.id })))
-      .catch(() => [] as MatchRecord[]),
-  );
-  Promise.all(fetches)
-    .then((results) => {
-      // Merge all matches, dedupe by id, sort by timestamp descending
-      const seen = new Set<string>();
-      const merged: MatchRecord[] = [];
-      for (const matches of results) {
-        for (const m of matches) {
-          if (!seen.has(m.id)) {
-            seen.add(m.id);
-            merged.push(m);
-          }
-        }
-      }
-      merged.sort((a, b) => b.timestamp - a.timestamp);
-      renderMatchHistory(merged);
-    })
-    .catch(() => {
-      matchHistoryList.innerHTML = `<div class="empty-state">Failed to load match history</div>`;
-    })
-    .finally(() => {
-      fetchingHistory = false;
-    });
-}
-
-function renderMatchHistory(matches: MatchRecord[]) {
-  if (matches.length === 0) {
-    matchHistoryList.innerHTML = `<div class="empty-state">No matches played yet</div>`;
-    return;
-  }
-  // innerHTML replacement destroys all old elements and their listeners, so
-  // per-element addEventListener in the loop below is safe (no leak). We still
-  // use event delegation on the container for button actions to keep wiring simple.
-  matchHistoryList.innerHTML = "";
-
-  // Store matches by roomId / matchId for delegation lookups
-  const matchByRoom = new Map<string, MatchRecord>();
-  const matchById = new Map<string, MatchRecord>();
-  for (const m of matches) {
-    matchByRoom.set(m.roomId, m);
-    matchById.set(m.id, m);
-  }
-
-  for (const m of matches) {
-    const el = document.createElement("div");
-    el.className = "match-item";
-    el.dataset.matchId = m.id;
-    el.dataset.regionUrl = m._regionUrl || "";
-    const ago = formatTimeAgo(m.timestamp);
-    const modeBadge =
-      m.mode === "ranked"
-        ? `<span class="mode-badge ranked">Ranked</span>`
-        : `<span class="mode-badge casual">Casual</span>`;
-    const showSettle = m.mode === "ranked" && m.proofStatus === "verified" && getConnectedAddress();
-    el.innerHTML = `
-      <div>
-        <span class="match-players">${escapeHtml(m.player1)}${m.wallet1 ? ` <span class="match-wallet">${truncateAddress(m.wallet1)}</span>` : ""} vs ${escapeHtml(m.player2)}${m.wallet2 ? ` <span class="match-wallet">${truncateAddress(m.wallet2)}</span>` : ""}</span>
-        <span class="match-score">${m.scores[0]}-${m.scores[1]}</span>
-        ${modeBadge}
-      </div>
-      <div class="match-item-meta">
-        <span class="match-time">${ago}</span>
-        <span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span>
-        ${showSettle ? `<button class="btn btn-sm btn-primary btn-settle" data-action="settle" data-match-id="${escapeHtml(m.id)}">Settle</button>` : ""}
-        <button class="btn btn-sm btn-replay" data-action="replay" data-room-id="${escapeHtml(m.roomId)}">Replay</button>
-        <button class="btn btn-sm btn-share" data-action="share" data-room-id="${escapeHtml(m.roomId)}" data-region="${escapeHtml(m._regionId || activeRegionId)}">Share</button>
-        <button class="btn btn-sm btn-download" data-action="download" data-room-id="${escapeHtml(m.roomId)}">DL</button>
-      </div>
-    `;
-    matchHistoryList.appendChild(el);
-  }
-
-  // Single delegated listener for all button actions in match history list
-  matchHistoryList.onclick = (e) => {
-    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-action]");
-    if (target) {
-      e.stopPropagation();
-      const action = target.dataset.action;
-      const roomId = target.dataset.roomId || "";
-      const matchId = target.dataset.matchId || "";
-      const m = roomId ? matchByRoom.get(roomId) : matchById.get(matchId);
-      if (!m) return;
-      switch (action) {
-        case "replay":
-          startReplay(m.roomId, m._regionUrl);
-          break;
-        case "share": {
-          const region = target.dataset.region || activeRegionId;
-          void navigator.clipboard
-            .writeText(`${window.location.origin}/?replay=${m.roomId}&region=${region}`)
-            .then(() => {
-              target.textContent = "Copied!";
-              setTimeout(() => {
-                target.textContent = "Share";
-              }, 1500);
-            });
-          break;
-        }
-        case "download":
-          downloadTranscript(m.roomId, m._regionUrl);
-          break;
-        case "settle":
-          void handleSettleMatch(m.id, m._regionUrl);
-          break;
-      }
-      return;
-    }
-    // Click on row (not a button) opens detail
-    const row = (e.target as HTMLElement).closest<HTMLElement>(".match-item");
-    if (row && row.dataset.matchId) {
-      const m = matchById.get(row.dataset.matchId);
-      if (m) openMatchDetail(m.id, m._regionUrl);
-    }
+/** Build the callbacks object for match history panel. */
+function matchHistoryCallbacks(): MatchHistoryCallbacks {
+  return {
+    onReplay: (roomId, regionUrl) => startReplay(roomId, regionUrl),
+    onDownload: (roomId, regionUrl) => downloadTranscript(roomId, regionUrl),
+    onSettle: (matchId, regionUrl) => void handleSettleMatch(matchId, regionUrl),
+    onDetail: (matchId, regionUrl) => openMatchDetail(matchId, regionUrl),
+    onShare: (roomId, region, buttonEl) => {
+      void navigator.clipboard
+        .writeText(`${window.location.origin}/?replay=${roomId}&region=${region}`)
+        .then(() => {
+          buttonEl.textContent = "Copied!";
+          setTimeout(() => {
+            buttonEl.textContent = "Share";
+          }, 1500);
+        });
+    },
+    getActiveRegionId: () => activeRegionId,
+    getConnectedAddress: () => getConnectedAddress(),
   };
-}
-
-interface TranscriptInput {
-  buttons: number;
-  aimX?: number;
-  aimY?: number;
-  aim_x?: number;
-  aim_y?: number;
-}
-
-interface RoundTranscript {
-  seed: number;
-  mapIndex: number;
-  transcript: [TranscriptInput, TranscriptInput][];
-}
-
-interface TranscriptResponse {
-  rounds: RoundTranscript[];
-  usernames?: [string, string];
-  characters?: [number, number];
 }
 
 function startReplay(roomId: string, regionUrl?: string) {
@@ -1597,461 +1308,6 @@ function openMatchDetail(matchId: string, regionUrl?: string) {
     });
 }
 
-
-// ── Tournament UI helpers ──────────────────────────────────────────────────────
-
-const tournamentTimers: ReturnType<typeof setTimeout>[] = [];
-
-function hideAllTournamentOverlays() {
-  tournamentOverlay.classList.remove("visible");
-  bracketOverlay.classList.remove("visible");
-  spectateOverlay.classList.remove("visible");
-  tournamentResults.classList.remove("visible");
-  // Clear any pending animation timers
-  for (const t of tournamentTimers) clearTimeout(t);
-  tournamentTimers.length = 0;
-}
-
-function renderBracket(bracket: TournamentBracket, highlightMatchIndex?: number) {
-  bracketGrid.innerHTML = "";
-
-  // Separate winners/final vs consolation matches; skip pure bye matches (no real players)
-  const allWinners = bracket.matches.filter(
-    (m) => (m.bracketSide === "winners" || m.bracketSide === "final") && m.status !== "bye",
-  );
-  const consolationMatches = bracket.matches.filter(
-    (m) => (m.bracketSide === "consolation" || m.bracketSide === "third_place") && m.status !== "bye",
-  );
-
-  if (allWinners.length === 0) return;
-
-  // Group by round
-  const maxRound = Math.max(...allWinners.map((m) => m.round));
-  const roundGroups: BracketMatch[][] = [];
-  for (let r = 0; r <= maxRound; r++) {
-    roundGroups.push(allWinners.filter((m) => m.round === r).sort((a, b) => a.matchIndex - b.matchIndex));
-  }
-
-  // Classify matches into left/right side
-  const r0 = roundGroups[0] || [];
-  const halfR0 = Math.ceil(r0.length / 2);
-  const leftR0Set = new Set(r0.slice(0, halfR0).map((m) => m.matchIndex));
-  const side = new Map<number, "left" | "right">();
-  for (const m of r0) side.set(m.matchIndex, leftR0Set.has(m.matchIndex) ? "left" : "right");
-  for (let r = 1; r <= maxRound; r++) {
-    for (const m of roundGroups[r]!) {
-      const sA = m.sourceA.type === "winner" || m.sourceA.type === "loser" ? side.get(m.sourceA.matchIndex) : undefined;
-      const sB = m.sourceB.type === "winner" || m.sourceB.type === "loser" ? side.get(m.sourceB.matchIndex) : undefined;
-      // Final is center, not a side
-      if (m.bracketSide === "final")
-        side.set(m.matchIndex, "left"); // placeholder
-      else side.set(m.matchIndex, sA === "left" || sB === "left" ? "left" : "right");
-    }
-  }
-
-  // Layout constants
-  const MW = 150; // match width
-  const MH = 52; // match height (2 rows × 26)
-  const COL_GAP = 60; // horizontal gap between rounds (for connector lines)
-  const FINAL_GAP = 70; // extra gap around final
-  const VPAD = 16; // vertical padding
-
-  const numSideRounds = maxRound;
-  const isFinalOnly = maxRound === 0;
-
-  const leftRound = (r: number) =>
-    (roundGroups[r] || []).filter((m) => side.get(m.matchIndex) === "left" && m.bracketSide !== "final");
-  const rightRound = (r: number) =>
-    (roundGroups[r] || []).filter((m) => side.get(m.matchIndex) === "right" && m.bracketSide !== "final");
-  const finalMatches = allWinners.filter((m) => m.bracketSide === "final");
-
-  const leftR0Count = leftRound(0).length || 1;
-  const rightR0Count = rightRound(0).length || 1;
-  const maxR0 = Math.max(leftR0Count, rightR0Count);
-  const baseSpacing = MH + VPAD * 2;
-  const totalHeight = isFinalOnly ? MH + 60 : Math.max(maxR0 * baseSpacing + VPAD * 2, 240);
-
-  const totalWidth = isFinalOnly
-    ? MW + 40
-    : numSideRounds * (MW + COL_GAP) + MW + FINAL_GAP * 2 + numSideRounds * (MW + COL_GAP);
-
-  // Position each match. Track positions by matchIndex for line drawing.
-  const pos = new Map<number, { x: number; y: number; w: number; h: number }>();
-
-  function placeRound(matches: BracketMatch[], colX: number, availTop: number, availHeight: number) {
-    const n = matches.length;
-    if (n === 0) return;
-    const spacing = availHeight / n;
-    for (let i = 0; i < n; i++) {
-      const y = availTop + spacing * i + (spacing - MH) / 2;
-      pos.set(matches[i]!.matchIndex, { x: colX, y, w: MW, h: MH });
-    }
-  }
-
-  if (isFinalOnly) {
-    // Just the final centered
-    const fm = r0[0];
-    if (fm) pos.set(fm.matchIndex, { x: 20, y: 30, w: MW, h: MH });
-  } else {
-    // Left side: round 0 is leftmost, increasing rounds go right
-    for (let r = 0; r < numSideRounds; r++) {
-      const colX = r * (MW + COL_GAP);
-      placeRound(leftRound(r), colX, 0, totalHeight);
-    }
-
-    // Final in center
-    const centerX = totalWidth / 2 - MW / 2;
-    for (const fm of finalMatches) {
-      pos.set(fm.matchIndex, { x: centerX, y: totalHeight / 2 - MH / 2, w: MW, h: MH });
-    }
-
-    // Right side: round 0 is rightmost, increasing rounds go left (mirror)
-    for (let r = 0; r < numSideRounds; r++) {
-      const colX = totalWidth - (r + 1) * (MW + COL_GAP) + COL_GAP;
-      placeRound(rightRound(r), colX, 0, totalHeight);
-    }
-  }
-
-  // Build match HTML helper
-  function matchHtml(m: BracketMatch): string {
-    const p = pos.get(m.matchIndex);
-    if (!p) return "";
-    const p1Name = m.playerA?.name || "TBD";
-    const p2Name = m.playerB?.name || "TBD";
-    const winSlot = m.winner;
-    const p1Won = winSlot !== undefined && m.playerA && winSlot === m.playerA.slot;
-    const p2Won = winSlot !== undefined && m.playerB && winSlot === m.playerB.slot;
-    let cls = "bk-match";
-    if (m.status === "done") cls += " done";
-    else if (m.status === "playing") cls += " playing";
-    else if (m.status === "ready") cls += " ready";
-    if (m.bracketSide === "final") cls += " final-match";
-    if (highlightMatchIndex === m.matchIndex) cls += " playing";
-    return `<div class="${cls}" data-mi="${m.matchIndex}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;">
-      <div class="bk-seed${p1Won ? " won" : ""}">${escapeHtml(p1Name)}</div>
-      <div class="bk-seed${p2Won ? " won" : ""}">${escapeHtml(p2Name)}</div>
-    </div>`;
-  }
-
-  // Build SVG connector lines
-  let lines = "";
-  for (const m of allWinners) {
-    if (m.status === "bye") continue;
-    const mPos = pos.get(m.matchIndex);
-    if (!mPos) continue;
-    const _mSide = side.get(m.matchIndex);
-    const isFinal = m.bracketSide === "final";
-
-    // Draw line from each source match to this match
-    for (const src of [m.sourceA, m.sourceB]) {
-      if (src.type !== "winner" && src.type !== "loser") continue;
-      // Find actual source — skip through byes
-      let srcIdx = src.matchIndex;
-      let srcMatch = bracket.matches.find((mm) => mm.matchIndex === srcIdx);
-      while (srcMatch && srcMatch.status === "bye") {
-        // Follow the winning source of the bye
-        const byeSrc = srcMatch.winner === srcMatch.playerA?.slot ? srcMatch.sourceA : srcMatch.sourceB;
-        if (!byeSrc || byeSrc.type === "seed" || byeSrc.type === "bye") break;
-        srcIdx = byeSrc.matchIndex;
-        srcMatch = bracket.matches.find((mm) => mm.matchIndex === srcIdx);
-      }
-      const srcPos = pos.get(srcIdx);
-      if (!srcPos) continue;
-
-      const srcSide = side.get(srcIdx);
-      // Source output point: right edge if left side, left edge if right side
-      let x1: number, y1: number, x2: number, y2: number;
-
-      if (srcSide === "left" || isFinal) {
-        x1 = srcPos.x + srcPos.w; // right edge of source
-        y1 = srcPos.y + srcPos.h / 2;
-        x2 = mPos.x; // left edge of target
-        y2 = mPos.y + mPos.h / 2;
-      } else {
-        x1 = srcPos.x; // left edge of source
-        y1 = srcPos.y + srcPos.h / 2;
-        x2 = mPos.x + mPos.w; // right edge of target
-        y2 = mPos.y + mPos.h / 2;
-      }
-
-      // Draw L-shaped connector: horizontal from source, then vertical, then horizontal to target
-      const midX = (x1 + x2) / 2;
-      lines += `<line x1="${x1}" y1="${y1}" x2="${midX}" y2="${y1}"/>`;
-      lines += `<line x1="${midX}" y1="${y1}" x2="${midX}" y2="${y2}"/>`;
-      lines += `<line x1="${midX}" y1="${y2}" x2="${x2}" y2="${y2}"/>`;
-    }
-  }
-
-  // Consolation rows (rendered below the bracket canvas)
-  let consolationHeight = 0;
-  let consolationHtml = "";
-  if (consolationMatches.length > 0) {
-    consolationHeight = 80;
-    consolationHtml = `<div class="bk-consolation-section" style="position:absolute;left:0;top:${totalHeight}px;width:${totalWidth}px;">`;
-    consolationHtml += `<div class="bk-consolation-title">CONSOLATION</div><div class="bk-consolation-row">`;
-    for (const m of consolationMatches) {
-      const p1 = m.playerA?.name || "TBD";
-      const p2 = m.playerB?.name || "TBD";
-      const p1Won = m.winner !== undefined && m.playerA && m.winner === m.playerA.slot;
-      const p2Won = m.winner !== undefined && m.playerB && m.winner === m.playerB.slot;
-      let cls = "bk-match";
-      if (m.status === "done") cls += " done";
-      else if (m.status === "playing") cls += " playing";
-      else if (m.status === "ready") cls += " ready";
-      consolationHtml += `<div class="${cls}" data-mi="${m.matchIndex}">
-        <div class="bk-seed${p1Won ? " won" : ""}">${escapeHtml(p1)}</div>
-        <div class="bk-seed${p2Won ? " won" : ""}">${escapeHtml(p2)}</div>
-      </div>`;
-    }
-    consolationHtml += `</div></div>`;
-  }
-
-  const canvasH = totalHeight + consolationHeight;
-
-  // Assemble
-  let html = `<div class="bk-canvas" style="width:${totalWidth}px;height:${canvasH}px;">`;
-  html += `<svg class="bk-lines" viewBox="0 0 ${totalWidth} ${totalHeight}" style="height:${totalHeight}px;">${lines}</svg>`;
-
-  // Final label
-  if (!isFinalOnly && finalMatches.length > 0) {
-    const fp = pos.get(finalMatches[0]!.matchIndex);
-    if (fp) {
-      html += `<div class="bk-final-label" style="left:${fp.x}px;top:${fp.y - 20}px;width:${fp.w}px;">FINAL</div>`;
-    }
-  }
-
-  // All match boxes
-  for (const m of allWinners) {
-    if (m.status === "bye") continue;
-    html += matchHtml(m);
-  }
-
-  html += consolationHtml;
-  html += `</div>`;
-
-  bracketGrid.innerHTML = html;
-
-  // Auto-scale bracket to fit the overlay
-  const canvasEl = bracketGrid.querySelector(".bk-canvas") as HTMLElement;
-  if (canvasEl) {
-    requestAnimationFrame(() => {
-      const parentW = bracketGrid.clientWidth || 800;
-      const parentH = bracketGrid.clientHeight || 400;
-      const scaleX = parentW / totalWidth;
-      const scaleY = parentH / canvasH;
-      const scale = Math.min(scaleX, scaleY, 1.4);
-      canvasEl.style.transform = `scale(${scale})`;
-      canvasEl.style.transformOrigin = "center center";
-    });
-  }
-}
-
-function renderStandings(standings: { place: number; name: string }[]) {
-  const ordinal = (n: number) => (n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`);
-  // Count how many players share each place
-  const placeCounts = new Map<number, number>();
-  for (const s of standings) placeCounts.set(s.place, (placeCounts.get(s.place) || 0) + 1);
-
-  standingsList.innerHTML = "";
-  for (const s of standings) {
-    const el = document.createElement("div");
-    el.className = "standing-row";
-    const tied = (placeCounts.get(s.place) || 0) > 1;
-    const label = (tied ? "=" : "") + ordinal(s.place);
-    el.innerHTML = `<span class="place">${label}</span><span class="name">${escapeHtml(s.name)}</span>`;
-    standingsList.appendChild(el);
-  }
-}
-
-function renderTournamentLobby(msg: TournamentLobbyMessage) {
-  currentTournamentId = msg.tournamentId;
-  _currentTournamentHostSlot = msg.hostSlot;
-
-  currentTournamentSlot = msg.mySlot;
-  const myRole = currentTournamentSlot >= 0 ? msg.participants[currentTournamentSlot]!.role : null;
-
-  closeLobby();
-  hideAllTournamentOverlays();
-  tournamentOverlay.classList.add("visible");
-  tournamentCode.textContent = msg.joinCode;
-
-  const players = msg.participants.filter((p) => p.role === "player");
-  const spectators = msg.participants.filter((p) => p.role === "spectator");
-  const isWaiting = msg.status === "waiting";
-
-  if (msg.status === "playing") {
-    tournamentStatus.textContent = "Tournament in progress...";
-  } else if (msg.status === "ended") {
-    tournamentStatus.textContent = "Tournament ended";
-  } else {
-    tournamentStatus.textContent = `${players.length}/8 players, ${spectators.length}/5 spectators`;
-  }
-
-  // ── Render slot grid ──
-  tournamentPlayers.innerHTML = "";
-
-  // Player slots (8 max)
-  const playerLabel = document.createElement("div");
-  playerLabel.className = "slots-section-label";
-  playerLabel.textContent = "PLAYERS";
-  tournamentPlayers.appendChild(playerLabel);
-
-  const playerGrid = document.createElement("div");
-  playerGrid.className = "slots-grid";
-  for (let i = 0; i < 8; i++) {
-    const p = players[i];
-    const el = document.createElement("div");
-    if (p) {
-      el.className = "tournament-slot filled";
-      if (p.slot === msg.hostSlot) el.classList.add("host");
-      if (!p.connected) el.classList.add("disconnected");
-      el.innerHTML = `<span class="slot-name">${escapeHtml(p.name)}</span>`;
-      if (p.slot === msg.hostSlot)
-        el.insertAdjacentHTML("beforeend", `<span class="slot-badge host-badge">HOST</span>`);
-    } else {
-      el.className = "tournament-slot empty";
-      el.textContent = "---";
-      // If I'm a spectator, clicking an empty player slot switches me to player
-      if (isWaiting && myRole === "spectator") {
-        el.style.cursor = "pointer";
-        el.addEventListener("click", () => networkManager?.sendToggleRole());
-      }
-    }
-    playerGrid.appendChild(el);
-  }
-  tournamentPlayers.appendChild(playerGrid);
-
-  // Spectator slots (5 max)
-  const spectatorLabel = document.createElement("div");
-  spectatorLabel.className = "slots-section-label";
-  spectatorLabel.textContent = "SPECTATORS";
-  tournamentPlayers.appendChild(spectatorLabel);
-
-  const spectatorGrid = document.createElement("div");
-  spectatorGrid.className = "slots-grid";
-  for (let i = 0; i < 5; i++) {
-    const s = spectators[i];
-    const el = document.createElement("div");
-    if (s) {
-      el.className = "tournament-slot filled spectator-slot";
-      if (!s.connected) el.classList.add("disconnected");
-      el.innerHTML = `<span class="slot-name">${escapeHtml(s.name)}</span>`;
-    } else {
-      el.className = "tournament-slot empty spectator-slot";
-      el.textContent = "---";
-      // If I'm a player, clicking an empty spectator slot switches me to spectator
-      if (isWaiting && myRole === "player") {
-        el.style.cursor = "pointer";
-        el.addEventListener("click", () => networkManager?.sendToggleRole());
-      }
-    }
-    spectatorGrid.appendChild(el);
-  }
-  tournamentPlayers.appendChild(spectatorGrid);
-
-  // ── Host controls ──
-  let controlsEl = document.getElementById("tournament-host-controls");
-  if (controlsEl) controlsEl.remove();
-
-  if (currentTournamentSlot === msg.hostSlot && isWaiting) {
-    controlsEl = document.createElement("div");
-    controlsEl.id = "tournament-host-controls";
-
-    // Config row
-    const configRow = document.createElement("div");
-    configRow.className = "tournament-config-row";
-
-    const fmtLabel = document.createElement("span");
-    fmtLabel.textContent = "Format:";
-    const fmtBo3 = document.createElement("button");
-    fmtBo3.className = "btn btn-sm" + (msg.config.matchFormat === "bo3" ? " active" : "");
-    fmtBo3.textContent = "Bo3";
-    fmtBo3.addEventListener("click", () => networkManager?.sendUpdateTournamentConfig({ matchFormat: "bo3" }));
-    const fmtBo5 = document.createElement("button");
-    fmtBo5.className = "btn btn-sm" + (msg.config.matchFormat === "bo5" ? " active" : "");
-    fmtBo5.textContent = "Bo5";
-    fmtBo5.addEventListener("click", () => networkManager?.sendUpdateTournamentConfig({ matchFormat: "bo5" }));
-    configRow.append(fmtLabel, fmtBo3, fmtBo5);
-
-    const bracketLabel = document.createElement("span");
-    bracketLabel.textContent = "Bracket:";
-    bracketLabel.style.marginLeft = "12px";
-    const btWinners = document.createElement("button");
-    btWinners.className = "btn btn-sm" + (msg.config.bracketType === "winners_only" ? " active" : "");
-    btWinners.textContent = "Winners";
-    btWinners.addEventListener("click", () =>
-      networkManager?.sendUpdateTournamentConfig({ bracketType: "winners_only" }),
-    );
-    const btPartial = document.createElement("button");
-    btPartial.className = "btn btn-sm" + (msg.config.bracketType === "partial_consolation" ? " active" : "");
-    btPartial.textContent = "4th Place";
-    btPartial.addEventListener("click", () =>
-      networkManager?.sendUpdateTournamentConfig({ bracketType: "partial_consolation" }),
-    );
-    const btFull = document.createElement("button");
-    btFull.className = "btn btn-sm" + (msg.config.bracketType === "full_consolation" ? " active" : "");
-    btFull.textContent = "Full";
-    btFull.addEventListener("click", () =>
-      networkManager?.sendUpdateTournamentConfig({ bracketType: "full_consolation" }),
-    );
-    configRow.append(bracketLabel, btWinners, btPartial, btFull);
-    controlsEl.appendChild(configRow);
-
-    const startBtn = document.createElement("button");
-    startBtn.className = "btn btn-primary";
-    startBtn.textContent = "START TOURNAMENT";
-    startBtn.disabled = players.length < 2;
-    startBtn.style.marginTop = "8px";
-    startBtn.addEventListener("click", () => networkManager?.sendStartTournament());
-    controlsEl.appendChild(startBtn);
-
-    tournamentOverlay.appendChild(controlsEl);
-  } else if (isWaiting) {
-    controlsEl = document.createElement("div");
-    controlsEl.id = "tournament-host-controls";
-    controlsEl.classList.add("readonly");
-
-    const configRow = document.createElement("div");
-    configRow.className = "tournament-config-row";
-
-    const fmtLabel = document.createElement("span");
-    fmtLabel.textContent = "Format:";
-    for (const [val, label] of [
-      ["bo3", "Bo3"],
-      ["bo5", "Bo5"],
-    ] as const) {
-      const btn = document.createElement("span");
-      btn.className = "btn btn-sm" + (msg.config.matchFormat === val ? " active" : " inactive");
-      btn.textContent = label;
-      configRow.appendChild(btn);
-    }
-
-    const bracketLabel = document.createElement("span");
-    bracketLabel.textContent = "Bracket:";
-    bracketLabel.style.marginLeft = "12px";
-    configRow.appendChild(fmtLabel);
-    configRow.appendChild(bracketLabel);
-    for (const [val, label] of [
-      ["winners_only", "Winners"],
-      ["partial_consolation", "4th Place"],
-      ["full_consolation", "Full"],
-    ] as const) {
-      const btn = document.createElement("span");
-      btn.className = "btn btn-sm" + (msg.config.bracketType === val ? " active" : " inactive");
-      btn.textContent = label;
-      configRow.appendChild(btn);
-    }
-
-    controlsEl.appendChild(configRow);
-
-    const waitText = document.createElement("div");
-    waitText.style.cssText = "font-size:11px;color:#888;margin-top:4px;";
-    waitText.textContent = "Waiting for host to start...";
-    controlsEl.appendChild(waitText);
-
-    tournamentOverlay.appendChild(controlsEl);
-  }
-}
 
 // ── Network ────────────────────────────────────────────────────────────────────
 
@@ -2175,7 +1431,7 @@ function connectToServer(url: string): Promise<void> {
         setLobbyButtons(false);
         // Clean up tournament state
         if (currentTournamentId) {
-          hideAllTournamentOverlays();
+          hideAllTournamentOverlays(tournamentDeps);
           currentTournamentId = null;
           tournamentSpectating = false;
           const scene = getGameScene();
@@ -2194,7 +1450,10 @@ function connectToServer(url: string): Promise<void> {
 
       // ── Tournament callbacks ──────────────────────────────
       onTournamentLobby(msg) {
-        renderTournamentLobby(msg);
+        const tlState = renderTournamentLobby(tournamentDeps, msg, currentTournamentSlot);
+        currentTournamentId = tlState.tournamentId;
+        _currentTournamentHostSlot = tlState.hostSlot;
+        currentTournamentSlot = tlState.mySlot;
       },
 
       onTournamentMatchStart(
@@ -2223,9 +1482,9 @@ function connectToServer(url: string): Promise<void> {
         // 4. Fade out → start game
         // Total: ~2.8s (server MATCH_INTRO_MS = 3s gives buffer)
 
-        hideAllTournamentOverlays();
+        hideAllTournamentOverlays(tournamentDeps);
         bracketOverlay.classList.add("visible");
-        renderBracket(bracket, matchIndex);
+        renderBracket(tournamentDeps, bracket, matchIndex);
 
         // Stage 1: Bracket appears with scale-in
         const canvas = bracketGrid.querySelector(".bk-canvas") as HTMLElement;
@@ -2243,7 +1502,7 @@ function connectToServer(url: string): Promise<void> {
         // Stage 2: After 0.8s, zoom into the highlighted match
         tournamentTimers.push(
           setTimeout(() => {
-            const matchEl = bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
+            const matchEl = tournamentDeps.bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
             if (matchEl && canvas) {
               const canvasRect = canvas.getBoundingClientRect();
               const matchRect = matchEl.getBoundingClientRect();
@@ -2272,7 +1531,7 @@ function connectToServer(url: string): Promise<void> {
               <span class="bk-vs-p2">${escapeHtml(usernames[1])}</span>
             </div>
           `;
-            bracketOverlay.appendChild(vsOverlay);
+            tournamentDeps.bracketOverlay.appendChild(vsOverlay);
             requestAnimationFrame(() => vsOverlay.classList.add("visible"));
           }, 1600),
         );
@@ -2280,8 +1539,8 @@ function connectToServer(url: string): Promise<void> {
         // Stage 4: Start the game
         tournamentTimers.push(
           setTimeout(() => {
-            hideAllTournamentOverlays();
-            bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
+            hideAllTournamentOverlays(tournamentDeps);
+            tournamentDeps.bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
 
             const scene = getGameScene();
             if (!scene) return;
@@ -2330,9 +1589,9 @@ function connectToServer(url: string): Promise<void> {
           scene.clearVisuals(); // prevent flash of old match
         }
         // Show bracket between matches
-        hideAllTournamentOverlays();
+        hideAllTournamentOverlays(tournamentDeps);
         bracketOverlay.classList.add("visible");
-        renderBracket(bracket);
+        renderBracket(tournamentDeps, bracket);
       },
 
       onTournamentEnd(standings, _bracket) {
@@ -2342,13 +1601,13 @@ function connectToServer(url: string): Promise<void> {
           else scene.endOnlineMatch(-1, true);
           scene.clearVisuals();
         }
-        hideAllTournamentOverlays();
+        hideAllTournamentOverlays(tournamentDeps);
         tournamentResults.classList.add("visible");
-        renderStandings(standings);
+        renderStandings(tournamentDeps, standings);
 
         // Return to lobby (and home region if cross-region) after 8s
         setTimeout(() => {
-          hideAllTournamentOverlays();
+          hideAllTournamentOverlays(tournamentDeps);
           currentTournamentId = null;
           currentTournamentSlot = -1;
           _currentTournamentHostSlot = -1;
@@ -2613,7 +1872,7 @@ async function handleSettleMatch(matchId: string, regionUrl?: string) {
       });
     }
     lobbyStatus.textContent = "Match settled on-chain!";
-    if (activeTab === "history") fetchMatchHistory();
+    if (activeTab === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
   } catch (err) {
     lobbyStatus.textContent = `Settlement failed: ${(err as Error).message}`;
   } finally {

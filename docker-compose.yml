@@ -1,0 +1,25 @@
+services:
+  server:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - chickenz-data:/app/services/server/data
+    environment:
+      SERVER_REGION: us
+      CANONICAL_HOST: localhost
+      # STELLAR_ADMIN_SECRET: ...
+      # WORKER_API_KEY: ...
+      # CORS_ORIGIN: https://your-domain.com
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "eval", "fetch('http://localhost:3000/api/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  chickenz-data:
+    # SQLite DB and backups are stored at /app/services/server/data inside the container.
+    # Mount this volume to persist match history, ELO, and transcripts across restarts.

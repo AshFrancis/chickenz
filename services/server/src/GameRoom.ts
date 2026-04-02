@@ -184,6 +184,10 @@ export class GameRoom {
     return [this.sockets[0]?.data.walletAddress || "", this.sockets[1]?.data.walletAddress || ""];
   }
 
+  get playerNames(): [string, string] {
+    return [this.sockets[0]?.data.username || "Player 1", this.sockets[1]?.data.username || "Player 2"];
+  }
+
   /** Add a bot opponent to this room. Optionally pass a pre-generated name. */
   addBot(difficulty: number = 0.3, botName?: string) {
     const name = botName ?? randomBotName();

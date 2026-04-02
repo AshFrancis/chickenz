@@ -10,7 +10,6 @@ import {
   SUDDEN_DEATH_START_TICK,
   TICK_RATE,
   TICK_DT_MS,
-  WEAPON_STATS,
   Button,
   PlayerStateFlag,
   WeaponType,
@@ -22,23 +21,20 @@ import { WasmState } from "../wasm";
 import { InputManager } from "../input/InputManager";
 import type { Tutorial, TutorialTickResult } from "../tutorial/Tutorial";
 import { PredictionManager } from "../net/PredictionManager";
-import type { StateMessage, SerializedPlayer, SerializedProjectile } from "../../../../services/server/src/protocol";
+import type { StateMessage, SerializedPlayer } from "../../../../services/server/src/protocol";
 /** Game state data — shared shape of StateMessage, SpectateStateMessage, and WASM exports */
 type GameStateData = Omit<StateMessage, "type">;
 import { DPR, VIEW_W, VIEW_H } from "../game";
 import {
   PLAYER_COLORS,
   WALL_COLOR,
-  TERRAIN_COLS,
   CHARACTER_SLUGS,
   CHARACTER_ANIMS,
   GUN_TEXTURES,
   GUN_CONFIG,
   CROUCH_SOUNDS,
-  BG_KEYS,
   PIXEL_FONT,
   TUTORIAL_MAP,
-  getTerrainFrame,
   smoothLerp,
   showAnnounce,
   hideAnnounce,
@@ -46,6 +42,9 @@ import {
 import type { TickInputPair } from "./constants";
 import { AudioManager } from "./AudioManager";
 import { CameraSystem } from "./CameraSystem";
+import { buildMapTiles } from "./MapBuilder";
+import { drawProjectiles, drawExplosions, type Explosion } from "./ProjectileRenderer";
+import { type RagdollState, makeRagdoll, resetRagdoll } from "./RagdollSystem";
 
 export class GameScene extends Phaser.Scene {
   private prevState: GameStateData | null = null;
@@ -80,7 +79,7 @@ export class GameScene extends Phaser.Scene {
   private nameTexts: Phaser.GameObjects.Text[] = [];
 
   // Rocket explosion effects
-  private explosions: { x: number; y: number; timer: number }[] = [];
+  private explosions: Explosion[] = [];
   private prevRockets: Map<number, { x: number; y: number }> = new Map();
 
   // Tile-based platform sprites + background
@@ -156,20 +155,9 @@ export class GameScene extends Phaser.Scene {
   private prevFrameButtons: [number, number] = [0, 0];
 
   // Death ragdoll physics (per player)
-  private deathRagdoll: {
-    active: boolean;
-    settled: boolean;
-    x: number;
-    y: number;
-    vx: number;
-    vy: number;
-    rotation: number;
-    angularVel: number;
-    bounces: number;
-    wasAlive: boolean; // track alive→dead transition
-  }[] = [
-    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
-    { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: true },
+  private deathRagdoll: RagdollState[] = [
+    { ...makeRagdoll(), wasAlive: true },
+    { ...makeRagdoll(), wasAlive: true },
   ];
 
   // Pending server state — buffer latest, apply once per update frame (prevents queue feedback loop)
@@ -936,12 +924,7 @@ export class GameScene extends Phaser.Scene {
   private resetRagdolls() {
     for (let i = 0; i < this.deathRagdoll.length; i++) {
       const r = this.deathRagdoll[i]!;
-      r.active = false;
-      r.settled = false;
-      r.rotation = 0;
-      r.angularVel = 0;
-      r.bounces = 0;
-      r.wasAlive = false; // false: don't re-trigger ragdoll if player is still dead in currState
+      resetRagdoll(r);
       const sprite = this.playerSprites[i];
       if (sprite) {
         sprite.setRotation(0);
@@ -1013,109 +996,24 @@ export class GameScene extends Phaser.Scene {
   /** Create tile sprites for all platforms in the map using 9-slice terrain tiles. */
   private createMapTiles(map: GameMap, seed: number) {
     if (!this.camera.hudCamera) console.warn(`[createMapTiles] hudCamera not set — tiles will render on both cameras!`);
-    // Destroy previous round's tiles
-    for (const t of this.platformTiles) t.destroy();
-    this.platformTiles = [];
-    for (const t of this.borderTiles) t.destroy();
-    this.borderTiles = [];
     // Clean up pickup sprites from previous round
     for (const [, sprite] of this.pickupSprites) sprite.destroy();
+    const result = buildMapTiles(
+      this,
+      this.camera.hudCamera,
+      map,
+      seed,
+      this.bgTile,
+      this.platformTiles,
+      this.borderTiles,
+    );
+    this.bgTile = result.bgTile;
+    this.bgScrollX = result.bgScrollX;
+    this.bgScrollY = result.bgScrollY;
+    this.platformTiles = result.platformTiles;
+    this.borderTiles = result.borderTiles;
     this.pickupSprites.clear();
     this.prevPickupActive.clear();
-
-    // Deterministic background: hash seed for better distribution
-    // Mulberry32-style mix to spread bits evenly
-    let h = seed | 0;
-    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
-    h = Math.imul(h ^ (h >>> 13), 0x45d9f3b);
-    h = (h ^ (h >>> 16)) >>> 0;
-    const bgKey = BG_KEYS[h % BG_KEYS.length]!;
-    const angle = (((h >>> 8) & 0xffff) / 0xffff) * Math.PI * 2;
-    this.bgScrollX = Math.cos(angle) * 0.3;
-    this.bgScrollY = Math.sin(angle) * 0.3;
-
-    // Create/update background tileSprite clipped to arena bounds
-    if (this.bgTile) this.bgTile.destroy();
-    this.bgTile = this.add.tileSprite(map.width / 2, map.height / 2, map.width, map.height, bgKey).setDepth(-100);
-    this.camera.hudCamera?.ignore(this.bgTile);
-
-    for (const plat of map.platforms) {
-      const tilesW = Math.max(1, Math.round(plat.width / 16));
-      const tilesH = Math.max(1, Math.round(plat.height / 16));
-      for (let ty = 0; ty < tilesH; ty++) {
-        for (let tx = 0; tx < tilesW; tx++) {
-          const frame = getTerrainFrame(tx, ty, tilesW, tilesH);
-          const img = this.add
-            .image(
-              plat.x + tx * 16 + 8, // center of tile
-              plat.y + ty * 16 + 8,
-              "terrain",
-              frame,
-            )
-            .setDepth(0);
-          this.camera.hudCamera?.ignore(img);
-          this.platformTiles.push(img);
-        }
-      }
-    }
-
-    // Pedestal tiles under weapon spawn points (3 tiles wide: L=17, M=18, R=19)
-    // Visual content is at top ~3px of the 16x16 tile frame.
-    // Position so the visual sits on the platform surface below the spawn point.
-    const PEDESTAL_FRAMES = [17, 18, 19]; // col 17-19 row 0 in terrain spritesheet
-    for (const sp of map.weaponSpawnPoints) {
-      // Find the nearest platform surface below this spawn point
-      let platformTop = map.height; // fallback to bottom
-      for (const plat of map.platforms) {
-        if (plat.y > sp.y && plat.y < platformTop && sp.x >= plat.x && sp.x <= plat.x + plat.width) {
-          platformTop = plat.y;
-        }
-      }
-      // Place tile so visual (top 3px of frame) rests on platform: center = platformTop + 5
-      const tileY = platformTop + 5;
-      for (let i = 0; i < 3; i++) {
-        const img = this.add.image(sp.x + (i - 1) * 16, tileY, "terrain", PEDESTAL_FRAMES[i]!).setDepth(0);
-        this.camera.hudCamera?.ignore(img);
-        this.platformTiles.push(img);
-      }
-    }
-
-    // Border tiles around arena using dark stone 9-slice (cols 0-2, rows 0-2)
-    const TC = TERRAIN_COLS; // 22 tiles per row
-    const B_TL = 3,
-      B_T = 2 * TC + 1,
-      B_TR = 4;
-    const B_ML = TC + 2,
-      B_MR = TC;
-    const B_BL = TC + 3,
-      B_B = 1,
-      B_BR = TC + 4;
-    const mw = map.width,
-      mh = map.height;
-    const tilesX = Math.ceil(mw / 16);
-    const tilesY = Math.ceil(mh / 16);
-
-    const addBorder = (x: number, y: number, frame: number) => {
-      const img = this.add.image(x, y, "terrain", frame).setDepth(11);
-      this.camera.hudCamera?.ignore(img);
-      this.borderTiles.push(img);
-    };
-
-    // Border shifted inward so tile content sits flush against arena edge
-    const bo = -4; // outward offset
-    // Left column
-    for (let ty = 0; ty < tilesY; ty++) addBorder(bo, ty * 16 + 8, B_ML);
-    // Right column
-    for (let ty = 0; ty < tilesY; ty++) addBorder(mw - bo, ty * 16 + 8, B_MR);
-    // Top row
-    for (let tx = 0; tx < tilesX; tx++) addBorder(tx * 16 + 8, bo, B_T);
-    // Bottom row
-    for (let tx = 0; tx < tilesX; tx++) addBorder(tx * 16 + 8, mh - bo, B_B);
-    // Corners on top (rendered last = highest z within same depth)
-    addBorder(bo, bo, B_TL);
-    addBorder(mw - bo, bo, B_TR);
-    addBorder(bo, mh - bo, B_BL);
-    addBorder(mw - bo, mh - bo, B_BR);
   }
 
   startReplay(
@@ -1717,8 +1615,8 @@ export class GameScene extends Phaser.Scene {
     this.drawArena(g, displayState);
     this.drawPickups(g, curr);
     this.drawPlayers(g, curr, predicted, delta);
-    this.drawProjectiles(g, curr, predicted, delta);
-    this.drawExplosions(g);
+    drawProjectiles(g, curr, predicted ?? null, this.localPlayerId, this.replayMode);
+    drawExplosions(g, this.explosions);
     this.drawHUD(curr, displayState, predicted);
   }
 
@@ -2321,96 +2219,6 @@ export class GameScene extends Phaser.Scene {
     } else {
       nameText.setVisible(false);
     }
-  }
-
-  private drawProjectiles(
-    g: Phaser.GameObjects.Graphics,
-    curr: GameStateData,
-    predicted: GameStateData | null,
-    _delta: number,
-  ) {
-    // Local player's bullets from predicted state (instant feedback).
-    // Remote player's bullets from server state (matches their rendered position).
-    const localId = this.localPlayerId;
-    const projectiles: { proj: SerializedProjectile; ownerState: GameStateData }[] = [];
-
-    if (predicted && !this.replayMode) {
-      for (const p of predicted.projectiles) {
-        if (p.ownerId === localId) projectiles.push({ proj: p, ownerState: predicted });
-      }
-      for (const p of curr.projectiles) {
-        if (p.ownerId !== localId) projectiles.push({ proj: p, ownerState: curr });
-      }
-    } else {
-      for (const p of curr.projectiles) projectiles.push({ proj: p, ownerState: curr });
-    }
-
-    for (const { proj: p, ownerState } of projectiles) {
-      let px = p.x;
-      const gcfg = GUN_CONFIG[p.weapon];
-      // Consistent Y offset: shift to gun height on every frame (avoids vertical jump)
-      const yOff = gcfg ? gcfg.offsetY + gcfg.muzzleY * gcfg.scale : 0;
-
-      // First frame only: snap X to muzzle position (forward motion masks the transition)
-      const maxLife = WEAPON_STATS[p.weapon as WeaponType]?.lifetime ?? 90;
-      if (p.lifetime >= maxLife - 1 && gcfg) {
-        const owner = ownerState.players.find((pl) => pl.id === p.ownerId);
-        if (owner) {
-          // When wall sliding, gun points away from wall (same logic as gun sprite)
-          const fdir = owner.wallSliding ? -(owner.facing as number) : (owner.facing as number);
-          px = owner.x + PLAYER_WIDTH / 2 + fdir * (gcfg.offsetX + gcfg.muzzleX * gcfg.scale);
-        }
-      }
-
-      const py = p.y + yOff;
-      // Per-weapon bullet size (w × h)
-      let bw: number, bh: number;
-      switch (p.weapon) {
-        case WeaponType.Pistol:
-          bw = 3;
-          bh = 2;
-          break;
-        case WeaponType.SMG:
-          bw = 3;
-          bh = 2;
-          break;
-        case WeaponType.Shotgun:
-          bw = 4;
-          bh = 2;
-          break;
-        case WeaponType.Sniper:
-          bw = 6;
-          bh = 2;
-          break;
-        case WeaponType.Rocket:
-          bw = 6;
-          bh = 4;
-          break;
-        default:
-          bw = 3;
-          bh = 2;
-          break;
-      }
-      // Black shadow behind white rectangular bullet
-      g.fillStyle(0x000000, 0.6);
-      g.fillRect(px - bw / 2 - 1, py - bh / 2 - 1, bw + 2, bh + 2);
-      g.fillStyle(0xffffff);
-      g.fillRect(px - bw / 2, py - bh / 2, bw, bh);
-    }
-  }
-
-  private drawExplosions(g: Phaser.GameObjects.Graphics) {
-    this.explosions = this.explosions.filter((e) => {
-      e.timer--;
-      if (e.timer <= 0) return false;
-      const alpha = e.timer / 15;
-      const radius = 40 * (1 - alpha * 0.5);
-      g.fillStyle(0xff6600, alpha * 0.6);
-      g.fillCircle(e.x, e.y, radius);
-      g.fillStyle(0xffcc00, alpha * 0.4);
-      g.fillCircle(e.x, e.y, radius * 0.5);
-      return true;
-    });
   }
 
   private drawHUD(curr: GameStateData, displayState: GameStateData, _predicted: GameStateData | null) {

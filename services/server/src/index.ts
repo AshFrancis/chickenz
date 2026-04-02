@@ -44,6 +44,8 @@ import {
   markBotVsBot,
   pruneBotVsBotTranscripts,
   backupDatabase,
+  insertMatchDraft,
+  abandonStaleMatches,
   type MatchRecord,
 } from "./db";
 import { normalize, resolve } from "path";
@@ -80,6 +82,12 @@ const SERVER_START_TIME = Date.now();
 
   if (warnings.length > 0) log.warn("Startup warnings", { warnings });
   if (features.length > 0) log.info("Enabled features", { features });
+}
+
+// Mark any matches that were in-progress when the server last stopped as abandoned
+{
+  const abandoned = abandonStaleMatches();
+  if (abandoned > 0) log.warn("Marked in-progress matches as abandoned", { count: abandoned });
 }
 
 // ── State ──────────────────────────────────────────────────
@@ -227,8 +235,9 @@ function returnToLobby(
 
   // Record match history
   if (sockets.length === 2) {
-    const matchId = generateMatchId();
-    if (room) room.matchRecordId = matchId;
+    // Reuse the matchId from onMatchStarted (draft already written) or generate a new one
+    const matchId = room?.matchRecordId ?? generateMatchId();
+    if (room && !room.matchRecordId) room.matchRecordId = matchId;
     const sessionId = room?.sessionId || Date.now() >>> 0;
     const record: MatchRecord = {
       id: matchId,
@@ -330,6 +339,15 @@ function returnToLobby(
 
 /** Register match on-chain when gameplay starts (before any rounds). */
 function onMatchStarted(room: GameRoom) {
+  // Generate matchId now and write a draft record so a crash mid-match leaves a trace.
+  if (!room.matchRecordId && room.playerCount === 2) {
+    const matchId = generateMatchId();
+    room.matchRecordId = matchId;
+    const [p1, p2] = room.playerNames;
+    const [w1addr, w2addr] = room.walletAddresses;
+    insertMatchDraft(matchId, p1, p2, w1addr, w2addr, room.id, room.name, room.sessionId, room.mode, room.matchStartTime ?? Date.now());
+  }
+
   if (room.mode !== "ranked" || room.isBotMatch) return;
   const [w1, w2] = room.walletAddresses;
   if (!w1 || !w2 || !process.env.STELLAR_ADMIN_SECRET) return;

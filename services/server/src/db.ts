@@ -109,6 +109,7 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN boundless_tx_hash TEXT",
   "ALTER TABLE matches ADD COLUMN bot_vs_bot INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN prover_transcript_data TEXT",
+  "ALTER TABLE matches ADD COLUMN match_status TEXT DEFAULT 'completed'",
 ];
 
 {
@@ -129,8 +130,17 @@ const migrations = [
 // ── Prepared statements ───────────────────────────────────
 
 const stmtInsert = db.prepare(`
-  INSERT INTO matches (id, session_id, room_name, player1, player2, wallet1, wallet2, winner, score1, score2, timestamp, proof_status, room_id, mode, start_tx_hash, settle_tx_hash)
-  VALUES ($id, $sessionId, $roomName, $player1, $player2, $wallet1, $wallet2, $winner, $score1, $score2, $timestamp, $proofStatus, $roomId, $mode, $startTxHash, $settleTxHash)
+  INSERT OR REPLACE INTO matches (id, session_id, room_name, player1, player2, wallet1, wallet2, winner, score1, score2, timestamp, proof_status, room_id, mode, start_tx_hash, settle_tx_hash, match_status)
+  VALUES ($id, $sessionId, $roomName, $player1, $player2, $wallet1, $wallet2, $winner, $score1, $score2, $timestamp, $proofStatus, $roomId, $mode, $startTxHash, $settleTxHash, 'completed')
+`);
+
+const stmtInsertDraft = db.prepare(`
+  INSERT OR IGNORE INTO matches (id, session_id, room_name, player1, player2, wallet1, wallet2, winner, score1, score2, timestamp, proof_status, room_id, mode, match_start_time, match_status)
+  VALUES ($id, $sessionId, $roomName, $player1, $player2, $wallet1, $wallet2, -1, 0, 0, $now, 'none', $roomId, $mode, $matchStartTime, 'in_progress')
+`);
+
+const stmtAbandonStale = db.prepare(`
+  UPDATE matches SET match_status = 'abandoned' WHERE match_status = 'in_progress'
 `);
 
 const stmtUpdateProof = db.prepare(`
@@ -274,6 +284,46 @@ export function insertMatch(record: MatchRecord): void {
     $startTxHash: record.startTxHash || null,
     $settleTxHash: record.settleTxHash || null,
   });
+}
+
+/**
+ * Write a minimal "in_progress" record when a match begins.
+ * If the server crashes before the match ends, this record remains with match_status='in_progress'.
+ * Replaced atomically by insertMatch() when the match completes normally.
+ */
+export function insertMatchDraft(
+  matchId: string,
+  player1: string,
+  player2: string,
+  wallet1: string,
+  wallet2: string,
+  roomId: string,
+  roomName: string,
+  sessionId: number,
+  mode: string,
+  matchStartTime: number,
+): void {
+  stmtInsertDraft.run({
+    $id: matchId,
+    $sessionId: sessionId,
+    $roomName: roomName,
+    $player1: player1,
+    $player2: player2,
+    $wallet1: wallet1,
+    $wallet2: wallet2,
+    $roomId: roomId,
+    $mode: mode,
+    $matchStartTime: matchStartTime,
+    $now: Date.now(),
+  });
+}
+
+/**
+ * On server startup, mark any matches that were never completed as 'abandoned'.
+ * Returns the number of records updated.
+ */
+export function abandonStaleMatches(): number {
+  return stmtAbandonStale.run().changes;
 }
 
 export function updateProofStatus(
