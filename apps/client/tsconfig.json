@@ -5,6 +5,7 @@
     "noEmit": true
   },
   "include": ["src", "../../services/server/src/protocol.ts"],
+  "exclude": ["src/**/__tests__/**", "src/**/*.test.ts"],
   "references": [
     { "path": "../../packages/sim" }
   ]

@@ -16,6 +16,7 @@ import {
   getJobTranscript,
   submitJobResult,
   isWorkerOnline,
+  getPendingProofCount,
   type ProofArtifacts,
 } from "./prover";
 import {
@@ -42,6 +43,7 @@ import {
   updateBoundlessTxHash,
   markBotVsBot,
   pruneBotVsBotTranscripts,
+  backupDatabase,
   type MatchRecord,
 } from "./db";
 import { normalize, resolve } from "path";
@@ -54,6 +56,7 @@ import { createLogger } from "./logger";
 const log = createLogger("server");
 
 const PORT = Number(process.env.PORT) || 3000;
+const SERVER_START_TIME = Date.now();
 // ── Startup env validation ─────────────────────────────────
 {
   const features: string[] = [];
@@ -881,12 +884,19 @@ const server = Bun.serve<SocketData>({
 
     // API status endpoint
     if (url.pathname === "/api/status") {
+      const activeRoomList = [...rooms.values()].filter((r) => !r.isEnded());
       return Response.json(
         {
           name: "chickenz-server",
           region: process.env.SERVER_REGION || "unknown",
-          activeRooms: [...rooms.values()].filter((r) => !r.isEnded()).length,
+          uptimeSeconds: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
+          activeRooms: activeRoomList.length,
+          activeMatches: activeRoomList.filter((r) => r.status === "playing").length,
+          activeTournaments: [...tournaments.values()].filter((t) => t.status !== "ended").length,
           lobbyClients: lobbySockets.size,
+          totalClients: allSockets.size,
+          pendingProofs: getPendingProofCount(),
+          workerOnline: isWorkerOnline(),
         },
         { headers: corsHeaders },
       );
@@ -1437,6 +1447,10 @@ if ((process.env.SERVER_REGION || "us") === "us") {
   void extendContractTtls();
   setInterval(() => void extendContractTtls(), 24 * 60 * 60_000);
 }
+
+// Daily database backup (all regions)
+backupDatabase();
+setInterval(() => backupDatabase(), 24 * 60 * 60_000);
 
 // Start bot lobby system
 botLobbyManager.start();

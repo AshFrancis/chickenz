@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
+import { mkdirSync, readdirSync, unlinkSync } from "fs";
 import { dirname, join } from "path";
 
 // ── Types ─────────────────────────────────────────────────
@@ -91,7 +91,9 @@ db.exec(`
   )
 `);
 
-// ── Schema migrations (idempotent) ───────────────────────
+// ── Schema migrations ─────────────────────────────────────
+// Tracked via PRAGMA user_version. Each entry maps to a version number (1-based).
+// Existing DBs with untracked columns will have try-catch applied, then version set.
 const migrations = [
   "ALTER TABLE matches ADD COLUMN match_start_time INTEGER",
   "ALTER TABLE matches ADD COLUMN proof_requested_at INTEGER",
@@ -108,11 +110,19 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN bot_vs_bot INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN prover_transcript_data TEXT",
 ];
-for (const sql of migrations) {
-  try {
-    db.exec(sql);
-  } catch {
-    /* column already exists */
+
+{
+  const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
+  const currentVersion = row.user_version;
+  for (let i = currentVersion; i < migrations.length; i++) {
+    try {
+      db.exec(migrations[i]!);
+    } catch {
+      /* column already exists on pre-versioned databases */
+    }
+  }
+  if (currentVersion < migrations.length) {
+    db.exec(`PRAGMA user_version=${migrations.length}`);
   }
 }
 
@@ -516,4 +526,36 @@ export function updateCasualElo(username: string, won: boolean, opponentElo: num
   });
 
   return newElo;
+}
+
+// ── Scheduled backup ──────────────────────────────────────
+
+const BACKUP_DIR = join(DATA_DIR, "backups");
+const MAX_BACKUPS = 7; // keep one week of daily backups
+
+/** Write a binary copy of the database to the backups directory. */
+export function backupDatabase(): void {
+  mkdirSync(BACKUP_DIR, { recursive: true });
+  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const dest = join(BACKUP_DIR, `chickenz-${date}.db`);
+  const data = db.serialize();
+  Bun.write(dest, data).catch(() => {
+    // Best-effort — do not crash server on backup failure
+  });
+
+  // Prune old backups (keep MAX_BACKUPS most recent)
+  try {
+    const files = readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith("chickenz-") && f.endsWith(".db"))
+      .sort();
+    for (let i = 0; i < files.length - MAX_BACKUPS; i++) {
+      try {
+        unlinkSync(join(BACKUP_DIR, files[i]!));
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 }

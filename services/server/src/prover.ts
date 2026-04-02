@@ -36,6 +36,10 @@ export function isWorkerOnline(): boolean {
   return Date.now() - lastWorkerPing < WORKER_TIMEOUT_MS;
 }
 
+export function getPendingProofCount(): number {
+  return proofQueue.filter((j) => j.status !== "done").length;
+}
+
 export function workerHeartbeat() {
   lastWorkerPing = Date.now();
 }
