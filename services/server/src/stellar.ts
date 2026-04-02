@@ -166,9 +166,7 @@ export async function extendContractTtls(): Promise<void> {
           }),
         )
         .setTimeout(60)
-        .setSorobanData(
-          new StellarSdk.SorobanDataBuilder().setReadOnly([instanceKey]).build(),
-        )
+        .setSorobanData(new StellarSdk.SorobanDataBuilder().setReadOnly([instanceKey]).build())
         .build();
 
       const simResult = await server.simulateTransaction(tx);
@@ -177,6 +175,7 @@ export async function extendContractTtls(): Promise<void> {
         continue;
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const prepared = StellarSdk.rpc.assembleTransaction(tx, simResult as any).build();
       prepared.sign(admin);
 

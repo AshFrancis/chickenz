@@ -13,6 +13,7 @@
 ### Client → Server
 
 **Input** (sent on change during gameplay)
+
 ```
 type: "input"
 tick: number        // optional: target tick for precise alignment
@@ -22,6 +23,7 @@ aimY: number        // -1, 0, or 1 (aim direction vertical)
 ```
 
 **Lobby Actions**
+
 ```
 type: "set_username" | "quickplay" | "create" | "join_room" | "join_code" | "leave" | "set_wallet" | "list_rooms" | "add_bot"
 type: "create_tournament" | "join_tournament_code"
@@ -30,6 +32,7 @@ type: "create_tournament" | "join_tournament_code"
 ### Server → Client
 
 **State** (sent every tick during gameplay)
+
 ```
 type: "state"
 tick: number
@@ -48,6 +51,7 @@ nextProjectileId: number
 ```
 
 **Match Lifecycle**
+
 ```
 type: "waiting"       // room created, waiting for opponent (includes joinCode)
 type: "matched"       // match found, includes playerId, seed, mapIndex, mode, characters
@@ -59,6 +63,7 @@ type: "error"         // error message (string)
 ```
 
 **Tournament Messages**
+
 ```
 type: "tournament_lobby"       // tournament waiting room state
 type: "tournament_match_start" // tournament match beginning (fighter or spectator role)
@@ -91,6 +96,7 @@ Auto-join for human-created casual rooms:
 ## Missing Input Rule
 
 If no input at tick T:
+
 ```
 input[T] = input[T-1]
 ```

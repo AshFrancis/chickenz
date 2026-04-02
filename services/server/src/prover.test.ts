@@ -10,7 +10,6 @@ import {
   proveMatch,
   _resetForTesting,
   type ProofArtifacts,
-  type ProofJob,
 } from "./prover";
 
 // ── Helpers ─────────────────────────────────────────────────

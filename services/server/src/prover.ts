@@ -265,6 +265,7 @@ export function proveMatch(
     }
   }
 
+  // eslint-disable-next-line prefer-const
   let safetyTimer: ReturnType<typeof setTimeout>;
 
   const settleOnce = (source: string) => (artifacts: ProofArtifacts | null, _source?: string) => {

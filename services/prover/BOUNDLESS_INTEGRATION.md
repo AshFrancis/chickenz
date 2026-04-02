@@ -7,6 +7,7 @@
 ## Key Information
 
 ### Apple Silicon Limitation
+
 - **Groth16 prover requires x86 architecture**
 - Apple Silicon is NOT supported for local Groth16 proving
 - Solution: Use Boundless to outsource proving to remote x86 provers
@@ -19,11 +20,13 @@
 - Documentation: https://docs.rs/boundless-market/latest/boundless_market/
 
 ### Network Support
+
 - **Base Mainnet** (production)
 - **Base Sepolia** (testnet)
 - **Ethereum Sepolia** (testnet)
 
 ### Pricing
+
 - Market-driven competitive pricing from decentralized provers
 - Estimated: $0.04 to $0.17 per proof (batch of 4,000 transactions)
 - Massive computations: less than $30 vs thousands for traditional ZK
@@ -189,6 +192,7 @@ let client = Client::builder()
 ## Stellar Integration
 
 ### Current Status (as of Feb 2026)
+
 - **Futurenet**: RISC Zero Groth16 verifier is LIVE
 - **Testnet**: bn254 functions deployed (Jan 7, 2026)
 - **Mainnet**: bn254 functions deployed (Jan 22, 2026)
@@ -204,6 +208,7 @@ Nethermind built the RISC Zero Groth16 verifier contract for Stellar Soroban. Th
 ### Workflow for Stellar
 
 1. Generate proof via Boundless (on Apple Silicon):
+
 ```rust
 let fulfillment = client
     .wait_for_request_fulfillment(request_id, duration, expires_at)
@@ -211,13 +216,14 @@ let fulfillment = client
 let seal = fulfillment.seal;  // Standard Groth16 seal
 ```
 
-2. Submit to Stellar Soroban contract:
+1. Submit to Stellar Soroban contract:
+
 ```rust
 // Deploy or invoke the Nethermind RISC Zero verifier on Stellar
 // Pass seal, image_id, and journal_digest to verify() function
 ```
 
-3. Verifier contract checks the Groth16 proof on-chain using bn254 primitives
+1. Verifier contract checks the Groth16 proof on-chain using bn254 primitives
 
 ## Complete Working Example
 
@@ -293,6 +299,7 @@ async fn main() -> Result<()> {
 ## Key Differences from Local Proving
 
 ### Local (x86 only)
+
 ```rust
 use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts};
 
@@ -303,6 +310,7 @@ let receipt = default_prover()
 ```
 
 ### Boundless (works on Apple Silicon)
+
 ```rust
 use boundless_market::Client;
 
@@ -317,17 +325,21 @@ let fulfillment = client.submit(request).await?;
 ## Troubleshooting
 
 ### "Groth16 prover only works on x86"
+
 - **Solution**: Use Boundless instead of local proving
 
 ### "Request failed: insufficient funds"
+
 - **Cause**: Your wallet doesn't have enough ETH to pay max_price
 - **Solution**: Fund your wallet with ETH on the target network (Base/Sepolia)
 
 ### "Timeout waiting for fulfillment"
+
 - **Cause**: No provers accepted your request (price too low or network issues)
 - **Solution**: Increase max_price or check network status
 
 ### "Blake3 Groth16 requires 32-byte journal"
+
 - **Cause**: Your guest program outputs journal != 32 bytes
 - **Solution**: Use standard `.with_groth16_proof()` or ensure exactly 32-byte output
 

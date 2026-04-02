@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, test, mock, beforeEach } from "bun:test";
 import type { ServerWebSocket } from "bun";
 import type { SocketData } from "./GameRoom";
@@ -46,8 +47,52 @@ class MockWasmState {
     return {
       tick: mockTick,
       players: [
-        { id: 0, x: 100, y: 400, vx: 0, vy: 0, facing: 1, health: 100, lives: 1, shootCooldown: 0, grounded: true, stateFlags: 1, respawnTimer: 0, weapon: -1, ammo: 0, jumpsLeft: 2, wallSliding: false, wallDir: 0, stompedBy: -1, stompingOn: -1, stompShakeProgress: 0, stompCooldown: 0 },
-        { id: 1, x: 800, y: 400, vx: 0, vy: 0, facing: -1, health: 100, lives: 1, shootCooldown: 0, grounded: true, stateFlags: 1, respawnTimer: 0, weapon: -1, ammo: 0, jumpsLeft: 2, wallSliding: false, wallDir: 0, stompedBy: -1, stompingOn: -1, stompShakeProgress: 0, stompCooldown: 0 },
+        {
+          id: 0,
+          x: 100,
+          y: 400,
+          vx: 0,
+          vy: 0,
+          facing: 1,
+          health: 100,
+          lives: 1,
+          shootCooldown: 0,
+          grounded: true,
+          stateFlags: 1,
+          respawnTimer: 0,
+          weapon: -1,
+          ammo: 0,
+          jumpsLeft: 2,
+          wallSliding: false,
+          wallDir: 0,
+          stompedBy: -1,
+          stompingOn: -1,
+          stompShakeProgress: 0,
+          stompCooldown: 0,
+        },
+        {
+          id: 1,
+          x: 800,
+          y: 400,
+          vx: 0,
+          vy: 0,
+          facing: -1,
+          health: 100,
+          lives: 1,
+          shootCooldown: 0,
+          grounded: true,
+          stateFlags: 1,
+          respawnTimer: 0,
+          weapon: -1,
+          ammo: 0,
+          jumpsLeft: 2,
+          wallSliding: false,
+          wallDir: 0,
+          stompedBy: -1,
+          stompingOn: -1,
+          stompShakeProgress: 0,
+          stompCooldown: 0,
+        },
       ],
       projectiles: [],
       weaponPickups: [],
@@ -69,7 +114,7 @@ class MockWasmState {
 }
 
 // Mock the wasm module so GameRoom doesn't try to load a real .wasm file
-mock.module("./wasm", () => ({
+void mock.module("./wasm", () => ({
   WasmState: MockWasmState,
 }));
 
@@ -118,7 +163,7 @@ function getSentMessages(ws: GameSocket): object[] {
   return sentMessages.get(id) ?? [];
 }
 
-function getLastMessage(ws: GameSocket): object | undefined {
+function _getLastMessage(ws: GameSocket): object | undefined {
   const msgs = getSentMessages(ws);
   return msgs[msgs.length - 1];
 }
@@ -165,7 +210,7 @@ describe("GameRoom", () => {
 
     test("creator gets playerId 0 and roomId set", () => {
       const creator = createFakeSocket();
-      const room = new GameRoom("room-1", "Room", creator);
+      const _room = new GameRoom("room-1", "Room", creator);
 
       expect(creator.data.playerId).toBe(0);
       expect(creator.data.roomId).toBe("room-1");
@@ -173,7 +218,7 @@ describe("GameRoom", () => {
 
     test("sends waiting message to creator", () => {
       const creator = createFakeSocket();
-      const room = new GameRoom("room-1", "Test Room", creator);
+      const _room = new GameRoom("room-1", "Test Room", creator);
 
       const msgs = getMessagesByType(creator, "waiting");
       expect(msgs).toHaveLength(1);
@@ -186,7 +231,7 @@ describe("GameRoom", () => {
 
     test("skipWaiting suppresses waiting message", () => {
       const creator = createFakeSocket();
-      const room = new GameRoom("room-1", "Room", creator, false, "casual", true);
+      const _room = new GameRoom("room-1", "Room", creator, false, "casual", true);
 
       const msgs = getMessagesByType(creator, "waiting");
       expect(msgs).toHaveLength(0);
@@ -590,9 +635,9 @@ describe("GameRoom", () => {
       const joiner = createFakeSocket({ username: "P2" });
       room.addPlayer(joiner);
 
-      let endedWinner = -99;
+      let _endedWinner = -99;
       room.onEnded = (_sockets, winner) => {
-        endedWinner = winner;
+        _endedWinner = winner;
       };
 
       room.handleDisconnect(0);
@@ -606,9 +651,9 @@ describe("GameRoom", () => {
       const j2 = createFakeSocket({ username: "B" });
       room2.addPlayer(j2);
 
-      let winner2 = -99;
+      let _winner2 = -99;
       room2.onEnded = (_sockets, winner) => {
-        winner2 = winner;
+        _winner2 = winner;
       };
 
       // Both disconnect simultaneously — second disconnect triggers draw path
@@ -759,16 +804,7 @@ describe("GameRoom", () => {
         mapIndex: 1,
         characters: [2, 3] as [number, number],
       };
-      const room = new GameRoom(
-        "r1",
-        "Tournament Match",
-        creator,
-        false,
-        "casual",
-        true,
-        undefined,
-        overrideParams,
-      );
+      const room = new GameRoom("r1", "Tournament Match", creator, false, "casual", true, undefined, overrideParams);
 
       const joiner = createFakeSocket({ username: "P2" });
       room.addPlayer(joiner);
@@ -784,15 +820,7 @@ describe("GameRoom", () => {
 
     test("overrideRounds customizes totalRounds and winsNeeded", () => {
       const creator = createFakeSocket({ username: "P1" });
-      const room = new GameRoom(
-        "r1",
-        "Custom",
-        creator,
-        false,
-        "casual",
-        true,
-        { totalRounds: 7, winsNeeded: 4 },
-      );
+      const room = new GameRoom("r1", "Custom", creator, false, "casual", true, { totalRounds: 7, winsNeeded: 4 });
 
       const joiner = createFakeSocket({ username: "P2" });
       room.addPlayer(joiner);
@@ -1448,16 +1476,7 @@ describe("GameRoom", () => {
         mapIndex: 0,
         characters: [1, 2] as [number, number],
       };
-      const room = new GameRoom(
-        "r1",
-        "Room",
-        creator,
-        false,
-        "casual",
-        true,
-        undefined,
-        overrideParams,
-      );
+      const room = new GameRoom("r1", "Room", creator, false, "casual", true, undefined, overrideParams);
 
       const joiner = createFakeSocket({ username: "P2" });
       room.addPlayer(joiner);

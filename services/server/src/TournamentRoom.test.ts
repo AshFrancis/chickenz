@@ -1,10 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, test } from "bun:test";
-import {
-  nextPow2,
-  standardSeedOrder,
-  generateBracket,
-  TournamentRoom,
-} from "./TournamentRoom";
+import { nextPow2, standardSeedOrder, generateBracket, TournamentRoom } from "./TournamentRoom";
 import type { BracketMatch, BracketType, TournamentConfig } from "./protocol";
 import type { SocketData } from "./GameRoom";
 import type { ServerWebSocket } from "bun";
@@ -413,9 +409,7 @@ describe("match result propagation", () => {
   test("winner source references exist for all non-round-0 winners matches", () => {
     for (const pc of [4, 6, 8]) {
       const matches = generateBracket(pc, "winners_only");
-      const nonR0 = matches.filter(
-        (m) => m.round > 0 || m.bracketSide === "final",
-      );
+      const nonR0 = matches.filter((m) => m.round > 0 || m.bracketSide === "final");
       for (const m of nonR0) {
         // Both sources should reference winners of earlier matches
         if (m.sourceA.type === "winner") {
@@ -806,9 +800,7 @@ describe("standings computation structure", () => {
 
   test("full_consolation 8-player has consolation matches for complete ranking", () => {
     const matches = generateBracket(8, "full_consolation");
-    const consolation = matches.filter(
-      (m) => m.bracketSide === "consolation" || m.bracketSide === "third_place",
-    );
+    const consolation = matches.filter((m) => m.bracketSide === "consolation" || m.bracketSide === "third_place");
     expect(consolation.length).toBeGreaterThan(0);
 
     // Total matches should cover all possible rankings
@@ -825,9 +817,7 @@ describe("standings computation structure", () => {
   test("winners_only has no consolation or third_place matches", () => {
     for (const pc of [2, 3, 4, 5, 6, 7, 8]) {
       const matches = generateBracket(pc, "winners_only");
-      const consolation = matches.filter(
-        (m) => m.bracketSide === "consolation" || m.bracketSide === "third_place",
-      );
+      const consolation = matches.filter((m) => m.bracketSide === "consolation" || m.bracketSide === "third_place");
       expect(consolation).toHaveLength(0);
     }
   });
@@ -835,9 +825,7 @@ describe("standings computation structure", () => {
   test("full_consolation 4-player bracket has consolation structure", () => {
     const matches = generateBracket(4, "full_consolation");
     // With 4 players: 2 SFs + 1 Final in winners + consolation for complete ranking
-    const consolation = matches.filter(
-      (m) => m.bracketSide === "consolation" || m.bracketSide === "third_place",
-    );
+    const consolation = matches.filter((m) => m.bracketSide === "consolation" || m.bracketSide === "third_place");
     expect(consolation.length).toBeGreaterThan(0);
   });
 

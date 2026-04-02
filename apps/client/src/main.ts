@@ -784,18 +784,9 @@ function buildTiledFrame(frame: HTMLElement, card: HTMLElement) {
   observer.observe(card);
 }
 
-buildTiledFrame(
-  document.getElementById("settings-frame")!,
-  document.getElementById("settings-card")!,
-);
-buildTiledFrame(
-  document.getElementById("tutorial-prompt-frame")!,
-  document.getElementById("tutorial-prompt-card")!,
-);
-buildTiledFrame(
-  document.getElementById("username-prompt-frame")!,
-  document.getElementById("username-prompt-card")!,
-);
+buildTiledFrame(document.getElementById("settings-frame")!, document.getElementById("settings-card")!);
+buildTiledFrame(document.getElementById("tutorial-prompt-frame")!, document.getElementById("tutorial-prompt-card")!);
+buildTiledFrame(document.getElementById("username-prompt-frame")!, document.getElementById("username-prompt-card")!);
 
 // Version display
 declare const __COMMIT_HASH__: string;
@@ -1419,7 +1410,9 @@ function fetchLeaderboard() {
     .catch(() => {
       leaderboardContent.innerHTML = `<div class="empty-state">Failed to load leaderboard</div>`;
     })
-    .finally(() => { fetchingLeaderboard = false; });
+    .finally(() => {
+      fetchingLeaderboard = false;
+    });
 }
 
 function renderLeaderboard(data: { name: string; elo: number; wins: number; losses: number }[]) {
@@ -1467,7 +1460,9 @@ function fetchMatchHistory() {
     .catch(() => {
       matchHistoryList.innerHTML = `<div class="empty-state">Failed to load match history</div>`;
     })
-    .finally(() => { fetchingHistory = false; });
+    .finally(() => {
+      fetchingHistory = false;
+    });
 }
 
 function proofStatusLabel(status: string): string {
@@ -1499,7 +1494,10 @@ function renderMatchHistory(matches: MatchRecord[]) {
   // Store matches by roomId / matchId for delegation lookups
   const matchByRoom = new Map<string, MatchRecord>();
   const matchById = new Map<string, MatchRecord>();
-  for (const m of matches) matchByRoom.set(m.roomId, m), matchById.set(m.id, m);
+  for (const m of matches) {
+    matchByRoom.set(m.roomId, m);
+    matchById.set(m.id, m);
+  }
 
   for (const m of matches) {
     const el = document.createElement("div");
@@ -1550,7 +1548,9 @@ function renderMatchHistory(matches: MatchRecord[]) {
             .writeText(`${window.location.origin}/?replay=${m.roomId}&region=${region}`)
             .then(() => {
               target.textContent = "Copied!";
-              setTimeout(() => { target.textContent = "Share"; }, 1500);
+              setTimeout(() => {
+                target.textContent = "Share";
+              }, 1500);
             });
           break;
         }
@@ -2215,7 +2215,8 @@ function renderTournamentLobby(msg: TournamentLobbyMessage) {
       if (p.slot === msg.hostSlot) el.classList.add("host");
       if (!p.connected) el.classList.add("disconnected");
       el.innerHTML = `<span class="slot-name">${escapeHtml(p.name)}</span>`;
-      if (p.slot === msg.hostSlot) el.insertAdjacentHTML("beforeend", `<span class="slot-badge host-badge">HOST</span>`);
+      if (p.slot === msg.hostSlot)
+        el.insertAdjacentHTML("beforeend", `<span class="slot-badge host-badge">HOST</span>`);
     } else {
       el.className = "tournament-slot empty";
       el.textContent = "---";
@@ -2549,27 +2550,30 @@ function connectToServer(url: string): Promise<void> {
         }
 
         // Stage 2: After 0.8s, zoom into the highlighted match
-        tournamentTimers.push(setTimeout(() => {
-          const matchEl = bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
-          if (matchEl && canvas) {
-            const canvasRect = canvas.getBoundingClientRect();
-            const matchRect = matchEl.getBoundingClientRect();
-            const cx = matchRect.left + matchRect.width / 2 - canvasRect.left;
-            const cy = matchRect.top + matchRect.height / 2 - canvasRect.top;
-            const ox = (cx / canvasRect.width) * 100;
-            const oy = (cy / canvasRect.height) * 100;
-            canvas.style.transformOrigin = `${ox}% ${oy}%`;
-            canvas.style.transition = "transform 0.6s ease-in-out, opacity 0.6s";
-            canvas.style.transform = "scale(2.5)";
-            canvas.style.opacity = "0.3";
-          }
-        }, 800));
+        tournamentTimers.push(
+          setTimeout(() => {
+            const matchEl = bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
+            if (matchEl && canvas) {
+              const canvasRect = canvas.getBoundingClientRect();
+              const matchRect = matchEl.getBoundingClientRect();
+              const cx = matchRect.left + matchRect.width / 2 - canvasRect.left;
+              const cy = matchRect.top + matchRect.height / 2 - canvasRect.top;
+              const ox = (cx / canvasRect.width) * 100;
+              const oy = (cy / canvasRect.height) * 100;
+              canvas.style.transformOrigin = `${ox}% ${oy}%`;
+              canvas.style.transition = "transform 0.6s ease-in-out, opacity 0.6s";
+              canvas.style.transform = "scale(2.5)";
+              canvas.style.opacity = "0.3";
+            }
+          }, 800),
+        );
 
         // Stage 3: VS overlay
-        tournamentTimers.push(setTimeout(() => {
-          const vsOverlay = document.createElement("div");
-          vsOverlay.className = "bk-vs-overlay";
-          vsOverlay.innerHTML = `
+        tournamentTimers.push(
+          setTimeout(() => {
+            const vsOverlay = document.createElement("div");
+            vsOverlay.className = "bk-vs-overlay";
+            vsOverlay.innerHTML = `
             <div class="bk-vs-label">${escapeHtml(matchLabel.toUpperCase())}</div>
             <div class="bk-vs-names">
               <span class="bk-vs-p1">${escapeHtml(usernames[0])}</span>
@@ -2577,33 +2581,36 @@ function connectToServer(url: string): Promise<void> {
               <span class="bk-vs-p2">${escapeHtml(usernames[1])}</span>
             </div>
           `;
-          bracketOverlay.appendChild(vsOverlay);
-          requestAnimationFrame(() => vsOverlay.classList.add("visible"));
-        }, 1600));
+            bracketOverlay.appendChild(vsOverlay);
+            requestAnimationFrame(() => vsOverlay.classList.add("visible"));
+          }, 1600),
+        );
 
         // Stage 4: Start the game
-        tournamentTimers.push(setTimeout(() => {
-          hideAllTournamentOverlays();
-          bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
+        tournamentTimers.push(
+          setTimeout(() => {
+            hideAllTournamentOverlays();
+            bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
 
-          const scene = getGameScene();
-          if (!scene) return;
+            const scene = getGameScene();
+            if (!scene) return;
 
-          if (role === "fighter" && playerId !== undefined) {
-            tournamentSpectating = false;
-            networkManager?.resetThrottle();
-            scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
-            applyAudioSettings(scene);
-            scene.onLocalInput = (input, tick) => {
-              networkManager?.sendInput(input, tick);
-            };
-          } else {
-            tournamentSpectating = true;
-            scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
-            applyAudioSettings(scene);
-            spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
-          }
-        }, 2800));
+            if (role === "fighter" && playerId !== undefined) {
+              tournamentSpectating = false;
+              networkManager?.resetThrottle();
+              scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
+              applyAudioSettings(scene);
+              scene.onLocalInput = (input, tick) => {
+                networkManager?.sendInput(input, tick);
+              };
+            } else {
+              tournamentSpectating = true;
+              scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
+              applyAudioSettings(scene);
+              spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
+            }
+          }, 2800),
+        );
       },
 
       onSpectateState(state, lastButtons) {
@@ -2867,7 +2874,9 @@ async function handleSettleMatch(matchId: string, regionUrl?: string) {
   }
 
   // Disable settle button to prevent double-clicks
-  const settleBtn = matchHistoryList.querySelector<HTMLButtonElement>(`[data-action="settle"][data-match-id="${matchId}"]`);
+  const settleBtn = matchHistoryList.querySelector<HTMLButtonElement>(
+    `[data-action="settle"][data-match-id="${matchId}"]`,
+  );
   if (settleBtn) settleBtn.disabled = true;
 
   try {

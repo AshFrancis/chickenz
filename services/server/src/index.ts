@@ -3,7 +3,13 @@ import { GameRoom, type SocketData } from "./GameRoom";
 import { TournamentRoom } from "./TournamentRoom";
 import type { ClientMessage, RoomInfo, GameMode, InputMessage } from "./protocol";
 import { generateJoinCode, validateTournamentConfig, validatePartialTournamentConfig } from "./protocol";
-import { startMatchOnChain, settleMatchOnChain, verifyTxOnChain, verifySettleTxOnChain, extendContractTtls } from "./stellar";
+import {
+  startMatchOnChain,
+  settleMatchOnChain,
+  verifyTxOnChain,
+  verifySettleTxOnChain,
+  extendContractTtls,
+} from "./stellar";
 import {
   proveMatch,
   claimNextJob,

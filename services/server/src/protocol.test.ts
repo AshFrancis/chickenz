@@ -206,9 +206,7 @@ describe("validateTournamentConfig", () => {
   });
 
   test("returns undefined when both fields are invalid", () => {
-    expect(
-      validateTournamentConfig({ bracketType: "invalid", matchFormat: "invalid" }),
-    ).toBeUndefined();
+    expect(validateTournamentConfig({ bracketType: "invalid", matchFormat: "invalid" })).toBeUndefined();
   });
 
   test("returns undefined for undefined input", () => {
@@ -272,9 +270,7 @@ describe("validatePartialTournamentConfig", () => {
   });
 
   test("returns undefined when all fields are invalid", () => {
-    expect(
-      validatePartialTournamentConfig({ bracketType: "bad", matchFormat: "bad" }),
-    ).toBeUndefined();
+    expect(validatePartialTournamentConfig({ bracketType: "bad", matchFormat: "bad" })).toBeUndefined();
   });
 
   test("returns undefined for undefined input", () => {

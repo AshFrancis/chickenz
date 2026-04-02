@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   generateMatchId,
   insertMatch,
@@ -75,9 +75,7 @@ describe("generateMatchId", () => {
   test("contains a UUID after the prefix", () => {
     const id = generateMatchId();
     const uuid = id.slice("match-".length);
-    expect(uuid).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    );
+    expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 });
 
@@ -211,13 +209,7 @@ describe("updateProofStatus", () => {
     const match = makeMatch();
     insertMatch(match);
 
-    const statuses: MatchRecord["proofStatus"][] = [
-      "none",
-      "pending",
-      "proving",
-      "verified",
-      "settled",
-    ];
+    const statuses: MatchRecord["proofStatus"][] = ["none", "pending", "proving", "verified", "settled"];
     for (const status of statuses) {
       updateProofStatus(match.id, status);
       expect(getMatchById(match.id)!.proofStatus).toBe(status);

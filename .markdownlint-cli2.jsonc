@@ -1,0 +1,24 @@
+{
+  "config": {
+    "default": true,
+    // Allow long lines
+    "MD013": false,
+    // Allow duplicate headings in different sections
+    "MD024": { "siblings_only": true },
+    // Allow inline HTML
+    "MD033": false,
+    // Allow bare URLs
+    "MD034": false,
+    // Disable table column spacing (compact tables are fine)
+    "MD060": false,
+    // Allow code blocks without language (some are plain text)
+    "MD040": false,
+    // Allow lists without surrounding blank lines
+    "MD032": false,
+    // Allow emphasis as heading (used in protocol doc)
+    "MD036": false,
+    // Allow incremental ordered list numbering
+    "MD029": false
+  },
+  "globs": ["**/*.md", "!node_modules", "!**/node_modules", "!**/target", "!**/pkg"]
+}
