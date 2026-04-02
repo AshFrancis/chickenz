@@ -119,8 +119,8 @@ for (const sql of migrations) {
 // ── Prepared statements ───────────────────────────────────
 
 const stmtInsert = db.prepare(`
-  INSERT INTO matches (id, session_id, room_name, player1, player2, wallet1, wallet2, winner, score1, score2, timestamp, proof_status, room_id, mode)
-  VALUES ($id, $sessionId, $roomName, $player1, $player2, $wallet1, $wallet2, $winner, $score1, $score2, $timestamp, $proofStatus, $roomId, $mode)
+  INSERT INTO matches (id, session_id, room_name, player1, player2, wallet1, wallet2, winner, score1, score2, timestamp, proof_status, room_id, mode, start_tx_hash, settle_tx_hash)
+  VALUES ($id, $sessionId, $roomName, $player1, $player2, $wallet1, $wallet2, $winner, $score1, $score2, $timestamp, $proofStatus, $roomId, $mode, $startTxHash, $settleTxHash)
 `);
 
 const stmtUpdateProof = db.prepare(`
@@ -242,7 +242,7 @@ function rowToMatch(row: MatchRow): MatchRecord {
 // ── Match CRUD ────────────────────────────────────────────
 
 export function generateMatchId(): string {
-  return `match-${crypto.randomUUID().slice(0, 8)}`;
+  return `match-${crypto.randomUUID()}`;
 }
 
 export function insertMatch(record: MatchRecord): void {
@@ -261,6 +261,8 @@ export function insertMatch(record: MatchRecord): void {
     $proofStatus: record.proofStatus,
     $roomId: record.roomId,
     $mode: record.mode,
+    $startTxHash: record.startTxHash || null,
+    $settleTxHash: record.settleTxHash || null,
   });
 }
 
@@ -410,7 +412,8 @@ export function getTranscriptByMatchId(matchId: string): object | null {
   if (!row?.transcript_data) return null;
   try {
     return JSON.parse(row.transcript_data);
-  } catch {
+  } catch (err) {
+    console.error("[db] Failed to parse transcript for match", matchId, err);
     return null;
   }
 }

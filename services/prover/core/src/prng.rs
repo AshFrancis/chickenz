@@ -18,6 +18,7 @@ pub fn prng_next(state: u32) -> (f64, u32) {
 
 /// Returns a random integer in [min, max] inclusive.
 pub fn prng_int_range(state: u32, min: i32, max: i32) -> (i32, u32) {
+    debug_assert!(max >= min, "PRNG range: max ({}) < min ({})", max, min);
     let (value, next_state) = prng_next(state);
     let range = (max - min + 1) as f64;
     (min + (value * range).floor() as i32, next_state)

@@ -409,6 +409,11 @@ export class TournamentRoom {
     // Mark as disconnected
     this.disconnected.add(slot);
 
+    // Clean up spectator socket if present in active game
+    if (this.activeGameRoom) {
+      this.activeGameRoom.removeSpectator(ws);
+    }
+
     // If this is a player (not spectator), mark as forfeited
     const p = this.participants[slot];
     if (p && p.role === "player") {

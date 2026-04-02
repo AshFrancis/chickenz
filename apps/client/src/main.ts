@@ -446,7 +446,7 @@ function deferBGMStart() {
   // Always call updateWalletUI at the end so Log In / Register buttons become visible.
   initPasskeyKit()
     .then(() => connectWallet())
-    .catch(() => {})
+    .catch((err) => console.warn("[wallet]", err))
     .finally(() => updateWalletUI());
 
   // Init touch controls + tutorial
@@ -1385,7 +1385,12 @@ function escapeHtml(s: string): string {
 
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
+let fetchingLeaderboard = false;
+let fetchingHistory = false;
+
 function fetchLeaderboard() {
+  if (fetchingLeaderboard) return;
+  fetchingLeaderboard = true;
   const regions = getRegions();
   const fetches = regions.map((r) =>
     fetch(`${r.httpUrl}/api/leaderboard`)
@@ -1413,7 +1418,8 @@ function fetchLeaderboard() {
     })
     .catch(() => {
       leaderboardContent.innerHTML = `<div class="empty-state">Failed to load leaderboard</div>`;
-    });
+    })
+    .finally(() => { fetchingLeaderboard = false; });
 }
 
 function renderLeaderboard(data: { name: string; elo: number; wins: number; losses: number }[]) {
@@ -1433,6 +1439,8 @@ function renderLeaderboard(data: { name: string; elo: number; wins: number; loss
 // ── Match History ──────────────────────────────────────────────────────────────
 
 function fetchMatchHistory() {
+  if (fetchingHistory) return;
+  fetchingHistory = true;
   const regions = getRegions();
   const fetches = regions.map((r) =>
     fetch(`${r.httpUrl}/api/matches`)
@@ -1458,7 +1466,8 @@ function fetchMatchHistory() {
     })
     .catch(() => {
       matchHistoryList.innerHTML = `<div class="empty-state">Failed to load match history</div>`;
-    });
+    })
+    .finally(() => { fetchingHistory = false; });
 }
 
 function proofStatusLabel(status: string): string {
@@ -1482,10 +1491,21 @@ function renderMatchHistory(matches: MatchRecord[]) {
     matchHistoryList.innerHTML = `<div class="empty-state">No matches played yet</div>`;
     return;
   }
+  // innerHTML replacement destroys all old elements and their listeners, so
+  // per-element addEventListener in the loop below is safe (no leak). We still
+  // use event delegation on the container for button actions to keep wiring simple.
   matchHistoryList.innerHTML = "";
+
+  // Store matches by roomId / matchId for delegation lookups
+  const matchByRoom = new Map<string, MatchRecord>();
+  const matchById = new Map<string, MatchRecord>();
+  for (const m of matches) matchByRoom.set(m.roomId, m), matchById.set(m.id, m);
+
   for (const m of matches) {
     const el = document.createElement("div");
     el.className = "match-item";
+    el.dataset.matchId = m.id;
+    el.dataset.regionUrl = m._regionUrl || "";
     const ago = formatTimeAgo(m.timestamp);
     const modeBadge =
       m.mode === "ranked"
@@ -1501,56 +1521,55 @@ function renderMatchHistory(matches: MatchRecord[]) {
       <div class="match-item-meta">
         <span class="match-time">${ago}</span>
         <span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span>
-        ${showSettle ? `<button class="btn btn-sm btn-primary btn-settle" data-match-id="${escapeHtml(m.id)}">Settle</button>` : ""}
-        <button class="btn btn-sm btn-replay" data-room-id="${escapeHtml(m.roomId)}">Replay</button>
-        <button class="btn btn-sm btn-share" data-room-id="${escapeHtml(m.roomId)}" data-region="${escapeHtml(m._regionId || activeRegionId)}">Share</button>
-        <button class="btn btn-sm btn-download" data-room-id="${escapeHtml(m.roomId)}">DL</button>
+        ${showSettle ? `<button class="btn btn-sm btn-primary btn-settle" data-action="settle" data-match-id="${escapeHtml(m.id)}">Settle</button>` : ""}
+        <button class="btn btn-sm btn-replay" data-action="replay" data-room-id="${escapeHtml(m.roomId)}">Replay</button>
+        <button class="btn btn-sm btn-share" data-action="share" data-room-id="${escapeHtml(m.roomId)}" data-region="${escapeHtml(m._regionId || activeRegionId)}">Share</button>
+        <button class="btn btn-sm btn-download" data-action="download" data-room-id="${escapeHtml(m.roomId)}">DL</button>
       </div>
     `;
-    const replayBtn = el.querySelector(".btn-replay");
-    if (replayBtn) {
-      replayBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        startReplay(m.roomId, m._regionUrl);
-      });
-    }
-    const shareBtn = el.querySelector(".btn-share");
-    if (shareBtn) {
-      shareBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const region = (shareBtn as HTMLElement).dataset.region || activeRegionId;
-        void navigator.clipboard
-          .writeText(`${window.location.origin}/?replay=${m.roomId}&region=${region}`)
-          .then(() => {
-            (shareBtn as HTMLElement).textContent = "Copied!";
-            setTimeout(() => {
-              (shareBtn as HTMLElement).textContent = "Share";
-            }, 1500);
-          });
-      });
-    }
-    const downloadBtn = el.querySelector(".btn-download");
-    if (downloadBtn) {
-      downloadBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        downloadTranscript(m.roomId, m._regionUrl);
-      });
-    }
-    const settleBtn = el.querySelector(".btn-settle");
-    if (settleBtn) {
-      settleBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        void handleSettleMatch(m.id, m._regionUrl);
-      });
-    }
-    // Click row to open detail
-    el.addEventListener("click", (e) => {
-      // Don't open detail if clicking a button
-      if ((e.target as HTMLElement).closest("button")) return;
-      openMatchDetail(m.id, m._regionUrl);
-    });
     matchHistoryList.appendChild(el);
   }
+
+  // Single delegated listener for all button actions in match history list
+  matchHistoryList.onclick = (e) => {
+    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-action]");
+    if (target) {
+      e.stopPropagation();
+      const action = target.dataset.action;
+      const roomId = target.dataset.roomId || "";
+      const matchId = target.dataset.matchId || "";
+      const m = roomId ? matchByRoom.get(roomId) : matchById.get(matchId);
+      if (!m) return;
+      switch (action) {
+        case "replay":
+          startReplay(m.roomId, m._regionUrl);
+          break;
+        case "share": {
+          const region = target.dataset.region || activeRegionId;
+          void navigator.clipboard
+            .writeText(`${window.location.origin}/?replay=${m.roomId}&region=${region}`)
+            .then(() => {
+              target.textContent = "Copied!";
+              setTimeout(() => { target.textContent = "Share"; }, 1500);
+            });
+          break;
+        }
+        case "download":
+          downloadTranscript(m.roomId, m._regionUrl);
+          break;
+        case "settle":
+          void handleSettleMatch(m.id, m._regionUrl);
+          break;
+      }
+      return;
+    }
+    // Click on row (not a button) opens detail
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".match-item");
+    if (row && row.dataset.matchId) {
+      const m = matchById.get(row.dataset.matchId);
+      if (m) openMatchDetail(m.id, m._regionUrl);
+    }
+  };
 }
 
 function formatTimeAgo(timestamp: number): string {
@@ -2196,7 +2215,7 @@ function renderTournamentLobby(msg: TournamentLobbyMessage) {
       if (p.slot === msg.hostSlot) el.classList.add("host");
       if (!p.connected) el.classList.add("disconnected");
       el.innerHTML = `<span class="slot-name">${escapeHtml(p.name)}</span>`;
-      if (p.slot === msg.hostSlot) el.innerHTML += `<span class="slot-badge host-badge">HOST</span>`;
+      if (p.slot === msg.hostSlot) el.insertAdjacentHTML("beforeend", `<span class="slot-badge host-badge">HOST</span>`);
     } else {
       el.className = "tournament-slot empty";
       el.textContent = "---";
@@ -2698,15 +2717,21 @@ async function ensureRankedReady(forceVerify = false): Promise<boolean> {
   if (lastVerifiedAddr === addr) return true;
   lobbyStatus.textContent = "Registering wallet...";
   setLobbyButtons(false);
-  const ok = await verifyWallet(addr);
-  setLobbyButtons(true);
-  if (ok) {
-    lobbyStatus.textContent = "";
-  } else {
-    lobbyStatus.textContent = "Wallet registration failed. Try again or switch to Casual.";
+  try {
+    const ok = await verifyWallet(addr);
     setLobbyButtons(true);
+    if (ok) {
+      lobbyStatus.textContent = "";
+    } else {
+      lobbyStatus.textContent = "Wallet registration failed. Try again or switch to Casual.";
+    }
+    return ok;
+  } catch (err) {
+    console.warn("[wallet] ensureRankedReady error:", err);
+    lobbyStatus.textContent = "Wallet registration failed. Please try again.";
+    setLobbyButtons(true);
+    return false;
   }
-  return ok;
 }
 
 quickplayBtn.addEventListener("click", () => {
@@ -2841,6 +2866,10 @@ async function handleSettleMatch(matchId: string, regionUrl?: string) {
     return;
   }
 
+  // Disable settle button to prevent double-clicks
+  const settleBtn = matchHistoryList.querySelector<HTMLButtonElement>(`[data-action="settle"][data-match-id="${matchId}"]`);
+  if (settleBtn) settleBtn.disabled = true;
+
   try {
     lobbyStatus.textContent = "Fetching proof...";
     const proofRes = await fetch(`${origin}/api/matches/${matchId}/proof`);
@@ -2887,6 +2916,8 @@ async function handleSettleMatch(matchId: string, regionUrl?: string) {
     if (activeTab === "history") fetchMatchHistory();
   } catch (err) {
     lobbyStatus.textContent = `Settlement failed: ${(err as Error).message}`;
+  } finally {
+    if (settleBtn) settleBtn.disabled = false;
   }
 }
 

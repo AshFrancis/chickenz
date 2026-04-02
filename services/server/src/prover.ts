@@ -259,6 +259,8 @@ export function proveMatch(
     }
   }
 
+  let safetyTimer: ReturnType<typeof setTimeout>;
+
   const settleOnce = (source: string) => (artifacts: ProofArtifacts | null, _source?: string) => {
     if (!artifacts) return;
     if (settled) {
@@ -275,17 +277,22 @@ export function proveMatch(
       }
       return;
     }
-    settled = true;
+    clearTimeout(safetyTimer); // Release closure references held by the safety timeout
+    settled = true; // Set BEFORE calling onResult to prevent double-fire if onResult throws
     winnerSource = source;
     winnerArtifacts = artifacts;
     markJobDone(); // Prevent workers from re-claiming
     console.log(`[prover] ${matchId} proved by ${source}`);
-    onResult(artifacts, source);
+    try {
+      onResult(artifacts, source);
+    } catch (err) {
+      console.error(`[prover] ${matchId} onResult threw:`, err);
+    }
   };
 
   // Safety timeout: if neither prover settles within 20 minutes, report failure
   // (Boundless marketplace queue can take 10-15 min on testnet)
-  setTimeout(
+  safetyTimer = setTimeout(
     () => {
       if (!settled) {
         settled = true;

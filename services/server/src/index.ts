@@ -178,7 +178,7 @@ const allSockets = new Set<ServerWebSocket<SocketData>>(); // all connected WS c
 function generateRoomId(): string {
   let id: string;
   do {
-    id = crypto.randomUUID().slice(0, 8);
+    id = crypto.randomUUID().slice(0, 12);
   } while (rooms.has(id));
   return id;
 }
@@ -330,6 +330,7 @@ function returnToLobby(
       proofStatus: mode === "ranked" ? "pending" : "none",
       roomId,
       mode,
+      startTxHash: room?.startTxHash || undefined,
     };
 
     // Set match start time from room
@@ -371,7 +372,8 @@ function returnToLobby(
 
     insertMatch(record);
 
-    // Apply startTxHash after insert so the UPDATE finds the row
+    // Belt-and-suspenders: the .then() callback on startMatchOnChain also tries,
+    // but this ensures the hash is captured even if the race window was missed.
     if (room?.startTxHash) {
       updateStartTxHash(matchId, room.startTxHash);
     }
@@ -1655,7 +1657,7 @@ function spawnBotVsBotMatch() {
       matchStartTime: room.matchStartTime,
     };
     insertMatch(record);
-    markBotVsBot(matchId);
+    markBotVsBot(matchId); // Mark before transcript save/prune to ensure correct pruning
     const fullTranscript = room.getFullTranscript();
     saveTranscript(matchId, fullTranscript);
     pruneBotVsBotTranscripts();

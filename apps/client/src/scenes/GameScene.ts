@@ -639,6 +639,7 @@ export class GameScene extends Phaser.Scene {
       if (ctx.state === "suspended") void ctx.resume();
       this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, 0, this.bgmVolume, 400);
     };
+    // Listeners persist for app lifetime — GameScene is never destroyed
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) fadeOut();
       else fadeIn();
@@ -1304,7 +1305,8 @@ export class GameScene extends Phaser.Scene {
     this.resetRagdolls();
     this.replayInfoText.setVisible(true);
 
-    // Remove previous replay listeners to prevent stacking
+    // Remove previous replay listeners to prevent stacking.
+    // Safe: removeAllListeners() is always called before re-adding below.
     this.input.keyboard?.removeAllListeners();
 
     // Keyboard controls for replay

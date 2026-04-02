@@ -86,6 +86,7 @@ export class GameRoom {
   private _startTxHash: string | null = null;
   /** DB match ID — set once match record is created, used for late async updates */
   matchRecordId: string | null = null;
+  private disconnectedPlayers = new Set<number>();
 
   constructor(
     id: string,
@@ -265,8 +266,14 @@ export class GameRoom {
       return;
     }
     if (this._status === "playing") {
-      const winnerId = playerId === 0 ? 1 : 0;
-      this.endMatch(winnerId);
+      this.disconnectedPlayers.add(playerId);
+      // If both players disconnected, end as draw
+      if (this.disconnectedPlayers.size >= 2) {
+        this.endMatch(-1);
+      } else {
+        const winnerId = playerId === 0 ? 1 : 0;
+        this.endMatch(winnerId);
+      }
     }
   }
 
@@ -685,7 +692,7 @@ export class GameRoom {
     if (
       this.roundWins[0] >= this.winsNeeded ||
       this.roundWins[1] >= this.winsNeeded ||
-      this.currentRound >= this.totalRounds * 2
+      this.currentRound >= this.totalRounds + 2
     ) {
       const matchWinner = this.roundWins[0] >= this.roundWins[1] ? 0 : 1;
       this.pendingTimeouts.push(setTimeout(() => this.endMatch(matchWinner), 100));
