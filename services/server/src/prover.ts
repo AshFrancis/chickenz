@@ -132,6 +132,12 @@ export function getJob(matchId: string): ProofJob | null {
   return proofQueue.find((j) => j.matchId === matchId) ?? null;
 }
 
+/** Reset all state for testing. Not for production use. */
+export function _resetForTesting() {
+  proofQueue.length = 0;
+  lastWorkerPing = 0;
+}
+
 // ── Boundless fallback (spawns local binary) ─────────────
 
 export async function proveBoundless(

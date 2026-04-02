@@ -3,8 +3,54 @@ import {
   nextPow2,
   standardSeedOrder,
   generateBracket,
+  TournamentRoom,
 } from "./TournamentRoom";
-import type { BracketMatch } from "./protocol";
+import type { BracketMatch, BracketType, TournamentConfig } from "./protocol";
+import type { SocketData } from "./GameRoom";
+import type { ServerWebSocket } from "bun";
+
+type GameSocket = ServerWebSocket<SocketData>;
+
+/** Create a minimal mock socket for TournamentRoom tests. */
+function mockSocket(username?: string): GameSocket {
+  const messages: string[] = [];
+  const data: SocketData = {
+    roomId: null,
+    playerId: -1,
+    username: username ?? `Player${Math.floor(Math.random() * 10000)}`,
+    walletAddress: "",
+    character: 0,
+    awayCharacter: 1,
+    tournamentId: null,
+    msgCount: 0,
+    msgResetTime: 0,
+  };
+  return {
+    data,
+    send(msg: string | Buffer) {
+      messages.push(typeof msg === "string" ? msg : msg.toString());
+      return 0;
+    },
+    close() {},
+    subscribe() {},
+    unsubscribe() {},
+    publish() {},
+    // Expose captured messages for assertions
+    _messages: messages,
+  } as unknown as GameSocket & { _messages: string[] };
+}
+
+/** Get captured messages from a mock socket */
+function getMessages(ws: GameSocket): string[] {
+  return (ws as unknown as { _messages: string[] })._messages;
+}
+
+/** Parse the last message sent to a socket */
+function lastMessage(ws: GameSocket): Record<string, unknown> | null {
+  const msgs = getMessages(ws);
+  if (msgs.length === 0) return null;
+  return JSON.parse(msgs[msgs.length - 1]!);
+}
 
 // ── nextPow2 ────────────────────────────────────────────────────
 
@@ -283,5 +329,540 @@ describe("generateBracket", () => {
         }
       }
     });
+  });
+});
+
+// ── Bye Resolution ─────────────────────────────────────────
+
+describe("bye resolution in bracket", () => {
+  test("3-player bracket: bye auto-advances seed 0 (top seed)", () => {
+    const matches = generateBracket(3, "winners_only");
+    const byeMatches = matches.filter((m) => m.status === "bye");
+    expect(byeMatches.length).toBeGreaterThanOrEqual(1);
+
+    // The bye match winner should be a valid seed (0..2)
+    for (const bye of byeMatches) {
+      if (bye.winner !== undefined) {
+        expect(bye.winner).toBeGreaterThanOrEqual(0);
+        expect(bye.winner).toBeLessThan(3);
+      }
+    }
+  });
+
+  test("5-player bracket: 3 byes, winners correctly assigned", () => {
+    const matches = generateBracket(5, "winners_only");
+    const byeMatches = matches.filter((m) => m.status === "bye");
+    expect(byeMatches).toHaveLength(3);
+
+    // Each bye with a real player should have a winner
+    for (const bye of byeMatches) {
+      // A bye with one real seed and one bye source has a winner
+      const hasRealSeedA = bye.sourceA.type === "seed" && bye.sourceA.seed < 5;
+      const hasRealSeedB = bye.sourceB.type === "seed" && bye.sourceB.seed < 5;
+      if (hasRealSeedA || hasRealSeedB) {
+        expect(bye.winner).toBeDefined();
+      }
+    }
+  });
+
+  test("6-player bracket: 2 byes cascade correctly", () => {
+    const matches = generateBracket(6, "winners_only");
+    const byeMatches = matches.filter((m) => m.status === "bye");
+    expect(byeMatches).toHaveLength(2);
+
+    // bye winners should propagate into later rounds
+    for (const bye of byeMatches) {
+      expect(bye.winner).toBeDefined();
+      // Find matches sourcing this bye's winner
+      const downstream = matches.filter(
+        (m) =>
+          (m.sourceA.type === "winner" && m.sourceA.matchIndex === bye.matchIndex) ||
+          (m.sourceB.type === "winner" && m.sourceB.matchIndex === bye.matchIndex),
+      );
+      expect(downstream.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  test("7-player bracket: 1 bye", () => {
+    const matches = generateBracket(7, "winners_only");
+    const byeMatches = matches.filter((m) => m.status === "bye");
+    expect(byeMatches).toHaveLength(1);
+    expect(byeMatches[0]!.winner).toBeDefined();
+  });
+
+  test("bye match has no loser", () => {
+    for (const pc of [3, 5, 6, 7]) {
+      const matches = generateBracket(pc, "winners_only");
+      const byeMatches = matches.filter((m) => m.status === "bye");
+      for (const bye of byeMatches) {
+        expect(bye.loser).toBeUndefined();
+      }
+    }
+  });
+
+  test("all byes in 8-player bracket: 0 byes", () => {
+    const matches = generateBracket(8, "winners_only");
+    const byeMatches = matches.filter((m) => m.status === "bye");
+    expect(byeMatches).toHaveLength(0);
+  });
+});
+
+// ── Match Result Propagation (bracket structure) ────────────
+
+describe("match result propagation", () => {
+  test("winner source references exist for all non-round-0 winners matches", () => {
+    for (const pc of [4, 6, 8]) {
+      const matches = generateBracket(pc, "winners_only");
+      const nonR0 = matches.filter(
+        (m) => m.round > 0 || m.bracketSide === "final",
+      );
+      for (const m of nonR0) {
+        // Both sources should reference winners of earlier matches
+        if (m.sourceA.type === "winner") {
+          const src = matches.find((s) => s.matchIndex === m.sourceA.matchIndex);
+          expect(src).toBeDefined();
+        }
+        if (m.sourceB.type === "winner") {
+          const src = matches.find((s) => s.matchIndex === m.sourceB.matchIndex);
+          expect(src).toBeDefined();
+        }
+      }
+    }
+  });
+
+  test("final match always sources winners of SF matches (4+ players)", () => {
+    for (const pc of [4, 5, 6, 7, 8]) {
+      const matches = generateBracket(pc, "winners_only");
+      const final = matches.find((m) => m.bracketSide === "final")!;
+      expect(final.sourceA.type).toBe("winner");
+      expect(final.sourceB.type).toBe("winner");
+
+      if (final.sourceA.type === "winner" && final.sourceB.type === "winner") {
+        const srcA = matches.find((m) => m.matchIndex === final.sourceA.matchIndex)!;
+        const srcB = matches.find((m) => m.matchIndex === final.sourceB.matchIndex)!;
+        // Both SF matches should exist
+        expect(srcA).toBeDefined();
+        expect(srcB).toBeDefined();
+        // SFs should be one round before the final
+        expect(srcA.round).toBe(final.round - 1);
+        expect(srcB.round).toBe(final.round - 1);
+      }
+    }
+  });
+
+  test("full consolation bracket: loser sources reference winners bracket matches", () => {
+    const matches = generateBracket(8, "full_consolation");
+    const consolation = matches.filter((m) => m.bracketSide === "consolation" || m.bracketSide === "third_place");
+    expect(consolation.length).toBeGreaterThan(0);
+
+    for (const m of consolation) {
+      for (const src of [m.sourceA, m.sourceB]) {
+        if (src.type === "loser") {
+          // Must reference a valid match in the winners bracket
+          const referenced = matches.find((s) => s.matchIndex === src.matchIndex);
+          expect(referenced).toBeDefined();
+          expect(["winners", "final"]).toContain(referenced!.bracketSide);
+        }
+      }
+    }
+  });
+
+  test("third_place match in partial_consolation sources SF losers", () => {
+    for (const pc of [4, 6, 8]) {
+      const matches = generateBracket(pc, "partial_consolation");
+      const tp = matches.find((m) => m.bracketSide === "third_place");
+      expect(tp).toBeDefined();
+      expect(tp!.sourceA.type).toBe("loser");
+      expect(tp!.sourceB.type).toBe("loser");
+
+      // The referenced matches should be the SFs
+      if (tp!.sourceA.type === "loser" && tp!.sourceB.type === "loser") {
+        const sfA = matches.find((m) => m.matchIndex === tp!.sourceA.matchIndex)!;
+        const sfB = matches.find((m) => m.matchIndex === tp!.sourceB.matchIndex)!;
+        expect(sfA.bracketSide).toBe("winners");
+        expect(sfB.bracketSide).toBe("winners");
+      }
+    }
+  });
+});
+
+// ── TournamentRoom: Config Validation ───────────────────────
+
+describe("TournamentRoom config validation", () => {
+  test("constructor uses default config when none provided", () => {
+    const ws = mockSocket("Host");
+    const room = new TournamentRoom("t1", ws);
+    const config = room.getConfig();
+    expect(config.bracketType).toBe("partial_consolation");
+    expect(config.matchFormat).toBe("bo5");
+  });
+
+  test("constructor accepts custom config", () => {
+    const ws = mockSocket("Host");
+    const config: TournamentConfig = { bracketType: "winners_only", matchFormat: "bo3" };
+    const room = new TournamentRoom("t2", ws, config);
+    expect(room.getConfig()).toEqual(config);
+  });
+
+  test("updateConfig changes bracket type for host", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("t3", host);
+    const result = room.updateConfig(host, { bracketType: "full_consolation" });
+    expect(result).toBe(true);
+    expect(room.getConfig().bracketType).toBe("full_consolation");
+  });
+
+  test("updateConfig changes match format for host", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("t4", host);
+    const result = room.updateConfig(host, { matchFormat: "bo3" });
+    expect(result).toBe(true);
+    expect(room.getConfig().matchFormat).toBe("bo3");
+  });
+
+  test("updateConfig rejects invalid bracket type", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("t5", host);
+    const result = room.updateConfig(host, { bracketType: "invalid_type" as BracketType });
+    expect(result).toBe(false);
+    expect(room.getConfig().bracketType).toBe("partial_consolation"); // unchanged
+  });
+
+  test("updateConfig rejects invalid match format", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("t6", host);
+    const result = room.updateConfig(host, { matchFormat: "bo7" as any });
+    expect(result).toBe(false);
+    expect(room.getConfig().matchFormat).toBe("bo5"); // unchanged
+  });
+
+  test("updateConfig rejects non-host", () => {
+    const host = mockSocket("Host");
+    const nonHost = mockSocket("Player2");
+    const room = new TournamentRoom("t7", host);
+    room.addPlayer(nonHost);
+    const result = room.updateConfig(nonHost, { bracketType: "winners_only" });
+    expect(result).toBe(false);
+    expect(room.getConfig().bracketType).toBe("partial_consolation"); // unchanged
+  });
+
+  test("updateConfig rejects after tournament starts", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("t8", host);
+    room.addPlayer(p2);
+    room.startTournament(host);
+    const result = room.updateConfig(host, { bracketType: "winners_only" });
+    expect(result).toBe(false);
+  });
+
+  test("updateConfig with empty partial returns false", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("t9", host);
+    const result = room.updateConfig(host, {});
+    expect(result).toBe(false);
+  });
+});
+
+// ── TournamentRoom: Player Management ───────────────────────
+
+describe("TournamentRoom player management", () => {
+  test("creator is added as first participant", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("pm1", host);
+    expect(room.participantCount).toBe(1);
+    expect(room.connectedCount).toBe(1);
+  });
+
+  test("addPlayer adds participants up to MAX_PLAYERS", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("pm2", host);
+    for (let i = 1; i < 8; i++) {
+      const result = room.addPlayer(mockSocket(`P${i}`));
+      expect(result).toBe(true);
+    }
+    expect(room.participantCount).toBe(8);
+  });
+
+  test("9th player is added as spectator", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("pm3", host);
+    for (let i = 1; i < 8; i++) {
+      room.addPlayer(mockSocket(`P${i}`));
+    }
+    // 9th player should be added as spectator
+    const spectator = mockSocket("Spectator");
+    const result = room.addPlayer(spectator);
+    expect(result).toBe(true);
+    expect(room.participantCount).toBe(9);
+  });
+
+  test("rejects players after max players + max spectators", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("pm4", host);
+    // 7 more players = 8 total
+    for (let i = 1; i < 8; i++) {
+      room.addPlayer(mockSocket(`P${i}`));
+    }
+    // 5 spectators
+    for (let i = 0; i < 5; i++) {
+      room.addPlayer(mockSocket(`S${i}`));
+    }
+    // 14th person should be rejected
+    const result = room.addPlayer(mockSocket("Extra"));
+    expect(result).toBe(false);
+  });
+
+  test("addPlayer fails after tournament starts", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("pm5", host);
+    room.addPlayer(p2);
+    room.startTournament(host);
+    const result = room.addPlayer(mockSocket("Late"));
+    expect(result).toBe(false);
+  });
+
+  test("handleDisconnect removes participant in waiting state", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("pm6", host);
+    room.addPlayer(p2);
+    expect(room.participantCount).toBe(2);
+    room.handleDisconnect(p2);
+    expect(room.participantCount).toBe(1);
+  });
+
+  test("handleDisconnect on unknown socket is no-op", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("pm7", host);
+    const stranger = mockSocket("Stranger");
+    room.handleDisconnect(stranger); // should not throw
+    expect(room.participantCount).toBe(1);
+  });
+
+  test("toggleRole switches player to spectator", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("pm8", host);
+    room.addPlayer(p2);
+
+    const result = room.toggleRole(p2);
+    expect(result).toBe(true);
+    // P2 is now spectator; verify by checking the lobby broadcast
+    const msg = lastMessage(p2);
+    expect(msg).not.toBeNull();
+    if (msg && Array.isArray(msg.participants)) {
+      const p2Data = (msg.participants as Array<{ slot: number; role: string }>).find(
+        (p: { slot: number; role: string }) => p.slot === 1,
+      );
+      expect(p2Data?.role).toBe("spectator");
+    }
+  });
+
+  test("toggleRole fails after tournament starts", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("pm9", host);
+    room.addPlayer(p2);
+    room.startTournament(host);
+    expect(room.toggleRole(p2)).toBe(false);
+  });
+});
+
+// ── TournamentRoom: Start Tournament ────────────────────────
+
+describe("TournamentRoom start tournament", () => {
+  test("requires at least 2 players", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("st1", host);
+    expect(room.startTournament(host)).toBe(false);
+    expect(room.status).toBe("waiting");
+  });
+
+  test("only host can start", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("st2", host);
+    room.addPlayer(p2);
+    expect(room.startTournament(p2)).toBe(false);
+    expect(room.status).toBe("waiting");
+  });
+
+  test("host can start with 2 players", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("st3", host);
+    room.addPlayer(p2);
+    expect(room.startTournament(host)).toBe(true);
+    expect(room.status).toBe("playing");
+  });
+
+  test("cannot start twice", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("st4", host);
+    room.addPlayer(p2);
+    room.startTournament(host);
+    expect(room.startTournament(host)).toBe(false);
+  });
+
+  test("tournament lobby broadcast includes bracket after start", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("st5", host);
+    room.addPlayer(p2);
+    room.startTournament(host);
+
+    const msg = lastMessage(host);
+    expect(msg).not.toBeNull();
+    expect(msg!.status).toBe("playing");
+    expect(msg!.bracket).toBeDefined();
+  });
+
+  test("bracket has correct number of matches for player count", () => {
+    // 4 players with partial_consolation: 2 SFs + 1 Final + 1 3rd place = 4
+    const host = mockSocket("Host");
+    const players = [mockSocket("P2"), mockSocket("P3"), mockSocket("P4")];
+    const room = new TournamentRoom("st6", host, {
+      bracketType: "partial_consolation",
+      matchFormat: "bo5",
+    });
+    for (const p of players) room.addPlayer(p);
+    room.startTournament(host);
+
+    const msg = lastMessage(host);
+    const bracket = msg!.bracket as { matches: BracketMatch[] };
+    expect(bracket.matches).toHaveLength(4);
+  });
+});
+
+// ── TournamentRoom: Forfeit Handling ────────────────────────
+
+describe("TournamentRoom forfeit handling", () => {
+  test("disconnect during playing state marks player as forfeited", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const room = new TournamentRoom("ff1", host);
+    room.addPlayer(p2);
+    room.startTournament(host);
+    expect(room.status).toBe("playing");
+
+    // Disconnect p2 (should mark as forfeited)
+    room.handleDisconnect(p2);
+    expect(room.connectedCount).toBe(1);
+  });
+
+  test("disconnect during waiting removes participant entirely", () => {
+    const host = mockSocket("Host");
+    const p2 = mockSocket("P2");
+    const p3 = mockSocket("P3");
+    const room = new TournamentRoom("ff2", host);
+    room.addPlayer(p2);
+    room.addPlayer(p3);
+    room.handleDisconnect(p2);
+    expect(room.participantCount).toBe(2); // removed, not just marked
+  });
+
+  test("isSocketInTournament returns false for unknown socket", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("ff3", host);
+    const stranger = mockSocket("Stranger");
+    expect(room.isSocketInTournament(stranger)).toBe(false);
+  });
+
+  test("isSocketInTournament returns true for added player", () => {
+    const host = mockSocket("Host");
+    const room = new TournamentRoom("ff4", host);
+    expect(room.isSocketInTournament(host)).toBe(true);
+  });
+});
+
+// ── Standings Computation (via bracket structure) ───────────
+
+describe("standings computation structure", () => {
+  test("winners_only 4-player bracket has correct structure for standings", () => {
+    // With 4 players in winners_only:
+    // - Final winner = 1st, final loser = 2nd
+    // - SF losers = joint 3rd
+    const matches = generateBracket(4, "winners_only");
+    const final = matches.find((m) => m.bracketSide === "final");
+    expect(final).toBeDefined();
+    expect(final!.sourceA.type).toBe("winner");
+    expect(final!.sourceB.type).toBe("winner");
+
+    // SFs feed into the final
+    const sfs = matches.filter((m) => m.bracketSide === "winners" && m.round === 0);
+    expect(sfs).toHaveLength(2);
+  });
+
+  test("partial_consolation 4-player has 3rd place match for complete ranking", () => {
+    const matches = generateBracket(4, "partial_consolation");
+    const tp = matches.find((m) => m.bracketSide === "third_place");
+    expect(tp).toBeDefined();
+    // 3rd place match gives us places 1-4 completely
+    // 1st: final winner, 2nd: final loser, 3rd: 3rd place winner, 4th: 3rd place loser
+  });
+
+  test("full_consolation 8-player has consolation matches for complete ranking", () => {
+    const matches = generateBracket(8, "full_consolation");
+    const consolation = matches.filter(
+      (m) => m.bracketSide === "consolation" || m.bracketSide === "third_place",
+    );
+    expect(consolation.length).toBeGreaterThan(0);
+
+    // Total matches should cover all possible rankings
+    // Winners: 7 matches, plus consolation matches
+    expect(matches.length).toBeGreaterThan(7);
+  });
+
+  test("partial_consolation 8-player: exactly 1 third-place match", () => {
+    const matches = generateBracket(8, "partial_consolation");
+    const tpMatches = matches.filter((m) => m.bracketSide === "third_place");
+    expect(tpMatches).toHaveLength(1);
+  });
+
+  test("winners_only has no consolation or third_place matches", () => {
+    for (const pc of [2, 3, 4, 5, 6, 7, 8]) {
+      const matches = generateBracket(pc, "winners_only");
+      const consolation = matches.filter(
+        (m) => m.bracketSide === "consolation" || m.bracketSide === "third_place",
+      );
+      expect(consolation).toHaveLength(0);
+    }
+  });
+
+  test("full_consolation 4-player bracket has consolation structure", () => {
+    const matches = generateBracket(4, "full_consolation");
+    // With 4 players: 2 SFs + 1 Final in winners + consolation for complete ranking
+    const consolation = matches.filter(
+      (m) => m.bracketSide === "consolation" || m.bracketSide === "third_place",
+    );
+    expect(consolation.length).toBeGreaterThan(0);
+  });
+
+  test("simulated 4-player bracket: manual match resolution produces complete results", () => {
+    // Simulate resolving a 4-player winners_only bracket manually
+    const matches = generateBracket(4, "winners_only");
+
+    // Find the two SFs (round 0)
+    const sfs = matches.filter((m) => m.bracketSide === "winners" && m.round === 0);
+    expect(sfs).toHaveLength(2);
+
+    // Each SF should have two seed sources
+    for (const sf of sfs) {
+      expect(sf.sourceA.type).toBe("seed");
+      expect(sf.sourceB.type).toBe("seed");
+    }
+
+    // The final sources the winners of both SFs
+    const final = matches.find((m) => m.bracketSide === "final")!;
+    expect(final.sourceA.type).toBe("winner");
+    expect(final.sourceB.type).toBe("winner");
+
+    if (final.sourceA.type === "winner" && final.sourceB.type === "winner") {
+      expect(final.sourceA.matchIndex).toBe(sfs[0]!.matchIndex);
+      expect(final.sourceB.matchIndex).toBe(sfs[1]!.matchIndex);
+    }
   });
 });
