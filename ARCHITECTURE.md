@@ -14,16 +14,16 @@ apps/client/            Phaser renderer, lobby UI, mobile touch controls, tutori
   src/input/            InputManager (keyboard + touch), TouchControls (virtual joystick/shoot)
   src/tutorial/         Tutorial system (6-step guided overlay on warmup)
   src/net/              NetworkManager, RegionManager (multi-region ping + lobby merge)
-services/server/        Bun WebSocket server — matchmaking, rooms, ELO, bots, on-chain settlement
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO, bots, on-chain settlement (311 tests)
   src/BotAI.ts          Bot AI with continuous difficulty interpolation (0.0–1.0)
   src/BotLobbyManager   Fake waiting rooms + auto-join system
   src/GameRoom.ts       Game rooms with adaptive bot difficulty + mercy rounds
 services/prover/
-  core/                 Rust sim (fixed-point i32, single source of truth, 52 tests)
+  core/                 Rust sim (fixed-point i32, single source of truth, 49 tests)
   wasm/                 WASM crate — wasm-bindgen wrapper (used by client + server)
   guest/                RISC Zero guest (multi-round, ~234K cycles/round)
   host/                 Orchestration (monolithic + Boundless modes)
-contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
+contracts/chickenz/     Soroban game contract + Groth16 verification (deployed, 20 tests)
 ```
 
 ---

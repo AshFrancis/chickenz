@@ -16,13 +16,13 @@ Competitive 2D multiplayer platformer shooter with ZK-provable game outcomes set
 ```
 packages/sim/           Deterministic game logic (pure TS, no I/O, 64 tests)
 apps/client/            Phaser renderer, lobby UI, wallet connect
-services/server/        Bun WebSocket server — matchmaking, rooms, ELO, bots
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO, bots (311 tests)
 services/prover/
-  core/                 Rust fixed-point sim (i32, 50 tests, single source of truth)
+  core/                 Rust fixed-point sim (i32, 49 tests, single source of truth)
   wasm/                 WASM build of core (used by client + server)
   guest/                RISC Zero guest — multi-round proof (2 winning rounds)
   host/                 Orchestration (monolithic + Boundless)
-contracts/chickenz/     Soroban game contract (deployed on testnet)
+contracts/chickenz/     Soroban game contract (deployed on testnet, 20 tests)
 scripts/                deploy.sh, prove.sh, start-match.sh
 ```
 
@@ -43,7 +43,9 @@ pnpm build:wasm
 
 # Tests
 bun test packages/sim                                          # 64 TS sim tests
-cargo test -p chickenz-core --manifest-path services/prover/Cargo.toml # 50 Rust prover tests
+cargo test -p chickenz-core --manifest-path services/prover/Cargo.toml # 49 Rust core tests
+bun test services/server                                               # 311 server tests
+cd contracts/chickenz && cargo test                                     # 20 Soroban contract tests
 
 # Lint & format
 pnpm lint                  # ESLint (errors on any, unused vars, floating promises)

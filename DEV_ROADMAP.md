@@ -19,7 +19,7 @@
 
 ## Phase 3 — RISC Zero ZK Prover ✅
 
-- Rust sim core (single source of truth): 52 tests, compiled to WASM + RISC-V
+- Rust sim core (single source of truth): 49 tests, compiled to WASM + RISC-V
 - Fixed-point i32 arithmetic (8 frac bits) — eliminates f64 soft-float in zkVM
 - **Multi-round proof**: replays both winning rounds (~468K cycles total with SHA-256 precompile)
 - Raw byte I/O: `env::read_slice` / `env::commit_slice` (no serde)

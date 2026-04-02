@@ -54,8 +54,14 @@ Open `http://localhost:5173` in two browser tabs to play against yourself. Click
 # TypeScript sim tests (64 tests)
 bun test packages/sim
 
-# Rust prover tests (52 tests)
+# Rust core tests (49 tests)
 cd services/prover && cargo test -p chickenz-core
+
+# Server tests (311 tests)
+bun test services/server
+
+# Soroban contract tests (20 tests)
+cd contracts/chickenz && cargo test
 ```
 
 ## How It Works
@@ -78,13 +84,13 @@ The ZK proof verifies that:
 ```
 packages/sim/           Deterministic game logic (TypeScript, 64 tests)
 apps/client/            Phaser 2D renderer, lobby UI, wallet connect
-services/server/        Bun WebSocket server — matchmaking, rooms, ELO, transcripts
+services/server/        Bun WebSocket server — matchmaking, rooms, ELO, transcripts (311 tests)
 services/prover/
-  core/                 Rust fixed-point sim (i32, 52 tests, single source of truth)
+  core/                 Rust fixed-point sim (i32, 49 tests, single source of truth)
   wasm/                 WASM build of core (used by client + server)
   guest/                RISC Zero guest — multi-round proof (replays 2 winning rounds)
   host/                 Orchestration (monolithic + Boundless modes)
-contracts/chickenz/     Soroban game contract + Groth16 verification (deployed)
+contracts/chickenz/     Soroban game contract + Groth16 verification (deployed, 20 tests)
 ```
 
 ### ZK Proving Pipeline
@@ -109,7 +115,7 @@ The game sim runs at 60Hz for 30 seconds per round (1800 ticks). A best-of-3 mat
 
 | Contract | Address |
 |---|---|
-| Chickenz Game | `CDYU5GFNDBIFYWLW54QV3LPDNQTER6ID3SK4QCCBVUY7NU76ESBP7LZP` |
+| Chickenz Game | `CBRDPRKUK3NH2HXOWSNZPG2ZSXXXZBR7GCMN7WLHWINMLNDCJ7NSREKG` |
 | Groth16 Verifier | `CDUDXCLMNE7Q4BZJLLB3KACFOS55SS55GSQW2UYHDUXTJKZUDDAJYCIH` |
 | Game Hub | `CB4VZAT2U3UC6XFK3N23SKRF2NDCMP3QHJYMCHHFMZO7MRQO6DQ2EMYG` |
 
