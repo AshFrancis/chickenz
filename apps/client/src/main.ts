@@ -1,17 +1,15 @@
 import Phaser from "phaser";
 import { gameConfig, recalcDimensions } from "./game";
 import { GameScene } from "./scenes/GameScene";
-import { friendlyKeyName, type KeyBindings } from "./input/InputManager";
 import { TouchControls } from "./input/TouchControls";
 import { Tutorial } from "./tutorial/Tutorial";
 import { initChickenzWasm } from "./wasm";
 
 import {
   NetworkManager,
-  type RoomInfo,
   type GameMode,
 } from "./net/NetworkManager";
-import { RegionManager, type RegionPing, type RegionRoomInfo } from "./net/RegionManager";
+import { RegionManager, type RegionPing } from "./net/RegionManager";
 import { getRegions, type RegionConfig } from "./net/regions";
 import type { MatchRecord } from "./types";
 import {
@@ -37,25 +35,28 @@ import {
   renderTournamentLobby,
   type TournamentPanelDeps,
 } from "./ui/TournamentPanel";
+import { session } from "./session";
+import { initSettingsPanel } from "./ui/SettingsPanel";
+import { initWalletController } from "./ui/WalletController";
+import { initLobbyPanel } from "./ui/LobbyPanel";
 
 const NUM_CHARACTERS = 4;
-const CHARACTER_NAMES = ["NINJA FROG", "MASK DUDE", "PINK MAN", "VIRTUAL GUY"];
 
 // ── Character preferences (home/away) ────────────────────────────────────────
-let homeCharacter = parseInt(localStorage.getItem("chickenz-home-char") ?? "0", 10);
-let awayCharacter = parseInt(localStorage.getItem("chickenz-away-char") ?? "1", 10);
-if (!Number.isFinite(homeCharacter) || homeCharacter < 0 || homeCharacter >= NUM_CHARACTERS) homeCharacter = 0;
-if (!Number.isFinite(awayCharacter) || awayCharacter < 0 || awayCharacter >= NUM_CHARACTERS) awayCharacter = 1;
-if (awayCharacter === homeCharacter) awayCharacter = (homeCharacter + 1) % NUM_CHARACTERS;
-let pendingCharacter = homeCharacter; // character chosen for next match
+{
+  let h = parseInt(localStorage.getItem("chickenz-home-char") ?? "0", 10);
+  let a = parseInt(localStorage.getItem("chickenz-away-char") ?? "1", 10);
+  if (!Number.isFinite(h) || h < 0 || h >= NUM_CHARACTERS) h = 0;
+  if (!Number.isFinite(a) || a < 0 || a >= NUM_CHARACTERS) a = 1;
+  if (a === h) a = (h + 1) % NUM_CHARACTERS;
+  session.homeCharacter = h;
+  session.awayCharacter = a;
+  session.pendingCharacter = h;
+}
 import {
   initPasskeyKit,
   connectWallet,
-  createWallet,
-  promptConnect,
-  disconnectWallet,
   getConnectedAddress,
-  getLastAuthProof,
   settleMatch,
 } from "./stellar";
 
@@ -125,7 +126,7 @@ const standingsList = document.getElementById("standings-list") as HTMLDivElemen
 let currentTournamentSlot = -1; // our slot in the tournament
 let _currentTournamentHostSlot = -1;
 
-// Tournament panel dependency object (lazily captures networkManager via closures)
+// Tournament panel dependency object (lazily captures session.session.networkManager via closures)
 const tournamentDeps: TournamentPanelDeps = {
   tournamentOverlay,
   bracketOverlay,
@@ -136,10 +137,10 @@ const tournamentDeps: TournamentPanelDeps = {
   tournamentCode,
   tournamentStatus,
   tournamentPlayers,
-  onToggleRole: () => networkManager?.sendToggleRole(),
-  onUpdateConfig: (config) => networkManager?.sendUpdateTournamentConfig(config),
-  onStartTournament: () => networkManager?.sendStartTournament(),
-  onCloseLobby: () => closeLobby(),
+  onToggleRole: () => session.networkManager?.sendToggleRole(),
+  onUpdateConfig: (config) => session.networkManager?.sendUpdateTournamentConfig(config),
+  onStartTournament: () => session.networkManager?.sendStartTournament(),
+  onCloseLobby: () => lobbyAPI.close(),
 };
 
 // Match detail overlay
@@ -176,27 +177,19 @@ window.addEventListener("resize", () => {
   }, 200);
 });
 
-// ── Session state ──────────────────────────────────────────────────────────────
-
-let networkManager: NetworkManager | null = null;
-let currentUsername = "";
-let currentMode: GameMode = "casual";
-let currentTournamentId: string | null = null;
-let tournamentSpectating = false;
-let inTutorialFlow = false; // true while new user is in tutorial + username prompt
-
-// ── Queued actions (executed once connected) ──────────────────────────────────
-let pendingQuickplay = false; // true if user clicked Quick Play before connected
+// ── Session state lives in session.ts ─────────────────────────────────────────
+// (session.networkManager, session.currentUsername, session.currentMode, session.currentTournamentId,
+//  session.tournamentSpectating, session.inTutorialFlow, session.pendingQuickplay, session.activeRegionId,
+//  session.lastVerifiedAddr, session.verifyInProgress, session.homeCharacter, session.awayCharacter, session.pendingCharacter)
 
 // ── Region Manager ────────────────────────────────────────────────────────────
 
 const regionManager = new RegionManager(getRegions(), {
-  onRoomsChanged: (rooms) => renderMergedRoomList(rooms),
+  onRoomsChanged: (rooms) => lobbyAPI.renderMergedRooms(rooms),
   onPingsUpdated: (pings) => updateRegionUI(pings),
 });
 
-// Track which region the active game connection is to
-let activeRegionId = "";
+// (session.activeRegionId lives in session.session.activeRegionId)
 
 // Region selector DOM elements
 const regionBtn = document.getElementById("btn-region") as HTMLButtonElement;
@@ -257,11 +250,11 @@ document.addEventListener("click", () => {
 regionDropdown.addEventListener("click", (e) => e.stopPropagation());
 
 function switchToRegion(region: RegionConfig): Promise<void> {
-  if (activeRegionId === region.id && networkManager?.connected) return Promise.resolve();
-  activeRegionId = region.id;
+  if (session.activeRegionId === region.id && session.networkManager?.connected) return Promise.resolve();
+  session.activeRegionId = region.id;
   regionManager.activeRegionId = region.id;
   // Invalidate verification state — different server means new challenge
-  lastVerifiedAddr = null;
+  session.lastVerifiedAddr = null;
   // Update region UI immediately
   regionFlag.textContent = region.flag;
   regionName.textContent = region.name;
@@ -277,18 +270,18 @@ function switchToRegion(region: RegionConfig): Promise<void> {
 
 /** Execute any actions the user attempted before the server connection was ready. */
 function flushPendingActions() {
-  if (pendingQuickplay && networkManager?.connected) {
-    pendingQuickplay = false;
-    pendingCharacter = homeCharacter;
-    networkManager.sendQuickplay(currentMode, pendingCharacter, awayCharacter);
+  if (session.pendingQuickplay && session.networkManager?.connected) {
+    session.pendingQuickplay = false;
+    session.pendingCharacter = session.homeCharacter;
+    session.networkManager.sendQuickplay(session.currentMode, session.pendingCharacter, session.awayCharacter);
     lobbyStatus.textContent = "";
-    setLobbyButtons(false);
+    lobbyAPI.setButtons(false);
   }
 }
 
 function saveUsername(name: string) {
   localStorage.setItem("chickenz-username", name);
-  currentUsername = name;
+  session.currentUsername = name;
   topBarUsername.textContent = name;
 }
 
@@ -303,7 +296,7 @@ function deferBGMStart() {
     window.removeEventListener("keydown", startBGMOnce);
     const scene = getGameScene();
     if (scene) {
-      applyAudioSettings(scene);
+      settingsAPI.applyAudioSettings(scene);
       scene.startBGM();
     }
   };
@@ -314,7 +307,7 @@ function deferBGMStart() {
 // Init gate — returning users go straight to lobby, new users get tutorial first
 {
   const name = getOrCreateUsername();
-  currentUsername = name;
+  session.currentUsername = name;
   topBarUsername.textContent = name;
 
   // Init regions: connect to cached region instantly, measure pings in background
@@ -325,7 +318,7 @@ function deferBGMStart() {
     // 1. Try cached home region for instant connect
     const cached = regionManager.getCachedHomeRegion();
     if (cached) {
-      activeRegionId = cached.id;
+      session.activeRegionId = cached.id;
       regionManager.activeRegionId = cached.id;
       await connectToServer(cached.wsUrl);
       flushPendingActions();
@@ -339,8 +332,8 @@ function deferBGMStart() {
     //    switch to the correct region; switching here would kill the game connection)
     if (!hasJoinParam) {
       const bestRegion = regionManager.getBestRegion();
-      if (bestRegion.id !== activeRegionId) {
-        activeRegionId = bestRegion.id;
+      if (bestRegion.id !== session.activeRegionId) {
+        session.activeRegionId = bestRegion.id;
         regionManager.activeRegionId = bestRegion.id;
         await connectToServer(bestRegion.wsUrl);
         if (!cached) flushPendingActions();
@@ -368,7 +361,7 @@ function deferBGMStart() {
   initPasskeyKit()
     .then(() => connectWallet())
     .catch((err) => console.warn("[wallet]", err))
-    .finally(() => updateWalletUI());
+    .finally(() => walletAPI.updateWalletUI());
 
   // Init touch controls + tutorial
   if (isTouchDevice) touchControls.init();
@@ -376,7 +369,7 @@ function deferBGMStart() {
 
   // New users: show tutorial prompt
   if (Tutorial.shouldShow()) {
-    inTutorialFlow = true;
+    session.inTutorialFlow = true;
     const tutorialOverlay = document.getElementById("tutorial-overlay")!;
     const tutorialPrompt = document.getElementById("tutorial-prompt")!;
     tutorialOverlay.style.display = "block";
@@ -384,7 +377,7 @@ function deferBGMStart() {
 
     const launchTutorial = () => {
       tutorialPrompt.style.display = "none";
-      closeLobby();
+      lobbyAPI.close();
       const startWhenReady = () => {
         const scene = getGameScene();
         if (!scene) {
@@ -396,9 +389,9 @@ function deferBGMStart() {
           () => {
             showUsernamePrompt();
           },
-          pendingCharacter,
+          session.pendingCharacter,
         );
-        applyAudioSettings(scene);
+        settingsAPI.applyAudioSettings(scene);
         if (isTouchDevice) touchControls.show();
         tutorial.start(() => {
           scene.stopTutorial();
@@ -413,7 +406,7 @@ function deferBGMStart() {
       Tutorial.markDone();
       tutorialOverlay.style.display = "none";
       tutorialPrompt.style.display = "none";
-      inTutorialFlow = false;
+      session.inTutorialFlow = false;
       showUsernamePrompt();
     });
   }
@@ -428,7 +421,7 @@ function showUsernamePrompt() {
   const error = document.getElementById("username-prompt-error")!;
   const confirmBtn = document.getElementById("btn-username-confirm") as HTMLButtonElement;
 
-  inTutorialFlow = true;
+  session.inTutorialFlow = true;
   overlay.style.display = "block";
   prompt.style.display = "flex";
   input.value = "";
@@ -452,11 +445,11 @@ function showUsernamePrompt() {
     saveUsername(val);
     prompt.style.display = "none";
     overlay.style.display = "none";
-    inTutorialFlow = false;
-    if (networkManager?.connected) {
-      networkManager.sendSetUsername(val);
+    session.inTutorialFlow = false;
+    if (session.networkManager?.connected) {
+      session.networkManager.sendSetUsername(val);
     }
-    openLobby();
+    lobbyAPI.open();
   };
 
   confirmBtn.addEventListener("click", submit);
@@ -467,151 +460,10 @@ function showUsernamePrompt() {
 
 // Wallet disconnect just updates UI — user keeps playing as casual
 
-// ── Wallet Connect ──────────────────────────────────────────────────────────
-
-let verifyInProgress: string | null = null; // prevent duplicate verify popups
-let lastVerifiedAddr: string | null = null;
-
-/** Get the per-region wallet token storage key. */
-function walletTokenKey(): string {
-  return `chickenz-wallet-token-${activeRegionId || "default"}`;
-}
-
-/** Try to revalidate using a stored token (no passkey prompt). */
-async function tryStoredToken(addr: string): Promise<boolean> {
-  if (!networkManager) return false;
-  try {
-    const raw = localStorage.getItem(walletTokenKey());
-    if (!raw) return false;
-    const stored = JSON.parse(raw) as { address: string; token: string };
-    if (stored.address !== addr || !stored.token) return false;
-    const res = await fetch(`${networkManager.httpOrigin}/api/wallet/revalidate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ address: addr, token: stored.token }),
-    });
-    const { verified } = await res.json();
-    if (verified) {
-      lastVerifiedAddr = addr;
-      return true;
-    }
-    // Token rejected — clear stale entry
-    localStorage.removeItem(walletTokenKey());
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/** Register wallet with server — sends passkey proof for cryptographic verification. */
-async function verifyWallet(addr: string): Promise<boolean> {
-  if (!networkManager) return false;
-  if (lastVerifiedAddr === addr) return true;
-  if (await tryStoredToken(addr)) return true;
-  if (verifyInProgress === addr) return false;
-  verifyInProgress = addr;
-  const origin = networkManager.httpOrigin;
-  try {
-    const proof = getLastAuthProof();
-    if (!proof || proof.address !== addr) {
-      console.warn("[wallet] No auth proof available for", addr);
-      return false;
-    }
-    const res = await fetch(`${origin}/api/wallet/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        address: addr,
-        credentialId: proof.credentialId,
-        ...(proof.publicKey ? { publicKey: proof.publicKey } : {}),
-        ...(proof.publicKey && proof.assertion ? { assertion: proof.assertion } : {}),
-      }),
-    });
-    const { verified, token } = await res.json();
-    if (verified) {
-      lastVerifiedAddr = addr;
-      if (token) {
-        localStorage.setItem(walletTokenKey(), JSON.stringify({ address: addr, token }));
-      }
-    }
-    return !!verified;
-  } catch (err) {
-    console.error("[wallet] Registration failed:", err);
-    return false;
-  } finally {
-    verifyInProgress = null;
-  }
-}
-
-function updateWalletUI() {
-  const addr = getConnectedAddress();
-  if (addr) {
-    topBarAddress.textContent = truncateAddress(addr);
-    walletLoginBtn.textContent = "Disconnect";
-    walletLoginBtn.classList.add("btn-warn");
-    walletLoginBtn.classList.remove("btn-primary");
-    walletLoginBtn.style.display = "";
-    walletRegisterBtn.style.display = "none";
-    modeRankedBtn.classList.remove("locked");
-    localStorage.setItem("chickenz-wallet-address", addr);
-    // Notify server of wallet address (verification deferred until ranked play)
-    networkManager?.sendSetWallet(addr);
-    // Re-render room list so ranked join buttons update
-    renderMergedRoomList(regionManager.getMergedRooms());
-  } else {
-    topBarAddress.textContent = "";
-    walletLoginBtn.textContent = "Log In";
-    walletLoginBtn.classList.remove("btn-warn");
-    walletLoginBtn.classList.add("btn-primary");
-    walletLoginBtn.style.display = "";
-    walletRegisterBtn.style.display = "";
-    // Notify server to clear wallet address and verified state
-    networkManager?.sendSetWallet("");
-    lastVerifiedAddr = null;
-    localStorage.removeItem(walletTokenKey());
-    localStorage.removeItem("chickenz-wallet-address");
-    // Leave ranked room/lobby if wallet disconnected
-    if (currentMode === "ranked") {
-      networkManager?.sendLeave();
-      setMode("casual");
-    }
-    modeRankedBtn.classList.add("locked");
-    // Re-render room list so ranked join buttons update
-    renderMergedRoomList(regionManager.getMergedRooms());
-  }
-}
-
-walletLoginBtn.addEventListener("click", () => {
-  if (getConnectedAddress()) {
-    void disconnectWallet();
-  } else {
-    void promptConnect().finally(() => updateWalletUI());
-  }
-});
-
-walletRegisterBtn.addEventListener("click", () => {
-  walletRegisterBtn.disabled = true;
-  walletRegisterBtn.textContent = "Deploying...";
-  walletLoginBtn.disabled = true;
-  walletLoginBtn.textContent = "creating account...";
-  walletLoginBtn.classList.add("pulsing");
-  void createWallet(getOrCreateUsername()).finally(() => {
-    walletRegisterBtn.disabled = false;
-    walletRegisterBtn.textContent = "Register";
-    walletLoginBtn.disabled = false;
-    walletLoginBtn.classList.remove("pulsing");
-    updateWalletUI();
-  });
-});
-
-window.addEventListener("walletChanged", () => {
-  updateWalletUI();
-});
-
 // ── Mode Toggle ───────────────────────────────────────────────────────────────
 
 function setMode(mode: GameMode) {
-  currentMode = mode;
+  session.currentMode = mode;
   localStorage.setItem("chickenz-mode", mode);
   modeCasualBtn.classList.toggle("active", mode === "casual");
   modeRankedBtn.classList.toggle("active", mode === "ranked");
@@ -621,7 +473,7 @@ function setMode(mode: GameMode) {
 {
   const saved = localStorage.getItem("chickenz-mode") as GameMode | null;
   if (saved === "ranked" || saved === "casual") {
-    currentMode = saved;
+    session.currentMode = saved;
     modeCasualBtn.classList.toggle("active", saved === "casual");
     modeRankedBtn.classList.toggle("active", saved === "ranked");
   }
@@ -639,8 +491,6 @@ modeRankedBtn.addEventListener("click", () => {
 
 // ── Settings Panel ────────────────────────────────────────────────────────────
 
-let settingsOpen = false;
-
 buildTiledFrame(document.getElementById("settings-frame")!, document.getElementById("settings-card")!);
 buildTiledFrame(document.getElementById("tutorial-prompt-frame")!, document.getElementById("tutorial-prompt-card")!);
 buildTiledFrame(document.getElementById("username-prompt-frame")!, document.getElementById("username-prompt-card")!);
@@ -653,47 +503,34 @@ if (versionEl) {
   versionEl.textContent = `Version: ${__COMMIT_HASH__} | ${__COMMIT_DATE__}`;
 }
 
-function openSettings() {
-  settingsOpen = true;
-  settingsOverlay.classList.add("visible");
-  refreshKeyBindingUI();
-  // Sync slider/checkbox values from localStorage
-  const bgm = parseInt(localStorage.getItem("chickenz-bgm-volume") ?? "10", 10);
-  const sfx = parseInt(localStorage.getItem("chickenz-sfx-volume") ?? "80", 10);
-  sliderBGM.value = String(bgm);
-  valBGM.textContent = String(bgm);
-  sliderSFX.value = String(sfx);
-  valSFX.textContent = String(sfx);
-  checkDynamicZoom.checked = localStorage.getItem("chickenz-dynamic-zoom") !== "false";
-  checkMusic.checked = localStorage.getItem("chickenz-music-muted") !== "true";
-  settingsUsername.value = currentUsername;
-  settingsUsernameError.textContent = "";
-  updateCharUI();
-}
-
-function closeSettings() {
-  settingsOpen = false;
-  settingsOverlay.classList.remove("visible");
-  // Cancel any active key listener
-  if (listeningBtn) {
-    listeningBtn.classList.remove("listening");
-    listeningBtn = null;
-    listeningAction = null;
-  }
-}
-
-settingsBtn.addEventListener("click", () => {
-  if (settingsOpen) closeSettings();
-  else openSettings();
-});
-settingsClose.addEventListener("click", closeSettings);
-
-// Click outside settings card to close
-settingsOverlay.addEventListener("click", (e) => {
-  if (e.target === settingsOverlay) closeSettings();
+const settingsAPI = initSettingsPanel({
+  settingsBtn,
+  settingsOverlay,
+  settingsClose,
+  btnResetKeys,
+  sliderBGM,
+  sliderSFX,
+  valBGM,
+  valSFX,
+  checkDynamicZoom,
+  checkMusic,
+  settingsUsername,
+  btnSaveUsername,
+  settingsUsernameError,
+  muteBtn,
+  fullscreenBtn,
+  charHomeName: document.getElementById("char-home-name") as HTMLSpanElement,
+  charAwayName: document.getElementById("char-away-name") as HTMLSpanElement,
+  matchDetailOverlay,
+  getGameScene,
+  getNetworkManager: () => session.networkManager,
+  onSaveUsername: (name) => {
+    session.currentUsername = name;
+    topBarUsername.textContent = name;
+  },
 });
 
-// Close settings/detail on Escape
+// Close settings/detail on Escape (multi-overlay handler stays in main.ts)
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (matchDetailOverlay.classList.contains("visible")) {
@@ -701,322 +538,24 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       return;
     }
-    if (settingsOpen) {
-      closeSettings();
+    if (settingsAPI.isOpen()) {
+      settingsAPI.close();
       e.preventDefault();
     }
   }
 });
-
-// ── Change Username (Settings) ────────────────────────────────────────────────
-
-function saveSettingsUsername() {
-  const name = settingsUsername.value.trim();
-  if (!name || name.length > 7) {
-    settingsUsernameError.textContent = "Username must be 1-7 characters.";
-    return;
-  }
-  if (!/^[a-zA-Z0-9_]+$/.test(name)) {
-    settingsUsernameError.textContent = "Letters, numbers, underscore only.";
-    return;
-  }
-  settingsUsernameError.textContent = "";
-  currentUsername = name;
-  topBarUsername.textContent = name;
-  localStorage.setItem("chickenz-username", name);
-  if (networkManager?.connected) {
-    networkManager.sendSetUsername(name);
-  }
-  settingsUsernameError.style.color = "#66bb6a";
-  settingsUsernameError.textContent = "Saved!";
-  setTimeout(() => {
-    settingsUsernameError.textContent = "";
-    settingsUsernameError.style.color = "#ef5350";
-  }, 1500);
-}
-
-btnSaveUsername.addEventListener("click", saveSettingsUsername);
-settingsUsername.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") saveSettingsUsername();
-  e.stopPropagation(); // prevent game keybinds while typing
-});
-settingsUsername.addEventListener("keyup", (e) => e.stopPropagation());
-
-// ── Key Rebinding ─────────────────────────────────────────────────────────────
-
-let listeningBtn: HTMLButtonElement | null = null;
-let listeningAction: string | null = null;
-let listeningSlot: number = 0;
-
-function getInputManager() {
-  const scene = getGameScene();
-  return scene ? scene.inputManager : null;
-}
-
-function refreshKeyBindingUI() {
-  const im = getInputManager();
-  if (!im) return;
-  const bindings = im.getBindings();
-  document.querySelectorAll<HTMLButtonElement>(".key-btn").forEach((btn) => {
-    const action = btn.dataset.action as keyof KeyBindings | undefined;
-    const slot = parseInt(btn.dataset.slot ?? "0", 10) as 0 | 1;
-    if (action && bindings[action]) {
-      btn.textContent = friendlyKeyName(bindings[action][slot]);
-    }
-  });
-}
-
-document.querySelectorAll<HTMLButtonElement>(".key-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    // Cancel any previous listener
-    if (listeningBtn) listeningBtn.classList.remove("listening");
-
-    listeningBtn = btn;
-    listeningAction = btn.dataset.action ?? null;
-    listeningSlot = parseInt(btn.dataset.slot ?? "0", 10);
-    btn.classList.add("listening");
-    btn.textContent = "...";
-  });
-});
-
-window.addEventListener(
-  "keydown",
-  (e) => {
-    if (!listeningBtn || !listeningAction) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    // Ignore modifier-only keys
-    if (["Shift", "Control", "Alt", "Meta"].includes(e.key)) return;
-
-    const im = getInputManager();
-    if (!im) return;
-
-    const bindings = im.getBindings();
-    const newCode = e.code;
-    const actions: (keyof KeyBindings)[] = ["left", "right", "jump", "shoot", "taunt"];
-
-    // Duplicate detection: if another slot already has this key, clear it
-    for (const action of actions) {
-      for (let s = 0; s < 2; s++) {
-        if (bindings[action][s] === newCode) {
-          // Don't clear the slot we're about to set
-          if (action === listeningAction && s === listeningSlot) continue;
-          bindings[action][s] = "";
-        }
-      }
-    }
-
-    bindings[listeningAction as keyof KeyBindings][listeningSlot] = newCode;
-    im.setBindings(bindings);
-
-    listeningBtn.classList.remove("listening");
-    listeningBtn = null;
-    listeningAction = null;
-    refreshKeyBindingUI();
-  },
-  { capture: true },
-);
-
-// Capture mouse buttons during rebinding
-window.addEventListener(
-  "mousedown",
-  (e) => {
-    if (!listeningBtn || !listeningAction) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    const im = getInputManager();
-    if (!im) return;
-
-    const bindings = im.getBindings();
-    const newCode = `Mouse${e.button}`;
-    const actions: (keyof KeyBindings)[] = ["left", "right", "jump", "shoot", "taunt"];
-
-    for (const action of actions) {
-      for (let s = 0; s < 2; s++) {
-        if (bindings[action][s] === newCode) {
-          if (action === listeningAction && s === listeningSlot) continue;
-          bindings[action][s] = "";
-        }
-      }
-    }
-
-    bindings[listeningAction as keyof KeyBindings][listeningSlot] = newCode;
-    im.setBindings(bindings);
-
-    listeningBtn.classList.remove("listening");
-    listeningBtn = null;
-    listeningAction = null;
-    refreshKeyBindingUI();
-
-    // Eat the follow-up click so it doesn't re-enter listen mode on the button
-    window.addEventListener(
-      "click",
-      (ev) => {
-        ev.stopPropagation();
-        ev.preventDefault();
-      },
-      { capture: true, once: true },
-    );
-  },
-  { capture: true },
-);
-
-btnResetKeys.addEventListener("click", () => {
-  const im = getInputManager();
-  if (!im) return;
-  im.resetBindings();
-  refreshKeyBindingUI();
-});
-
-// ── Volume Sliders ────────────────────────────────────────────────────────────
-
-sliderBGM.addEventListener("input", () => {
-  const val = parseInt(sliderBGM.value, 10);
-  valBGM.textContent = String(val);
-  localStorage.setItem("chickenz-bgm-volume", String(val));
-  const scene = getGameScene();
-  if (scene) scene.setBGMVolume(val / 100);
-});
-
-sliderSFX.addEventListener("input", () => {
-  const val = parseInt(sliderSFX.value, 10);
-  valSFX.textContent = String(val);
-  localStorage.setItem("chickenz-sfx-volume", String(val));
-  const scene = getGameScene();
-  if (scene) scene.setSFXVolume(val / 100);
-});
-
-// ── Music Toggle ──────────────────────────────────────────────────────────────
-
-// Music note icon (unmuted) / music note + strikethrough (muted)
-const MUSIC_ICON_ON = '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>';
-const MUSIC_ICON_OFF =
-  '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/><line x1="2" y1="12" x2="22" y2="12" stroke="white" stroke-width="2.5" opacity="0.5"/>';
-
-// Audio migration: old "chickenz-muted" → separate "chickenz-music-muted"
-{
-  if (!localStorage.getItem("chickenz-audio-migrated")) {
-    const oldMuted = localStorage.getItem("chickenz-muted");
-    // If old key was explicitly "false" (user unmuted), keep music ON
-    if (oldMuted === "false") {
-      localStorage.setItem("chickenz-music-muted", "false");
-    } else {
-      // Default: music OFF for new users
-      localStorage.setItem("chickenz-music-muted", "true");
-    }
-    localStorage.removeItem("chickenz-muted");
-    localStorage.setItem("chickenz-audio-migrated", "1");
-  }
-}
-
-function updateMusicIcon(muted: boolean) {
-  const svg = document.getElementById("mute-icon");
-  if (svg) svg.innerHTML = muted ? MUSIC_ICON_OFF : MUSIC_ICON_ON;
-  muteBtn.title = muted ? "Music Off" : "Mute Music";
-}
-
-function setMusicMuted(muted: boolean) {
-  localStorage.setItem("chickenz-music-muted", String(muted));
-  checkMusic.checked = !muted;
-  updateMusicIcon(muted);
-  const scene = getGameScene();
-  if (scene) scene.setMusicMuted(muted);
-}
-
-checkMusic.addEventListener("change", () => setMusicMuted(!checkMusic.checked));
-muteBtn.addEventListener("click", () => {
-  const currentlyMuted = localStorage.getItem("chickenz-music-muted") !== "false";
-  setMusicMuted(!currentlyMuted);
-  // If unmuting and BGM volume was 0, set a reasonable default
-  if (currentlyMuted) {
-    const bgm = parseInt(localStorage.getItem("chickenz-bgm-volume") ?? "10", 10);
-    if (bgm === 0) {
-      localStorage.setItem("chickenz-bgm-volume", "10");
-      sliderBGM.value = "10";
-      valBGM.textContent = "10";
-      const scene = getGameScene();
-      if (scene) scene.setBGMVolume(0.1);
-    }
-  }
-  muteBtn.blur();
-});
-
-// Restore saved music state
-{
-  const musicMuted = localStorage.getItem("chickenz-music-muted") !== "false";
-  checkMusic.checked = !musicMuted;
-  updateMusicIcon(musicMuted);
-}
-
-// ── Display Settings ──────────────────────────────────────────────────────────
-
-checkDynamicZoom.addEventListener("change", () => {
-  localStorage.setItem("chickenz-dynamic-zoom", String(checkDynamicZoom.checked));
-  const scene = getGameScene();
-  if (scene) scene.setDynamicZoom(checkDynamicZoom.checked);
-});
-
-// ── Fullscreen ────────────────────────────────────────────────────────────────
-
-fullscreenBtn.addEventListener("click", () => {
-  if (document.fullscreenElement) {
-    void document.exitFullscreen();
-  } else {
-    void document.documentElement.requestFullscreen();
-  }
-  fullscreenBtn.blur();
-});
-
-document.addEventListener("fullscreenchange", () => {
-  fullscreenBtn.textContent = document.fullscreenElement ? "\u2716" : "\u26F6";
-  fullscreenBtn.title = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen";
-});
-
-// ── Character Preference Buttons ─────────────────────────────────────────────
-
-const charHomeName = document.getElementById("char-home-name") as HTMLSpanElement;
-const charAwayName = document.getElementById("char-away-name") as HTMLSpanElement;
-
-function updateCharUI() {
-  charHomeName.textContent = CHARACTER_NAMES[homeCharacter] ?? "???";
-  charAwayName.textContent = CHARACTER_NAMES[awayCharacter] ?? "???";
-}
-updateCharUI();
-
-function setHomeChar(idx: number) {
-  homeCharacter = ((idx % NUM_CHARACTERS) + NUM_CHARACTERS) % NUM_CHARACTERS;
-  if (homeCharacter === awayCharacter) awayCharacter = (homeCharacter + 1) % NUM_CHARACTERS;
-  localStorage.setItem("chickenz-home-char", String(homeCharacter));
-  localStorage.setItem("chickenz-away-char", String(awayCharacter));
-  pendingCharacter = homeCharacter;
-  updateCharUI();
-}
-
-function setAwayChar(idx: number) {
-  awayCharacter = ((idx % NUM_CHARACTERS) + NUM_CHARACTERS) % NUM_CHARACTERS;
-  if (awayCharacter === homeCharacter) awayCharacter = (awayCharacter + 1) % NUM_CHARACTERS;
-  localStorage.setItem("chickenz-away-char", String(awayCharacter));
-  updateCharUI();
-}
-
-document.getElementById("btn-home-prev")!.addEventListener("click", () => setHomeChar(homeCharacter - 1));
-document.getElementById("btn-home-next")!.addEventListener("click", () => setHomeChar(homeCharacter + 1));
-document.getElementById("btn-away-prev")!.addEventListener("click", () => setAwayChar(awayCharacter - 1));
-document.getElementById("btn-away-next")!.addEventListener("click", () => setAwayChar(awayCharacter + 1));
 
 // ── Back-to-lobby buttons ─────────────────────────────────────────────────────
 
 document.getElementById("btn-warmup-back")!.addEventListener("click", () => {
   const scene = getGameScene();
   if (scene?.isWarmup) scene.stopWarmup();
-  networkManager?.sendLeave();
-  openLobby();
+  session.networkManager?.sendLeave();
+  lobbyAPI.open();
 });
 
 document.getElementById("btn-add-bot")!.addEventListener("click", () => {
-  networkManager?.sendAddBot();
+  session.networkManager?.sendAddBot();
 });
 
 // Share/copy invite link button in warmup
@@ -1037,29 +576,20 @@ document.getElementById("btn-warmup-share")?.addEventListener("click", () => {
 });
 
 document.getElementById("btn-tournament-back")!.addEventListener("click", () => {
-  networkManager?.sendLeave();
+  session.networkManager?.sendLeave();
   hideAllTournamentOverlays(tournamentDeps);
-  currentTournamentId = null;
+  session.currentTournamentId = null;
   currentTournamentSlot = -1;
   _currentTournamentHostSlot = -1;
-  tournamentSpectating = false;
-  openLobby();
+  session.tournamentSpectating = false;
+  lobbyAPI.open();
 });
-
-/** Apply saved audio settings to the game scene. */
-function applyAudioSettings(scene: GameScene) {
-  const bgm = parseInt(localStorage.getItem("chickenz-bgm-volume") ?? "10", 10);
-  const sfx = parseInt(localStorage.getItem("chickenz-sfx-volume") ?? "80", 10);
-  const musicMuted = localStorage.getItem("chickenz-music-muted") !== "false";
-  scene.setBGMVolume(bgm / 100);
-  scene.setSFXVolume(sfx / 100);
-  scene.setMusicMuted(musicMuted);
-}
 
 // Feed touch controls into InputManager each frame
 if (isTouchDevice) {
   const feedTouch = () => {
-    const im = getInputManager();
+    const scene = getGameScene();
+    const im = scene ? scene.inputManager : null;
     if (im) {
       im.setTouchState(touchControls.getTouchButtons(), touchControls.getAimX());
     }
@@ -1070,157 +600,46 @@ if (isTouchDevice) {
 
 // Tutorial is now driven by GameScene.update() — no separate rAF loop needed
 
-// ── Lobby tabs ────────────────────────────────────────────────────────────────
+// ── Wallet Controller ─────────────────────────────────────────────────────────
 
-let activeTab = "rooms";
-
-document.querySelectorAll(".lobby-tab").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    const tabName = (tab as HTMLElement).dataset.tab!;
-    switchTab(tabName);
-  });
+const walletAPI = initWalletController({
+  topBarAddress,
+  walletLoginBtn,
+  walletRegisterBtn,
+  modeRankedBtn,
+  lobbyStatus,
+  matchHistoryList,
+  setMode,
+  renderRoomList: () => lobbyAPI.renderMergedRooms(regionManager.getMergedRooms()),
+  setLobbyButtons: (enabled) => lobbyAPI.setButtons(enabled),
 });
 
-function switchTab(tabName: string) {
-  activeTab = tabName;
-  document.querySelectorAll(".lobby-tab").forEach((t) => {
-    t.classList.remove("active");
-    t.setAttribute("aria-selected", "false");
-  });
-  document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("visible"));
-  const activeTabEl = document.querySelector(`.lobby-tab[data-tab="${tabName}"]`);
-  activeTabEl?.classList.add("active");
-  activeTabEl?.setAttribute("aria-selected", "true");
-  document.getElementById(`tab-${tabName}`)?.classList.add("visible");
+// ── Lobby Panel ───────────────────────────────────────────────────────────────
 
-  if (tabName === "leaderboard") fetchLeaderboard(leaderboardContent, currentUsername);
-  if (tabName === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
-}
-
-// ── Lobby UI ───────────────────────────────────────────────────────────────────
-
-function openLobby() {
-  lobbyOverlay.classList.add("visible");
-  lobbyStatus.textContent = "";
-  joinCodeInput.value = "";
-  setLobbyButtons(true);
-  pendingQuickplay = false;
-
-  // Clear join code from URL bar and localStorage
-  history.replaceState(null, "", window.location.pathname);
-  localStorage.removeItem("chickenz-last-join-code");
-
-  // Hide touch controls and tutorial when returning to lobby
-  if (isTouchDevice) touchControls.hide();
-  if (tutorial.isActive) tutorial.hide();
-
-  if (networkManager?.connected) {
-    networkManager.sendListRooms();
-  }
-
-  if (activeTab === "leaderboard") fetchLeaderboard(leaderboardContent, currentUsername);
-  if (activeTab === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
-}
-
-function closeLobby() {
-  lobbyOverlay.classList.remove("visible");
-}
-
-function setLobbyButtons(enabled: boolean) {
-  quickplayBtn.disabled = !enabled;
-  createPublicBtn.disabled = !enabled;
-  createPrivateBtn.disabled = !enabled;
-  joinCodeBtn.disabled = !enabled;
-}
-
-function renderMergedRoomList(mergedRooms: RegionRoomInfo[]) {
-  roomListEl.innerHTML = "";
-
-  if (mergedRooms.length === 0) {
-    roomListEl.innerHTML = `<div id="lobby-empty">No public rooms yet. Create one or hit Quick Play!</div>`;
-    return;
-  }
-
-  const joinable = mergedRooms.filter((r) => r.room.status === "waiting");
-  const playing = mergedRooms.filter((r) => r.room.status === "playing");
-
-  for (const rr of joinable) {
-    roomListEl.appendChild(createRoomElement(rr.room, rr.regionId, rr.regionFlag));
-  }
-  for (const rr of playing) {
-    roomListEl.appendChild(createRoomElement(rr.room, rr.regionId, rr.regionFlag));
-  }
-}
-
-function createRoomElement(room: RoomInfo, roomRegionId?: string, roomRegionFlag?: string): HTMLDivElement {
-  const el = document.createElement("div");
-  el.className = "room-item";
-  const modeBadge =
-    room.mode === "ranked"
-      ? `<span class="mode-badge ranked">Ranked</span>`
-      : `<span class="mode-badge casual">Casual</span>`;
-  const isHome = roomRegionId === regionManager.homeRegionId;
-  const regionBadge = roomRegionFlag
-    ? `<span class="region-badge${isHome ? " home" : ""}">${escapeHtml(roomRegionFlag)}</span>`
-    : "";
-  const needsWalletTooltip = room.mode === "ranked" && room.status === "waiting" && !getConnectedAddress();
-  const joinButton =
-    room.status === "waiting"
-      ? needsWalletTooltip
-        ? `<span class="btn-join-wrapper"><button class="btn btn-primary btn-join" data-room-id="${escapeHtml(room.id)}">Join</button><span class="ranked-tooltip">Connect a wallet to play ranked</span></span>`
-        : `<button class="btn btn-primary btn-join" data-room-id="${escapeHtml(room.id)}">Join</button>`
-      : "";
-  const names = (room.playerNames ?? []).filter(Boolean).map(escapeHtml).join(" vs ");
-  const namesSpan = names ? `<span class="room-players">${names}</span>` : "";
-  el.innerHTML = `
-    <span>
-      <span class="room-name">${escapeHtml(room.name)}</span>
-      ${modeBadge}
-      ${regionBadge}
-      <span class="room-code">${escapeHtml(room.joinCode)}</span>
-      ${namesSpan}
-    </span>
-    <div class="room-info">
-      <span class="room-status ${room.status}">${room.status === "waiting" ? "Waiting (1/2)" : "In Progress (2/2)"}</span>
-      ${joinButton}
-    </div>
-  `;
-
-  const joinBtn = el.querySelector(".btn-join");
-  if (joinBtn) {
-    joinBtn.addEventListener("click", () => {
-      const targetRegion = roomRegionId ? regionManager.getRegionById(roomRegionId) : undefined;
-
-      const doJoin = () => {
-        if (!networkManager?.connected) return;
-        pendingCharacter = homeCharacter;
-        networkManager.sendJoinRoom(room.id, pendingCharacter, awayCharacter);
-        lobbyStatus.textContent = "Joining...";
-        setLobbyButtons(false);
-      };
-
-      // Switch region if room is on a different server
-      const needSwitch = targetRegion && roomRegionId !== activeRegionId;
-
-      if (room.mode === "ranked") {
-        void ensureRankedReady(true).then(async (ok) => {
-          if (!ok) return;
-          if (needSwitch) await switchToRegion(targetRegion);
-          doJoin();
-        });
-        return;
-      }
-
-      if (needSwitch) {
-        void switchToRegion(targetRegion).then(doJoin);
-      } else {
-        doJoin();
-      }
-    });
-  }
-
-  return el;
-}
+const lobbyAPI = initLobbyPanel({
+  lobbyOverlay,
+  lobbyStatus,
+  joinCodeInput,
+  quickplayBtn,
+  createPublicBtn,
+  createPrivateBtn,
+  joinCodeBtn,
+  roomListEl,
+  matchHistoryList,
+  leaderboardContent,
+  isTouchDevice,
+  getRegionManager: () => regionManager,
+  getTouchControls: () => touchControls,
+  getTutorial: () => tutorial,
+  switchToRegion,
+  onFetchLeaderboard: (container) => fetchLeaderboard(container, session.currentUsername),
+  onFetchMatchHistory: (container) => fetchMatchHistory(container, matchHistoryCallbacks()),
+  onJoinRoom: (_roomId, _regionId) => {
+    /* handled inside createRoomElement via sendJoinRoom */
+  },
+  ensureRankedReady: (force) => walletAPI.ensureRankedReady(force),
+  getConnectedAddress,
+});
 
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
@@ -1243,18 +662,18 @@ function matchHistoryCallbacks(): MatchHistoryCallbacks {
           }, 1500);
         });
     },
-    getActiveRegionId: () => activeRegionId,
+    getActiveRegionId: () => session.activeRegionId,
     getConnectedAddress: () => getConnectedAddress(),
   };
 }
 
 function startReplay(roomId: string, regionUrl?: string) {
-  const origin = regionUrl || networkManager?.httpOrigin;
+  const origin = regionUrl || session.networkManager?.httpOrigin;
   if (!origin) return;
   fetch(`${origin}/transcript/${roomId}`)
     .then((r) => r.json())
     .then((data: TranscriptResponse) => {
-      closeLobby();
+      lobbyAPI.close();
       const scene = getGameScene();
       if (scene) {
         scene.startMultiRoundReplay(data.rounds, data.usernames, data.characters);
@@ -1266,7 +685,7 @@ function startReplay(roomId: string, regionUrl?: string) {
 }
 
 function downloadTranscript(roomId: string, regionUrl?: string) {
-  const origin = regionUrl || networkManager?.httpOrigin;
+  const origin = regionUrl || session.networkManager?.httpOrigin;
   if (!origin) return;
   fetch(`${origin}/transcript/${roomId}`)
     .then((r) => r.json())
@@ -1287,7 +706,7 @@ function downloadTranscript(roomId: string, regionUrl?: string) {
 // ── Match Detail Modal ────────────────────────────────────────────────────────
 
 function openMatchDetail(matchId: string, regionUrl?: string) {
-  const origin = regionUrl || networkManager?.httpOrigin;
+  const origin = regionUrl || session.networkManager?.httpOrigin;
   if (!origin) return;
   fetch(`${origin}/api/matches/${matchId}/detail`)
     .then((r) => {
@@ -1313,50 +732,50 @@ function openMatchDetail(matchId: string, regionUrl?: string) {
 
 function connectToServer(url: string): Promise<void> {
   return new Promise<void>((resolveConnect) => {
-    if (networkManager) {
-      networkManager.disconnect();
+    if (session.networkManager) {
+      session.networkManager.disconnect();
     }
 
-    networkManager = new NetworkManager({
+    session.networkManager = new NetworkManager({
       onLobby(rooms) {
         // Feed into RegionManager for cross-region merged room list
-        regionManager.updateRoomsForRegion(activeRegionId, rooms);
+        regionManager.updateRoomsForRegion(session.activeRegionId, rooms);
       },
 
       onWaiting(roomId, roomName, joinCode) {
         // Suppress when in tournament (GameRoom sends "waiting" internally)
-        if (currentTournamentId) return;
+        if (session.currentTournamentId) return;
         // Show join code in URL bar so the address is a shareable link
         history.replaceState(null, "", "?join=" + joinCode);
         // Remember our own join code so refresh doesn't show "room not found"
         localStorage.setItem("chickenz-last-join-code", joinCode);
         // Hide bot button in ranked mode
         const botBtn = document.getElementById("btn-add-bot");
-        if (botBtn) botBtn.style.display = currentMode === "ranked" ? "none" : "";
+        if (botBtn) botBtn.style.display = session.currentMode === "ranked" ? "none" : "";
         const scene = getGameScene();
         if (scene) {
           scene.startWarmup(
             joinCode,
-            currentUsername,
+            session.currentUsername,
             () => {
-              closeLobby();
-              applyAudioSettings(scene);
+              lobbyAPI.close();
+              settingsAPI.applyAudioSettings(scene);
               // Show touch controls during gameplay
               if (isTouchDevice) touchControls.show();
             },
-            pendingCharacter,
+            session.pendingCharacter,
           );
         }
       },
 
       onMatched(playerId, seed, roomId, usernames, mapIndex, totalRounds, mode, characters) {
         // Suppress when in tournament (tournament_match_start handles this)
-        if (currentTournamentId) return;
+        if (session.currentTournamentId) return;
 
         const scene = getGameScene();
         if (!scene) return;
 
-        networkManager?.resetThrottle();
+        session.networkManager?.resetThrottle();
         // Don't close lobby yet — let the transition overlay cover the screen first
         // to prevent a flash of the uninitialized game scene
         const needCloseLobby = !scene.isWarmup;
@@ -1367,19 +786,19 @@ function connectToServer(url: string): Promise<void> {
           mapIndex,
           totalRounds,
           characters,
-          needCloseLobby ? closeLobby : undefined,
+          needCloseLobby ? () => lobbyAPI.close() : undefined,
         );
-        applyAudioSettings(scene);
+        settingsAPI.applyAudioSettings(scene);
         if (isTouchDevice) touchControls.show();
         scene.onLocalInput = (input, tick) => {
-          networkManager?.sendInput(input, tick);
+          session.networkManager?.sendInput(input, tick);
         };
       },
 
       onState(state, lastButtons) {
         const scene = getGameScene();
         if (scene) {
-          if (networkManager) scene.setNetworkRtt(networkManager.rtt);
+          if (session.networkManager) scene.setNetworkRtt(session.networkManager.rtt);
           scene.receiveState(state, lastButtons);
         }
       },
@@ -1390,14 +809,14 @@ function connectToServer(url: string): Promise<void> {
       },
 
       onRoundStart(round, seed, mapIndex) {
-        networkManager?.resetThrottle();
+        session.networkManager?.resetThrottle();
         const scene = getGameScene();
         if (scene) scene.startNewRound(seed, mapIndex, round);
       },
 
       onEnded(winner, _scores, _roundWins, _roomId, _mode) {
         // Suppress when in tournament (tournament_match_end handles this)
-        if (currentTournamentId) return;
+        if (session.currentTournamentId) return;
 
         const scene = getGameScene();
         if (scene) scene.endOnlineMatch(winner);
@@ -1406,11 +825,11 @@ function connectToServer(url: string): Promise<void> {
         // If we're on a foreign region (cross-region join), switch back to home
         const returnToLobby = async () => {
           const homeId = regionManager.homeRegionId;
-          if (homeId && homeId !== activeRegionId) {
+          if (homeId && homeId !== session.activeRegionId) {
             const homeRegion = regionManager.getRegionById(homeId);
             if (homeRegion) await switchToRegion(homeRegion);
           }
-          openLobby();
+          lobbyAPI.open();
         };
         setTimeout(() => {
           if (scene) {
@@ -1423,17 +842,17 @@ function connectToServer(url: string): Promise<void> {
 
       onError(message) {
         lobbyStatus.textContent = `Error: ${message}`;
-        setLobbyButtons(true);
+        lobbyAPI.setButtons(true);
       },
 
       onDisconnect() {
         lobbyStatus.textContent = "Disconnected from server. Reconnecting...";
-        setLobbyButtons(false);
+        lobbyAPI.setButtons(false);
         // Clean up tournament state
-        if (currentTournamentId) {
+        if (session.currentTournamentId) {
           hideAllTournamentOverlays(tournamentDeps);
-          currentTournamentId = null;
-          tournamentSpectating = false;
+          session.currentTournamentId = null;
+          session.tournamentSpectating = false;
           const scene = getGameScene();
           if (scene?.isSpectating) scene.stopSpectating();
         }
@@ -1441,17 +860,17 @@ function connectToServer(url: string): Promise<void> {
 
       onReconnect() {
         lobbyStatus.textContent = "";
-        setLobbyButtons(true);
+        lobbyAPI.setButtons(true);
         // Re-send identity so the server knows who we are
-        if (currentUsername) networkManager?.sendSetUsername(currentUsername);
+        if (session.currentUsername) session.networkManager?.sendSetUsername(session.currentUsername);
         const walletAddr = getConnectedAddress();
-        if (walletAddr) networkManager?.sendSetWallet(walletAddr);
+        if (walletAddr) session.networkManager?.sendSetWallet(walletAddr);
       },
 
       // ── Tournament callbacks ──────────────────────────────
       onTournamentLobby(msg) {
         const tlState = renderTournamentLobby(tournamentDeps, msg, currentTournamentSlot);
-        currentTournamentId = tlState.tournamentId;
+        session.currentTournamentId = tlState.tournamentId;
         _currentTournamentHostSlot = tlState.hostSlot;
         currentTournamentSlot = tlState.mySlot;
       },
@@ -1546,17 +965,17 @@ function connectToServer(url: string): Promise<void> {
             if (!scene) return;
 
             if (role === "fighter" && playerId !== undefined) {
-              tournamentSpectating = false;
-              networkManager?.resetThrottle();
+              session.tournamentSpectating = false;
+              session.networkManager?.resetThrottle();
               scene.startOnlineMatch(playerId, seed, usernames, mapIndex, totalRounds, characters);
-              applyAudioSettings(scene);
+              settingsAPI.applyAudioSettings(scene);
               scene.onLocalInput = (input, tick) => {
-                networkManager?.sendInput(input, tick);
+                session.networkManager?.sendInput(input, tick);
               };
             } else {
-              tournamentSpectating = true;
+              session.tournamentSpectating = true;
               scene.startSpectating(seed, usernames, mapIndex, totalRounds, characters);
-              applyAudioSettings(scene);
+              settingsAPI.applyAudioSettings(scene);
               spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
             }
           }, 2800),
@@ -1581,7 +1000,7 @@ function connectToServer(url: string): Promise<void> {
       onTournamentMatchEnd(matchIndex, matchLabel, winnerName, bracket) {
         const scene = getGameScene();
         if (scene) {
-          if (tournamentSpectating) {
+          if (session.tournamentSpectating) {
             scene.stopSpectating();
           } else {
             scene.endOnlineMatch(-1, true); // silent — bracket overlay shows result
@@ -1597,7 +1016,7 @@ function connectToServer(url: string): Promise<void> {
       onTournamentEnd(standings, _bracket) {
         const scene = getGameScene();
         if (scene) {
-          if (tournamentSpectating) scene.stopSpectating();
+          if (session.tournamentSpectating) scene.stopSpectating();
           else scene.endOnlineMatch(-1, true);
           scene.clearVisuals();
         }
@@ -1608,37 +1027,37 @@ function connectToServer(url: string): Promise<void> {
         // Return to lobby (and home region if cross-region) after 8s
         setTimeout(() => {
           hideAllTournamentOverlays(tournamentDeps);
-          currentTournamentId = null;
+          session.currentTournamentId = null;
           currentTournamentSlot = -1;
           _currentTournamentHostSlot = -1;
-          tournamentSpectating = false;
+          session.tournamentSpectating = false;
           void (async () => {
             const homeId = regionManager.homeRegionId;
-            if (homeId && homeId !== activeRegionId) {
+            if (homeId && homeId !== session.activeRegionId) {
               const homeRegion = regionManager.getRegionById(homeId);
               if (homeRegion) await switchToRegion(homeRegion);
             }
-            openLobby();
+            lobbyAPI.open();
           })();
         }, 8000);
       },
     });
 
-    networkManager.connect(url);
+    session.networkManager.connect(url);
 
     // Once connected, set username and open lobby
     let resolved = false;
     const waitForConnect = setInterval(() => {
-      if (networkManager?.connected) {
+      if (session.networkManager?.connected) {
         clearInterval(waitForConnect);
-        if (currentUsername) {
-          networkManager.sendSetUsername(currentUsername);
+        if (session.currentUsername) {
+          session.networkManager.sendSetUsername(session.currentUsername);
         }
         const walletAddr = getConnectedAddress();
         if (walletAddr) {
-          networkManager.sendSetWallet(walletAddr);
+          session.networkManager.sendSetWallet(walletAddr);
         }
-        if (!inTutorialFlow) openLobby();
+        if (!session.inTutorialFlow) lobbyAPI.open();
         if (!resolved) {
           resolved = true;
           resolveConnect();
@@ -1649,9 +1068,9 @@ function connectToServer(url: string): Promise<void> {
     // Safety timeout: stop polling after 10s and show error
     setTimeout(() => {
       clearInterval(waitForConnect);
-      if (!networkManager?.connected) {
+      if (!session.networkManager?.connected) {
         lobbyStatus.textContent = "Could not connect to server. Check your connection and try again.";
-        setLobbyButtons(true);
+        lobbyAPI.setButtons(true);
       }
       if (!resolved) {
         resolved = true;
@@ -1663,75 +1082,47 @@ function connectToServer(url: string): Promise<void> {
 
 // ── Button handlers ────────────────────────────────────────────────────────────
 
-/** Verify wallet for ranked play. Returns true if verified or not needed (casual + not forced). */
-async function ensureRankedReady(forceVerify = false): Promise<boolean> {
-  if (!forceVerify && currentMode !== "ranked") return true;
-  const addr = getConnectedAddress();
-  if (!addr) {
-    lobbyStatus.textContent = "Connect a wallet to play ranked.";
-    return false;
-  }
-  if (lastVerifiedAddr === addr) return true;
-  lobbyStatus.textContent = "Registering wallet...";
-  setLobbyButtons(false);
-  try {
-    const ok = await verifyWallet(addr);
-    setLobbyButtons(true);
-    if (ok) {
-      lobbyStatus.textContent = "";
-    } else {
-      lobbyStatus.textContent = "Wallet registration failed. Try again or switch to Casual.";
-    }
-    return ok;
-  } catch (err) {
-    console.warn("[wallet] ensureRankedReady error:", err);
-    lobbyStatus.textContent = "Wallet registration failed. Please try again.";
-    setLobbyButtons(true);
-    return false;
-  }
-}
-
 quickplayBtn.addEventListener("click", () => {
-  void ensureRankedReady().then(async (ok) => {
+  void walletAPI.ensureRankedReady().then(async (ok) => {
     if (!ok) return;
     // Check if another reachable region already has a waiting room
-    const targetRegion = regionManager.findRegionWithWaitingRoom(currentMode);
-    if (targetRegion && targetRegion.id !== activeRegionId) {
+    const targetRegion = regionManager.findRegionWithWaitingRoom(session.currentMode);
+    if (targetRegion && targetRegion.id !== session.activeRegionId) {
       await switchToRegion(targetRegion);
     }
-    if (!networkManager?.connected) {
+    if (!session.networkManager?.connected) {
       // Queue for when connection is ready
-      pendingQuickplay = true;
+      session.pendingQuickplay = true;
       lobbyStatus.textContent = "Connecting...";
-      setLobbyButtons(false);
+      lobbyAPI.setButtons(false);
       return;
     }
-    pendingCharacter = homeCharacter;
-    networkManager.sendQuickplay(currentMode, pendingCharacter, awayCharacter);
+    session.pendingCharacter = session.homeCharacter;
+    session.networkManager.sendQuickplay(session.currentMode, session.pendingCharacter, session.awayCharacter);
     lobbyStatus.textContent = "";
-    setLobbyButtons(false);
+    lobbyAPI.setButtons(false);
   });
 });
 
 createPublicBtn.addEventListener("click", () => {
-  if (!networkManager?.connected) return;
-  void ensureRankedReady().then((ok) => {
-    if (!ok || !networkManager?.connected) return;
-    pendingCharacter = homeCharacter;
-    networkManager.sendCreate(false, currentMode, pendingCharacter, awayCharacter);
-    lobbyStatus.textContent = `Creating ${currentMode} public match...`;
-    setLobbyButtons(false);
+  if (!session.networkManager?.connected) return;
+  void walletAPI.ensureRankedReady().then((ok) => {
+    if (!ok || !session.networkManager?.connected) return;
+    session.pendingCharacter = session.homeCharacter;
+    session.networkManager.sendCreate(false, session.currentMode, session.pendingCharacter, session.awayCharacter);
+    lobbyStatus.textContent = `Creating ${session.currentMode} public match...`;
+    lobbyAPI.setButtons(false);
   });
 });
 
 createPrivateBtn.addEventListener("click", () => {
-  if (!networkManager?.connected) return;
-  void ensureRankedReady().then((ok) => {
-    if (!ok || !networkManager?.connected) return;
-    pendingCharacter = homeCharacter;
-    networkManager.sendCreate(true, currentMode, pendingCharacter, awayCharacter);
-    lobbyStatus.textContent = `Creating ${currentMode} private match...`;
-    setLobbyButtons(false);
+  if (!session.networkManager?.connected) return;
+  void walletAPI.ensureRankedReady().then((ok) => {
+    if (!ok || !session.networkManager?.connected) return;
+    session.pendingCharacter = session.homeCharacter;
+    session.networkManager.sendCreate(true, session.currentMode, session.pendingCharacter, session.awayCharacter);
+    lobbyStatus.textContent = `Creating ${session.currentMode} private match...`;
+    lobbyAPI.setButtons(false);
   });
 });
 
@@ -1746,8 +1137,8 @@ joinCodeBtn.addEventListener("click", () => {
     // Room mode unknown from code alone — verify wallet if connected but not yet
     // verified, so ranked rooms work. No-op if already verified or no wallet.
     const addr = getConnectedAddress();
-    if (addr && lastVerifiedAddr !== addr) {
-      const ok = await ensureRankedReady(true);
+    if (addr && session.lastVerifiedAddr !== addr) {
+      const ok = await walletAPI.ensureRankedReady(true);
       if (!ok) return;
     }
 
@@ -1757,15 +1148,15 @@ joinCodeBtn.addEventListener("click", () => {
     if (!targetRegion) {
       targetRegion = await regionManager.resolveCodeAcrossRegions(code);
     }
-    if (targetRegion && targetRegion.id !== activeRegionId) {
+    if (targetRegion && targetRegion.id !== session.activeRegionId) {
       await switchToRegion(targetRegion);
     }
 
-    if (!networkManager?.connected) return;
-    pendingCharacter = homeCharacter;
-    networkManager.sendJoinByCode(code, pendingCharacter, awayCharacter);
+    if (!session.networkManager?.connected) return;
+    session.pendingCharacter = session.homeCharacter;
+    session.networkManager.sendJoinByCode(code, session.pendingCharacter, session.awayCharacter);
     lobbyStatus.textContent = `Joining with code ${code}...`;
-    setLobbyButtons(false);
+    lobbyAPI.setButtons(false);
   })();
 });
 
@@ -1787,24 +1178,24 @@ moreMenuDropdown.addEventListener("click", (e) => e.stopPropagation());
 
 menuTournament.addEventListener("click", () => {
   moreMenuDropdown.classList.remove("visible");
-  if (!networkManager?.connected) return;
-  networkManager.sendCreateTournament({ bracketType: "partial_consolation", matchFormat: "bo5" });
+  if (!session.networkManager?.connected) return;
+  session.networkManager.sendCreateTournament({ bracketType: "partial_consolation", matchFormat: "bo5" });
   lobbyStatus.textContent = "Creating tournament...";
 });
 
 menuTutorial.addEventListener("click", () => {
   moreMenuDropdown.classList.remove("visible");
-  closeLobby();
+  lobbyAPI.close();
   const scene = getGameScene();
   if (scene) {
     scene.startTutorial(
       tutorial,
       () => {
-        openLobby();
+        lobbyAPI.open();
       },
-      pendingCharacter,
+      session.pendingCharacter,
     );
-    applyAudioSettings(scene);
+    settingsAPI.applyAudioSettings(scene);
     if (isTouchDevice) touchControls.show();
     tutorial.start(() => {
       scene.stopTutorial();
@@ -1815,7 +1206,7 @@ menuTutorial.addEventListener("click", () => {
 // ── Settlement Flow (Ranked) ─────────────────────────────────────────────────
 
 async function handleSettleMatch(matchId: string, regionUrl?: string) {
-  const origin = regionUrl || networkManager?.httpOrigin;
+  const origin = regionUrl || session.networkManager?.httpOrigin;
   if (!origin) return;
   const addr = getConnectedAddress();
   if (!addr) {
@@ -1872,7 +1263,7 @@ async function handleSettleMatch(matchId: string, regionUrl?: string) {
       });
     }
     lobbyStatus.textContent = "Match settled on-chain!";
-    if (activeTab === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
+    if (lobbyAPI.getActiveTab() === "history") fetchMatchHistory(matchHistoryList, matchHistoryCallbacks());
   } catch (err) {
     lobbyStatus.textContent = `Settlement failed: ${(err as Error).message}`;
   } finally {
@@ -1883,7 +1274,7 @@ async function handleSettleMatch(matchId: string, regionUrl?: string) {
 // ── Replay exit handler ──────────────────────────────────────────────────────
 
 window.addEventListener("replayEnded", () => {
-  openLobby();
+  lobbyAPI.open();
 });
 
 // ── URL Deep Links ────────────────────────────────────────────────────────────
@@ -1907,22 +1298,22 @@ window.addEventListener("replayEnded", () => {
     } else {
       // Auto-join via code after connection is ready
       const waitJoin = setInterval(() => {
-        if (networkManager?.connected) {
+        if (session.networkManager?.connected) {
           clearInterval(waitJoin);
-          pendingCharacter = homeCharacter;
+          session.pendingCharacter = session.homeCharacter;
           const upperCode = joinCode.toUpperCase();
           lobbyStatus.textContent = `Joining with code ${upperCode}...`;
-          setLobbyButtons(false);
+          lobbyAPI.setButtons(false);
           void (async () => {
             // Check lobby cache first (public rooms), then HTTP resolve (private/tournaments)
             let targetRegion = regionManager.findRegionWithCode(upperCode);
             if (!targetRegion) {
               targetRegion = await regionManager.resolveCodeAcrossRegions(upperCode);
             }
-            if (targetRegion && targetRegion.id !== activeRegionId) {
+            if (targetRegion && targetRegion.id !== session.activeRegionId) {
               await switchToRegion(targetRegion);
             }
-            networkManager?.sendJoinByCode(upperCode, pendingCharacter, awayCharacter);
+            session.networkManager?.sendJoinByCode(upperCode, session.pendingCharacter, session.awayCharacter);
           })();
         }
       }, 200);
@@ -1931,12 +1322,12 @@ window.addEventListener("replayEnded", () => {
   } else if (replayId) {
     // Auto-load replay after connection is ready
     const waitReplay = setInterval(() => {
-      if (networkManager?.connected) {
+      if (session.networkManager?.connected) {
         clearInterval(waitReplay);
         // If region specified and different from current, switch first
         if (replayRegion) {
           const targetRegion = regionManager.getRegionById(replayRegion);
-          if (targetRegion && replayRegion !== activeRegionId) {
+          if (targetRegion && replayRegion !== session.activeRegionId) {
             void switchToRegion(targetRegion).then(() => startReplay(replayId));
             return;
           }
