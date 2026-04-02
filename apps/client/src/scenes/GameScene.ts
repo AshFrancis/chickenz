@@ -1385,6 +1385,10 @@ export class GameScene extends Phaser.Scene {
     return this.spectateMode;
   }
 
+  startBGM() {
+    this.audio.startBGM();
+  }
+
   setMuted(muted: boolean) {
     this.audio.setMusicMuted(muted);
   }

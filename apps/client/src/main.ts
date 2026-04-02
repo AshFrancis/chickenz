@@ -16,6 +16,14 @@ import {
 } from "./net/NetworkManager";
 import { RegionManager, type RegionPing, type RegionRoomInfo } from "./net/RegionManager";
 import { getRegions, type RegionConfig } from "./net/regions";
+import type { MatchRecord } from "./types";
+import {
+  escapeHtml,
+  truncateAddress,
+  formatTimeAgo,
+  proofStatusLabel,
+} from "./ui/format";
+import { renderMatchDetail } from "./ui/MatchDetailView";
 
 const NUM_CHARACTERS = 4;
 const CHARACTER_NAMES = ["NINJA FROG", "MASK DUDE", "PINK MAN", "VIRTUAL GUY"];
@@ -37,39 +45,6 @@ import {
   getLastAuthProof,
   settleMatch,
 } from "./stellar";
-
-interface MatchRecord {
-  id: string;
-  roomName: string;
-  player1: string;
-  player2: string;
-  wallet1?: string;
-  wallet2?: string;
-  wallet1Verified?: boolean;
-  wallet2Verified?: boolean;
-  winner: number;
-  scores: [number, number];
-  timestamp: number;
-  proofStatus: "none" | "pending" | "proving" | "verified" | "settled";
-  roomId: string;
-  mode?: GameMode;
-  matchStartTime?: number;
-  proofRequestedAt?: number;
-  proofCompletedAt?: number;
-  proofSource?: string;
-  startTxHash?: string;
-  settleTxHash?: string;
-  proofArtifacts?: { seal: string; journal: string; imageId: string };
-  contractAddress?: string;
-  verifierAddress?: string;
-  gameHubAddress?: string;
-  transcriptCid?: string;
-  boundlessRequestId?: string;
-  boundlessTxHash?: string;
-  sessionId?: number;
-  _regionUrl?: string; // client-side: which region server this match came from
-  _regionId?: string;
-}
 
 // Wallet verification state
 
@@ -547,11 +522,6 @@ function showUsernamePrompt() {
 // Wallet disconnect just updates UI — user keeps playing as casual
 
 // ── Wallet Connect ──────────────────────────────────────────────────────────
-
-function truncateAddress(addr: string): string {
-  if (addr.length <= 12) return addr;
-  return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
 
 let verifyInProgress: string | null = null; // prevent duplicate verify popups
 let lastVerifiedAddr: string | null = null;
@@ -1365,15 +1335,6 @@ function createRoomElement(room: RoomInfo, roomRegionId?: string, roomRegionFlag
   return el;
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
 let fetchingLeaderboard = false;
@@ -1463,22 +1424,6 @@ function fetchMatchHistory() {
     .finally(() => {
       fetchingHistory = false;
     });
-}
-
-function proofStatusLabel(status: string): string {
-  switch (status) {
-    case "none":
-      return "Casual";
-    case "pending":
-    case "proving":
-      return "Generating Proof";
-    case "verified":
-      return "Proof Verified";
-    case "settled":
-      return "Settled";
-    default:
-      return status;
-  }
 }
 
 function renderMatchHistory(matches: MatchRecord[]) {
@@ -1572,16 +1517,6 @@ function renderMatchHistory(matches: MatchRecord[]) {
   };
 }
 
-function formatTimeAgo(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
 interface TranscriptInput {
   buttons: number;
   aimX?: number;
@@ -1649,7 +1584,11 @@ function openMatchDetail(matchId: string, regionUrl?: string) {
       return r.json();
     })
     .then((m: MatchRecord) => {
-      renderMatchDetail(m);
+      renderMatchDetail(m, matchDetailBody, {
+        onReplay: (roomId) => startReplay(roomId),
+        onDownload: (roomId) => downloadTranscript(roomId),
+        onClose: () => matchDetailOverlay.classList.remove("visible"),
+      });
       matchDetailOverlay.classList.add("visible");
     })
     .catch((err) => {
@@ -1658,254 +1597,6 @@ function openMatchDetail(matchId: string, regionUrl?: string) {
     });
 }
 
-function formatTimestamp(ts?: number): string {
-  if (!ts) return "";
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function formatDuration(startMs: number, endMs: number): string {
-  const s = Math.round((endMs - startMs) / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
-}
-
-function explorerTxUrl(hash: string): string {
-  return `https://stellar.expert/explorer/testnet/tx/${encodeURIComponent(hash)}`;
-}
-
-function explorerAccountUrl(addr: string): string {
-  return `https://stellar.expert/explorer/testnet/account/${encodeURIComponent(addr)}`;
-}
-
-function explorerContractUrl(addr: string): string {
-  return `https://stellar.expert/explorer/testnet/contract/${encodeURIComponent(addr)}`;
-}
-
-const GUEST_IMAGE_ID = "c69a2804afae47c1bee35e0a80013d9dad8a4f096d1b5bfa53d870c8e8d43746";
-
-function renderDataAvailability(m: MatchRecord): string {
-  const rows: string[] = [];
-  if (m.transcriptCid) {
-    const ipfsUrl = `https://gateway.pinata.cloud/ipfs/${m.transcriptCid}`;
-    rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Input (IPFS)</span><span class="dpg-value"><a href="${ipfsUrl}" target="_blank" rel="noopener">${escapeHtml(m.transcriptCid.slice(0, 16))}...</a></span></div>`,
-    );
-  }
-  // Program image ID (the zkVM guest binary hash)
-  rows.push(
-    `<div class="dpg-row"><span class="dpg-label">Program ID</span><span class="dpg-value" title="${GUEST_IMAGE_ID}">${GUEST_IMAGE_ID.slice(0, 16)}...</span></div>`,
-  );
-  if (m.boundlessTxHash) {
-    const etherscanUrl = `https://sepolia.etherscan.io/tx/${encodeURIComponent(m.boundlessTxHash)}`;
-    rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Proof Request TX</span><span class="dpg-value"><a href="${etherscanUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessTxHash.slice(0, 16))}...</a></span></div>`,
-    );
-  }
-  if (m.boundlessRequestId) {
-    const boundlessExplorerUrl = `https://explorer.boundless.network/orders/0x${m.boundlessRequestId}`;
-    rows.push(
-      `<div class="dpg-row"><span class="dpg-label">Boundless Order</span><span class="dpg-value"><a href="${boundlessExplorerUrl}" target="_blank" rel="noopener">${escapeHtml(m.boundlessRequestId.slice(0, 16))}...</a></span></div>`,
-    );
-  }
-  if (rows.length <= 1) return ""; // only program ID, no proof data
-  return `
-    <div class="detail-section">
-      <h3>Data Availability</h3>
-      <div class="detail-proof-grid">
-        ${rows.join("")}
-      </div>
-    </div>
-  `;
-}
-
-function renderMatchDetail(m: MatchRecord) {
-  const winnerName = m.winner === 0 ? m.player1 : m.winner === 1 ? m.player2 : "Draw";
-  const modeBadge =
-    m.mode === "ranked"
-      ? `<span class="mode-badge ranked">Ranked</span>`
-      : `<span class="mode-badge casual">Casual</span>`;
-
-  // Players section
-  const renderPlayer = (name: string, wallet: string | undefined, verified: boolean | undefined, isWinner: boolean) => {
-    const walletHtml = wallet
-      ? `<div class="dp-wallet"><a href="${explorerAccountUrl(wallet)}" target="_blank" rel="noopener">${truncateAddress(wallet)}</a>${verified ? '<span class="dp-verified">&#10003; verified</span>' : ""}</div>`
-      : `<div class="dp-wallet" style="color:#555">No wallet</div>`;
-    return `
-      <div class="detail-player${isWinner ? " winner" : ""}">
-        <div class="dp-name">${escapeHtml(name)}${isWinner ? '<span class="dp-winner-tag">Winner</span>' : ""}</div>
-        ${walletHtml}
-      </div>
-    `;
-  };
-
-  // Timeline steps
-  const steps: string[] = [];
-  const addStep = (label: string, ts: number | undefined, extra: string = "", status?: string) => {
-    const st = status || (ts ? "done" : "pending");
-    const timeStr = ts ? `<span class="tl-time">${formatTimestamp(ts)}</span>` : "";
-    steps.push(`<div class="tl-step ${st}"><span class="tl-label">${label}</span>${timeStr}${extra}</div>`);
-  };
-
-  addStep("Match Started", m.matchStartTime);
-
-  // On-chain start_match / start_game happen right after match starts
-  if (m.mode === "ranked" && m.startTxHash) {
-    addStep(
-      "start_match TX",
-      m.matchStartTime,
-      `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`,
-    );
-    addStep(
-      "start_game TX",
-      m.matchStartTime,
-      `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.startTxHash)}" target="_blank" rel="noopener">View TX</a>`,
-    );
-  }
-
-  if (m.timestamp) {
-    const duration = m.matchStartTime
-      ? `<span class="tl-duration">${formatDuration(m.matchStartTime, m.timestamp)}</span>`
-      : "";
-    addStep("Match Ended", m.timestamp, duration);
-  }
-
-  if (m.mode === "ranked") {
-    const boundlessTxLink = m.boundlessTxHash
-      ? `<a class="tl-link" href="https://sepolia.etherscan.io/tx/${encodeURIComponent(m.boundlessTxHash)}" target="_blank" rel="noopener">View TX</a>`
-      : "";
-    addStep(
-      "Proof Requested",
-      m.proofRequestedAt,
-      boundlessTxLink,
-      m.proofRequestedAt ? "done" : m.proofStatus !== "none" ? "active" : "pending",
-    );
-
-    if (m.proofCompletedAt) {
-      const proveDur = m.proofRequestedAt
-        ? `<span class="tl-duration">${formatDuration(m.proofRequestedAt, m.proofCompletedAt)}</span>`
-        : "";
-      const sourceLabel =
-        m.proofSource === "worker" ? "Self-Hosted" : m.proofSource === "boundless" ? "Boundless" : m.proofSource;
-      const sourceBadge = sourceLabel ? `<span class="tl-badge">${escapeHtml(sourceLabel)}</span>` : "";
-      addStep("Proof Generated", m.proofCompletedAt, `${sourceBadge}${proveDur}`);
-      addStep("Proof Verified", m.proofCompletedAt, "", "done");
-    } else if (m.proofStatus === "proving") {
-      const boundlessExtra = m.boundlessRequestId
-        ? `<a href="https://explorer.boundless.network/orders/0x${m.boundlessRequestId}" target="_blank" rel="noopener" class="tl-badge">Boundless: ${escapeHtml(m.boundlessRequestId.slice(0, 12))}...</a>`
-        : "";
-      addStep("Proof Generating...", undefined, boundlessExtra, "active");
-    } else if (m.proofStatus === "pending") {
-      addStep("Proof Generating...", undefined, "", "pending");
-    }
-
-    // On-chain settlement steps — always show as pending placeholders if not yet reached
-    if (m.settleTxHash) {
-      addStep(
-        "settle_match TX",
-        m.proofCompletedAt,
-        `<span class="tl-badge">Chickenz</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`,
-      );
-      addStep(
-        "end_game TX",
-        m.proofCompletedAt,
-        `<span class="tl-badge">Game Hub</span><a class="tl-link" href="${explorerTxUrl(m.settleTxHash)}" target="_blank" rel="noopener">View TX</a>`,
-      );
-    } else if (m.proofStatus === "settled") {
-      addStep("settle_match TX", undefined, "", "done");
-      addStep("end_game TX", undefined, "", "done");
-    } else if (m.proofStatus === "verified") {
-      addStep("Settlement Pending...", undefined, "", "active");
-      addStep("end_game TX", undefined, "", "pending");
-    } else {
-      // Proof not yet complete — show remaining steps as pending
-      addStep("Proof Verified", undefined, "", "pending");
-      addStep("settle_match TX", undefined, "", "pending");
-      addStep("end_game TX", undefined, "", "pending");
-    }
-  }
-
-  // Proof details section
-  let proofHtml = "";
-  if (m.proofArtifacts && m.mode === "ranked") {
-    const { seal, journal, imageId } = m.proofArtifacts;
-    proofHtml = `
-      <div class="detail-section">
-        <h3>Proof Details</h3>
-        <div class="detail-proof-grid">
-          <div class="dpg-row"><span class="dpg-label">Image ID</span><span class="dpg-value">${imageId ? escapeHtml(imageId.slice(0, 16)) + "..." : "N/A"}</span></div>
-          <div class="dpg-row"><span class="dpg-label">Seal</span><span class="dpg-value">${seal.length / 2} bytes</span></div>
-          <div class="dpg-row"><span class="dpg-label">Journal</span><span class="dpg-value">${journal.length / 2} bytes</span></div>
-          <div class="dpg-row"><span class="dpg-label">Status</span><span class="dpg-value"><span class="proof-badge ${m.proofStatus}">${escapeHtml(proofStatusLabel(m.proofStatus))}</span></span></div>
-        </div>
-      </div>
-    `;
-  }
-
-  // Contract links section
-  let contractsHtml = "";
-  if (m.mode === "ranked" && m.contractAddress) {
-    contractsHtml = `
-      <div class="detail-section">
-        <h3>Contracts</h3>
-        <div class="detail-proof-grid">
-          <div class="dpg-row"><span class="dpg-label">Game</span><span class="dpg-value"><a href="${explorerContractUrl(m.contractAddress)}" target="_blank" rel="noopener">${truncateAddress(m.contractAddress)}</a></span></div>
-          <div class="dpg-row"><span class="dpg-label">Verifier</span><span class="dpg-value"><a href="${explorerContractUrl(m.verifierAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.verifierAddress!)}</a></span></div>
-          <div class="dpg-row"><span class="dpg-label">Game Hub</span><span class="dpg-value"><a href="${explorerContractUrl(m.gameHubAddress!)}" target="_blank" rel="noopener">${truncateAddress(m.gameHubAddress!)}</a></span></div>
-        </div>
-      </div>
-    `;
-  }
-
-  matchDetailBody.innerHTML = `
-    <div class="detail-section">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="color:#888;font-size:10px">${escapeHtml(m.id)}</span>
-        ${modeBadge}
-      </div>
-      <div style="font-size:13px;color:#fff;margin-bottom:4px">${escapeHtml(winnerName)} wins  <span style="color:#888">${m.scores[0]}-${m.scores[1]}</span></div>
-    </div>
-
-    <div class="detail-section">
-      <h3>Players</h3>
-      <div class="detail-players">
-        ${renderPlayer(m.player1, m.wallet1, m.wallet1Verified, m.winner === 0)}
-        ${renderPlayer(m.player2, m.wallet2, m.wallet2Verified, m.winner === 1)}
-      </div>
-    </div>
-
-    <div class="detail-section">
-      <h3>Settlement Timeline</h3>
-      <div class="detail-timeline">
-        ${steps.join("")}
-      </div>
-    </div>
-
-    ${proofHtml}
-    ${contractsHtml}
-    ${renderDataAvailability(m)}
-
-    <div class="detail-actions">
-      <button class="btn btn-sm btn-replay-detail" data-room-id="${escapeHtml(m.roomId)}">Replay</button>
-      <button class="btn btn-sm btn-download-detail" data-room-id="${escapeHtml(m.roomId)}">Download</button>
-    </div>
-  `;
-
-  // Bind action buttons
-  const replayBtn = matchDetailBody.querySelector(".btn-replay-detail");
-  if (replayBtn) {
-    replayBtn.addEventListener("click", () => {
-      matchDetailOverlay.classList.remove("visible");
-      startReplay(m.roomId);
-    });
-  }
-  const downloadBtn = matchDetailBody.querySelector(".btn-download-detail");
-  if (downloadBtn) {
-    downloadBtn.addEventListener("click", () => {
-      downloadTranscript(m.roomId);
-    });
-  }
-}
 
 // ── Tournament UI helpers ──────────────────────────────────────────────────────
 

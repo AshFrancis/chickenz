@@ -5,6 +5,9 @@ import type { StateMessage, EndedMessage, RoomInfo, GameMode } from "./protocol"
 import { inputFromMessage, generateJoinCode, type InputMessage } from "./protocol";
 import { WasmState } from "./wasm";
 import { randomBotName, createBotSocket, createBotState, botThink, type BotState } from "./BotAI";
+import { createLogger } from "./logger";
+
+const log = createLogger("GameRoom");
 
 const COUNTDOWN_TICKS = 90;
 
@@ -505,7 +508,7 @@ export class GameRoom {
         ticked++;
       }
     } catch (err) {
-      console.error(`[GameRoom ${this.id}] Unhandled error in gameLoop:`, err);
+      log.error("Unhandled error in gameLoop", { roomId: this.id, error: (err as Error).message });
       this.endMatch(-1);
     }
   }
@@ -569,7 +572,7 @@ export class GameRoom {
         this.accInput[1].aimY,
       );
     } catch (err) {
-      console.error(`[GameRoom ${this.id}] WASM step() panic:`, err);
+      log.error("WASM step panic", { roomId: this.id, error: (err as Error).message });
       this.endMatch(-1);
       return;
     }
@@ -599,9 +602,7 @@ export class GameRoom {
         if (winner === 0 || winner === 1) {
           this.roundWins[winner]++;
         } else {
-          console.warn(
-            `[Room ${this.id}] round ${this.currentRound} ended with unexpected winner=${winner}, forcing to 0`,
-          );
+          log.warn("Unexpected round winner, forcing to 0", { roomId: this.id, round: this.currentRound, winner });
           this.roundWins[0]++;
         }
         const safeWinner = winner === 0 || winner === 1 ? winner : 0;

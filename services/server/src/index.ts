@@ -49,6 +49,9 @@ import { releaseBotName, randomBotName, createBotSocket } from "./BotAI";
 import { BotLobbyManager } from "./BotLobbyManager";
 import { base64UrlDecode, deriveSmartAccountAddress, verifyPasskeyAssertion } from "./passkey";
 import { isValidUsername } from "./validation";
+import { createLogger } from "./logger";
+
+const log = createLogger("server");
 
 const PORT = Number(process.env.PORT) || 3000;
 // ── Startup env validation ─────────────────────────────────
@@ -72,14 +75,8 @@ const PORT = Number(process.env.PORT) || 3000;
     features.push(`CORS restricted to ${process.env.CORS_ORIGIN}`);
   }
 
-  if (warnings.length > 0) {
-    console.warn("[env] Warnings:");
-    for (const w of warnings) console.warn(`  - ${w}`);
-  }
-  if (features.length > 0) {
-    console.log("[env] Enabled features:");
-    for (const f of features) console.log(`  + ${f}`);
-  }
+  if (warnings.length > 0) log.warn("Startup warnings", { warnings });
+  if (features.length > 0) log.info("Enabled features", { features });
 }
 
 // ── State ──────────────────────────────────────────────────
@@ -149,14 +146,14 @@ function autoSettleMatch(matchId: string, sessionId: number, artifacts: ProofArt
       if (hash) {
         updateProofStatus(matchId, "settled");
         updateSettleTxHash(matchId, hash);
-        console.log(`[stellar] Auto-settled ${matchId}: ${hash}`);
+        log.info("Auto-settled match", { matchId, txHash: hash });
       } else {
-        console.error(`[stellar] Auto-settle returned no tx hash for ${matchId}`);
+        log.error("Auto-settle returned no tx hash", { matchId });
         // Leave as "verified" so manual settle can retry
       }
     })
     .catch((err) => {
-      console.error("Auto-settle failed:", err);
+      log.error("Auto-settle failed", { matchId, error: (err as Error).message });
       // Leave as "verified" so manual settle can retry
     });
 }
@@ -178,15 +175,15 @@ async function pinTranscriptToIPFS(matchId: string, transcript: object) {
       }),
     });
     if (!res.ok) {
-      console.error(`[ipfs] Pinata pin failed for ${matchId}: ${res.status}`);
+      log.error("Pinata pin failed", { matchId, status: res.status });
       return;
     }
     const data = (await res.json()) as { IpfsHash: string };
     const cid = data.IpfsHash;
     updateTranscriptCid(matchId, cid);
-    console.log(`[ipfs] Transcript pinned for ${matchId}: ${cid}`);
+    log.info("Transcript pinned to IPFS", { matchId, cid });
   } catch (err) {
-    console.error(`[ipfs] Failed to pin transcript for ${matchId}:`, err);
+    log.error("Failed to pin transcript to IPFS", { matchId, error: (err as Error).message });
   }
 }
 
@@ -524,7 +521,7 @@ const server = Bun.serve<SocketData>({
         if (resCt) resHeaders["Content-Type"] = resCt;
         return new Response(body, { status: proxyRes.status, headers: resHeaders });
       } catch (err) {
-        console.error("[relayer proxy] error:", err);
+        log.error("Relayer proxy error", { error: (err as Error).message });
         return Response.json({ error: "Relayer proxy failed" }, { status: 502, headers: corsHeaders });
       }
     }
@@ -702,7 +699,7 @@ const server = Bun.serve<SocketData>({
         // (deterministic and unforgeable — core security check)
         const derivedAddress = deriveSmartAccountAddress(body.credentialId);
         if (derivedAddress !== body.address) {
-          console.warn(`[wallet] Address derivation mismatch: claimed=${body.address} derived=${derivedAddress}`);
+          log.warn("Address derivation mismatch", { claimed: body.address, derived: derivedAddress });
           return Response.json({ error: "Address derivation mismatch" }, { status: 403, headers: corsHeaders });
         }
         // If public key provided, verify format and optionally verify assertion signature
@@ -730,7 +727,7 @@ const server = Bun.serve<SocketData>({
         verifiedTokens.set(body.address, { token, issuedAt: Date.now() });
         return Response.json({ verified: true, token }, { headers: corsHeaders });
       } catch (err) {
-        console.error("[wallet] register error:", err);
+        log.error("Wallet register error", { error: (err as Error).message });
         return Response.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
       }
     }
@@ -815,9 +812,11 @@ const server = Bun.serve<SocketData>({
           return Response.json({ error: "Invalid proof artifacts" }, { status: 400, headers: corsHeaders });
         }
         // Save Boundless request ID and tx hash if provided by worker
-        console.log(
-          `[worker] Result for ${matchId}: requestId=${body.boundlessRequestId ?? "none"}, txHash=${body.boundlessTxHash ?? "none"}`,
-        );
+        log.info("Worker result received", {
+          matchId,
+          requestId: body.boundlessRequestId ?? "none",
+          txHash: body.boundlessTxHash ?? "none",
+        });
         if (body.boundlessRequestId && typeof body.boundlessRequestId === "string") {
           updateBoundlessRequestId(matchId, body.boundlessRequestId);
         }
@@ -876,7 +875,7 @@ const server = Bun.serve<SocketData>({
         (requestId) => updateBoundlessRequestId(matchId, requestId),
         (txHash) => updateBoundlessTxHash(matchId, txHash),
       );
-      console.log(`[admin] Re-prove triggered for ${matchId}`);
+      log.info("Admin re-prove triggered", { matchId });
       return Response.json({ ok: true, matchId }, { headers: corsHeaders });
     }
 
@@ -1499,4 +1498,4 @@ function scheduleBotVsBotMatch() {
 }
 scheduleBotVsBotMatch();
 
-console.log(`Chickenz server running on http://localhost:${server.port}`);
+log.info("Server running", { port: server.port });
