@@ -79,15 +79,17 @@ function derToRaw(derSig: Uint8Array): Uint8Array {
   let offset = 2; // skip 0x30 + total length
   if (derSig[1]! & 0x80) offset += derSig[1]! & 0x7f; // long form length (unlikely but handle)
 
-  if (derSig[offset] !== 0x02) throw new Error("Expected integer tag for r");
+  if (offset + 2 > derSig.length || derSig[offset] !== 0x02) throw new Error("Expected integer tag for r");
   const rLen = derSig[offset + 1]!;
   const rStart = offset + 2;
+  if (rStart + rLen > derSig.length) throw new Error("DER r value truncated");
   const rBytes = derSig.subarray(rStart, rStart + rLen);
 
   const sOffset = rStart + rLen;
-  if (derSig[sOffset] !== 0x02) throw new Error("Expected integer tag for s");
+  if (sOffset + 2 > derSig.length || derSig[sOffset] !== 0x02) throw new Error("Expected integer tag for s");
   const sLen = derSig[sOffset + 1]!;
   const sStart = sOffset + 2;
+  if (sStart + sLen > derSig.length) throw new Error("DER s value truncated");
   const sBytes = derSig.subarray(sStart, sStart + sLen);
 
   // Pad/trim to exactly 32 bytes each (remove leading zero padding, left-pad if short)
@@ -556,9 +558,11 @@ function normalizeLeetSpeak(s: string): string {
 
 function isValidUsername(name: string): boolean {
   if (name.length < 1 || name.length > 7) return false;
-  if (!/^[a-zA-Z0-9_]+$/.test(name)) return false;
-  const lower = name.toLowerCase();
-  const normalized = normalizeLeetSpeak(name);
+  // Normalize unicode (decompose accents/diacritics) before checking
+  const decomposed = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  if (!/^[a-zA-Z0-9_]+$/.test(decomposed)) return false;
+  const lower = decomposed.toLowerCase();
+  const normalized = normalizeLeetSpeak(decomposed);
   for (const word of PROFANITY_LIST) {
     if (lower.includes(word) || normalized.includes(word)) return false;
   }
@@ -597,10 +601,14 @@ const httpRateMap = new Map<string, { count: number; resetAt: number }>();
 const HTTP_RATE_WINDOW = 60_000; // 1 minute window
 const HTTP_RATE_LIMIT = 120; // max requests per window per IP
 
+const HTTP_RATE_MAX_ENTRIES = 50_000;
+
 function checkHttpRate(ip: string): boolean {
   const now = Date.now();
   let entry = httpRateMap.get(ip);
   if (!entry || now >= entry.resetAt) {
+    // Evict if map is too large
+    if (!entry && httpRateMap.size >= HTTP_RATE_MAX_ENTRIES) return false;
     entry = { count: 0, resetAt: now + HTTP_RATE_WINDOW };
     httpRateMap.set(ip, entry);
   }
@@ -918,7 +926,8 @@ const server = Bun.serve<SocketData>({
           return Response.json({ verified: false }, { headers: corsHeaders });
         }
         const stored = verifiedTokens.get(body.address);
-        if (!stored || stored.token !== body.token) {
+        if (!stored || stored.token !== body.token || Date.now() - stored.issuedAt > VERIFIED_TOKEN_TTL) {
+          if (stored && Date.now() - stored.issuedAt > VERIFIED_TOKEN_TTL) verifiedTokens.delete(body.address);
           return Response.json({ verified: false }, { headers: corsHeaders });
         }
         // Token matches — mark all matching WebSocket connections as verified
@@ -1105,11 +1114,14 @@ const server = Bun.serve<SocketData>({
       }
       if (++ws.data.msgCount > 180) return;
 
+      // Reject oversized messages (prevent JSON.parse DoS)
+      const msgLen = typeof message === "string" ? message.length : message.byteLength;
+      if (msgLen > 4096) return;
+
       let msg: ClientMessage;
       try {
         msg = JSON.parse(typeof message === "string" ? message : message.toString());
-      } catch (err) {
-        console.error("Failed to parse client message:", err);
+      } catch {
         return;
       }
 
@@ -1539,9 +1551,11 @@ const server = Bun.serve<SocketData>({
         }
         const roomId = ws.data.roomId;
         if (!roomId) return;
+        const playerId = ws.data.playerId;
+        if (playerId !== 0 && playerId !== 1) return;
         const room = rooms.get(roomId);
         if (!room) return;
-        room.handleInput(ws.data.playerId, msg);
+        room.handleInput(playerId, msg);
         return;
       }
     },

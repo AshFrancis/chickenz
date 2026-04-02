@@ -295,6 +295,14 @@ export class GameRoom {
     return this._status === "waiting";
   }
 
+  static readonly MAX_SPECTATORS = 20;
+
+  addSpectator(ws: GameSocket) {
+    if (this.spectatorSockets.length < GameRoom.MAX_SPECTATORS) {
+      this.spectatorSockets.push(ws);
+    }
+  }
+
   removeSpectator(ws: GameSocket) {
     const idx = this.spectatorSockets.indexOf(ws);
     if (idx >= 0) this.spectatorSockets.splice(idx, 1);

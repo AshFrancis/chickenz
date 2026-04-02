@@ -27,6 +27,9 @@ pub fn mul(a: Fp, b: Fp) -> Fp {
 /// Fixed-point divide: (a << FRAC) / b
 #[inline(always)]
 pub fn div(a: Fp, b: Fp) -> Fp {
+    if b == 0 {
+        return 0;
+    }
     (((a as i64) << FRAC) / b as i64) as Fp
 }
 
@@ -1645,8 +1648,14 @@ pub struct StreamingResult {
 ///
 /// `data` layout: [seed: 4 LE] [tick_count: 4 LE] [tick × 6 bytes]
 pub fn run_streaming(data: &[u8]) -> StreamingResult {
+    assert!(data.len() >= 8, "run_streaming: data too short for header");
     let seed = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     let tick_count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    assert!(
+        data.len() >= 8 + tick_count.checked_mul(6).expect("tick_count overflow"),
+        "run_streaming: data too short for {} ticks",
+        tick_count
+    );
 
     let map = arena_map();
     let mut state = create_initial_state(seed, &map);
@@ -1702,12 +1711,18 @@ pub fn run_streaming(data: &[u8]) -> StreamingResult {
 /// Format at offset: [tick_count: 4 LE] [ticks × 6 bytes]
 /// Returns: (final state, transcript_hash, new_offset past this round's data)
 pub fn replay_round(data: &[u8], offset: usize, seed: u32) -> (State, [u8; 32], usize) {
+    assert!(offset + 4 <= data.len(), "replay_round: data too short for tick_count header");
     let tick_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+
+    let round_end = offset
+        .checked_add(4)
+        .and_then(|x| x.checked_add(tick_count.checked_mul(6)?))
+        .expect("replay_round: round_end overflow");
+    assert!(round_end <= data.len(), "replay_round: data too short for {} ticks", tick_count);
 
     let map = arena_map();
     let mut state = create_initial_state(seed, &map);
     let mut hasher = Sha256::new();
-    let round_end = offset + 4 + tick_count * 6;
 
     let mut pos = offset + 4;
     for _ in 0..tick_count {
@@ -1748,6 +1763,7 @@ pub fn replay_round(data: &[u8], offset: usize, seed: u32) -> (State, [u8; 32], 
 /// Run multi-round proof verification (proves both winning rounds of a best-of-3).
 /// Format: [round_count: 4 LE] [seed: 4 LE] per round: [tick_count: 4 LE] [ticks × 6 bytes]
 pub fn run_streaming_multi(data: &[u8]) -> StreamingResult {
+    assert!(data.len() >= 8, "run_streaming_multi: data too short for header");
     let round_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     assert_eq!(round_count, 2, "Multi-round proof must contain exactly 2 rounds");
     let seed = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);

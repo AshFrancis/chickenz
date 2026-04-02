@@ -210,7 +210,7 @@ export function generateBracket(playerCount: number, bracketType: BracketType): 
           consolationInputs.push({ type: "loser", matchIndex: mi });
         }
 
-        // Pair them up
+        // Pair them up (odd player gets a bye)
         const nextConsolationMatches: number[] = [];
         for (let i = 0; i < consolationInputs.length; i += 2) {
           if (i + 1 < consolationInputs.length) {
@@ -223,6 +223,19 @@ export function generateBracket(playerCount: number, bracketType: BracketType): 
               sourceA: consolationInputs[i]!,
               sourceB: consolationInputs[i + 1]!,
               status: "pending",
+            });
+            nextConsolationMatches.push(matchIdx);
+            matchIdx++;
+          } else {
+            // Odd player out — give them a bye
+            matches.push({
+              matchIndex: matchIdx,
+              round: r,
+              bracketSide: "consolation",
+              label: `C-R${r + 1}-${nextConsolationMatches.length + 1}`,
+              sourceA: consolationInputs[i]!,
+              sourceB: { type: "bye" },
+              status: "bye",
             });
             nextConsolationMatches.push(matchIdx);
             matchIdx++;
@@ -634,6 +647,20 @@ export class TournamentRoom {
     setTimeout(() => {
       if (this._status !== "playing") return;
 
+      // If either fighter disconnected during intro animation, forfeit
+      const aDisconnected = this.disconnected.has(slotA);
+      const bDisconnected = this.disconnected.has(slotB);
+      if (aDisconnected || bDisconnected) {
+        const winnerSlot = aDisconnected ? slotB : slotA;
+        const loserSlot = aDisconnected ? slotA : slotB;
+        match.winner = winnerSlot;
+        match.loser = loserSlot;
+        match.status = "done";
+        this.broadcastMatchEnd(match);
+        setTimeout(() => this.advanceBracket(), BETWEEN_MATCH_MS);
+        return;
+      }
+
       wsA.data.roomId = roomId;
       wsA.data.playerId = 0;
       wsB.data.roomId = roomId;
@@ -644,13 +671,11 @@ export class TournamentRoom {
       room.addPlayer(wsB);
 
       // Spectators: everyone except the two fighters
-      const spectators: GameSocket[] = [];
       for (let i = 0; i < this.participants.length; i++) {
         if (i !== slotA && i !== slotB && !this.disconnected.has(i)) {
-          spectators.push(this.participants[i]!.ws);
+          room.addSpectator(this.participants[i]!.ws);
         }
       }
-      room.spectatorSockets = spectators;
 
       room.onEnded = (_sockets, winner) => {
         const winnerSlot = winner === 0 ? slotA : slotB;

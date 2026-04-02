@@ -1890,11 +1890,16 @@ function renderMatchDetail(m: MatchRecord) {
 
 // ── Tournament UI helpers ──────────────────────────────────────────────────────
 
+const tournamentTimers: ReturnType<typeof setTimeout>[] = [];
+
 function hideAllTournamentOverlays() {
   tournamentOverlay.classList.remove("visible");
   bracketOverlay.classList.remove("visible");
   spectateOverlay.classList.remove("visible");
   tournamentResults.classList.remove("visible");
+  // Clear any pending animation timers
+  for (const t of tournamentTimers) clearTimeout(t);
+  tournamentTimers.length = 0;
 }
 
 function renderBracket(bracket: TournamentBracket, highlightMatchIndex?: number) {
@@ -2525,7 +2530,7 @@ function connectToServer(url: string): Promise<void> {
         }
 
         // Stage 2: After 0.8s, zoom into the highlighted match
-        setTimeout(() => {
+        tournamentTimers.push(setTimeout(() => {
           const matchEl = bracketGrid.querySelector(`[data-mi="${matchIndex}"]`) as HTMLElement;
           if (matchEl && canvas) {
             const canvasRect = canvas.getBoundingClientRect();
@@ -2539,10 +2544,10 @@ function connectToServer(url: string): Promise<void> {
             canvas.style.transform = "scale(2.5)";
             canvas.style.opacity = "0.3";
           }
-        }, 800);
+        }, 800));
 
         // Stage 3: VS overlay
-        setTimeout(() => {
+        tournamentTimers.push(setTimeout(() => {
           const vsOverlay = document.createElement("div");
           vsOverlay.className = "bk-vs-overlay";
           vsOverlay.innerHTML = `
@@ -2555,10 +2560,10 @@ function connectToServer(url: string): Promise<void> {
           `;
           bracketOverlay.appendChild(vsOverlay);
           requestAnimationFrame(() => vsOverlay.classList.add("visible"));
-        }, 1600);
+        }, 1600));
 
         // Stage 4: Start the game
-        setTimeout(() => {
+        tournamentTimers.push(setTimeout(() => {
           hideAllTournamentOverlays();
           bracketOverlay.querySelectorAll(".bk-vs-overlay").forEach((el) => el.remove());
 
@@ -2579,7 +2584,7 @@ function connectToServer(url: string): Promise<void> {
             applyAudioSettings(scene);
             spectateLabel.textContent = `SPECTATING • ${matchLabel}`;
           }
-        }, 2800);
+        }, 2800));
       },
 
       onSpectateState(state, lastButtons) {
