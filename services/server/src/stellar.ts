@@ -1,10 +1,14 @@
+import { createLogger } from "./logger";
+
+const log = createLogger("stellar");
+
 // Lazy import — don't crash if @stellar/stellar-sdk isn't installed
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic import has no static types
 let StellarSdk: any = null;
 try {
   StellarSdk = await import("@stellar/stellar-sdk");
 } catch {
-  console.warn("[stellar] @stellar/stellar-sdk not installed, on-chain features disabled");
+  log.warn("@stellar/stellar-sdk not installed, on-chain features disabled");
 }
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
@@ -18,7 +22,7 @@ function getAdmin(): any | null {
   try {
     return StellarSdk.Keypair.fromSecret(ADMIN_SECRET);
   } catch {
-    console.error("Invalid STELLAR_ADMIN_SECRET");
+    log.error("Invalid STELLAR_ADMIN_SECRET");
     return null;
   }
 }
@@ -30,7 +34,7 @@ async function submitTx(
 ): Promise<string | null> {
   const admin = getAdmin();
   if (!admin) {
-    console.warn(`[stellar] No admin key or SDK configured, skipping ${method}`);
+    log.warn("No admin key or SDK configured, skipping method", { method });
     return null;
   }
 
@@ -79,7 +83,7 @@ async function submitTx(
     throw new Error(`Transaction failed for ${method}: ${response.status}`);
   }
 
-  console.log(`[stellar] ${method} succeeded: ${sendResult.hash}`);
+  log.info("TX succeeded", { method, txHash: sendResult.hash });
   return sendResult.hash;
 }
 
@@ -99,7 +103,7 @@ export async function startMatchOnChain(
       StellarSdk.nativeToScVal(Buffer.from(seedCommit), { type: "bytes" }),
     ]);
   } catch (err) {
-    console.error("[stellar] startMatchOnChain failed:", err);
+    log.error("startMatchOnChain failed", { error: (err as Error).message });
     return null;
   }
 }
@@ -118,7 +122,7 @@ export async function settleMatchOnChain(
       StellarSdk.nativeToScVal(Buffer.from(journal), { type: "bytes" }),
     ]);
   } catch (err) {
-    console.error("[stellar] settleMatchOnChain failed:", err);
+    log.error("settleMatchOnChain failed", { error: (err as Error).message });
     return null;
   }
 }
@@ -136,7 +140,7 @@ const EXTEND_TTL_LEDGERS = 518_400; // ~30 days
 export async function extendContractTtls(): Promise<void> {
   const admin = getAdmin();
   if (!admin || !StellarSdk) {
-    console.warn("[stellar] No admin key or SDK, skipping TTL extension");
+    log.warn("No admin key or SDK, skipping TTL extension");
     return;
   }
 
@@ -171,7 +175,7 @@ export async function extendContractTtls(): Promise<void> {
 
       const simResult = await server.simulateTransaction(tx);
       if (StellarSdk.rpc.Api.isSimulationError(simResult)) {
-        console.error(`[stellar] TTL extend simulation failed for ${contractId}: ${simResult.error}`);
+        log.error("TTL extend simulation failed", { contract: contractId, error: simResult.error });
         continue;
       }
 
@@ -181,7 +185,7 @@ export async function extendContractTtls(): Promise<void> {
 
       const sendResult = await server.sendTransaction(prepared);
       if (sendResult.status === "ERROR") {
-        console.error(`[stellar] TTL extend send failed for ${contractId}`);
+        log.error("TTL extend send failed", { contract: contractId });
         continue;
       }
 
@@ -195,12 +199,12 @@ export async function extendContractTtls(): Promise<void> {
       }
 
       if (response.status === "SUCCESS") {
-        console.log(`[stellar] TTL extended for ${contractId}: ${sendResult.hash}`);
+        log.info("TTL extended", { contract: contractId, txHash: sendResult.hash });
       } else {
-        console.error(`[stellar] TTL extend failed for ${contractId}: ${response.status}`);
+        log.error("TTL extend failed", { contract: contractId, status: response.status });
       }
     } catch (err) {
-      console.error(`[stellar] TTL extend error for ${contractId}:`, err);
+      log.error("TTL extend error", { contract: contractId, error: (err as Error).message });
     }
   }
 }

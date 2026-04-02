@@ -26,117 +26,26 @@ import type { StateMessage, SerializedPlayer, SerializedProjectile } from "../..
 /** Game state data — shared shape of StateMessage, SpectateStateMessage, and WASM exports */
 type GameStateData = Omit<StateMessage, "type">;
 import { DPR, VIEW_W, VIEW_H } from "../game";
-import { playSFX } from "../audio/sfx";
-
-/** Tutorial map — ARENA with an extra high platform requiring double jump to reach. */
-const TUTORIAL_MAP: GameMap = {
-  ...ARENA,
-  platforms: [...ARENA.platforms, { x: 368, y: 144, width: 224, height: 16 }],
-};
-
-interface TranscriptInput {
-  buttons: number;
-  aimX?: number;
-  aimY?: number;
-  aim_x?: number;
-  aim_y?: number;
-}
-
-type TickInputPair = [TranscriptInput, TranscriptInput];
-
-const PLAYER_COLORS = [0x4fc3f7, 0xef5350]; // blue, red
-const WALL_COLOR = 0xff0000;
-
-// ── Terrain tileset constants ──────────────────────────────────────────────
-const TERRAIN_COLS = 22; // tiles per row in terrain spritesheet
-const GRASS_TERRAIN = { col: 6, row: 0 }; // green grass 9-slice: TL=(6,0) T=(7,0) TR=(8,0)
-const THIN_PLATFORM = { col: 12, row: 0 }; // thin platform tiles: L=(12,0) M=(13,0) R=(14,0)
-
-// ── Character sprite constants ───────────────────────────────────────────
-const CHARACTER_SLUGS = ["ninja-frog", "mask-dude", "pink-man", "virtual-guy"] as const;
-// Weapon sprite texture keys, indexed by WeaponType
-const GUN_TEXTURES: Record<number, string> = {
-  [WeaponType.Pistol]: "gun-pistol",
-  [WeaponType.Shotgun]: "gun-shotgun",
-  [WeaponType.Sniper]: "gun-sniper",
-  [WeaponType.Rocket]: "gun-rocket",
-  [WeaponType.SMG]: "gun-smg",
-};
-
-// Per-gun visual config: position offset, scale, muzzle (shot origin), bob
-interface GunConfig {
-  offsetX: number; // from character center, before facing flip
-  offsetY: number;
-  scale: number;
-  muzzleX: number; // from gun center, before facing flip (scaled)
-  muzzleY: number;
-  bobAmplitude: number; // max pixels of vertical bob (synced to anim frames)
-}
-
-const GUN_CONFIG: Record<number, GunConfig> = {
-  [WeaponType.Pistol]: { offsetX: 14, offsetY: 6.5, scale: 0.5, muzzleX: 13.5, muzzleY: -5, bobAmplitude: 0.6 },
-  [WeaponType.Shotgun]: { offsetX: 4.5, offsetY: 11.5, scale: 0.5, muzzleX: 29, muzzleY: -3, bobAmplitude: 0.9 },
-  [WeaponType.Sniper]: { offsetX: 7, offsetY: 8.5, scale: 0.5, muzzleX: 27, muzzleY: -2, bobAmplitude: 0.6 },
-  [WeaponType.Rocket]: { offsetX: 5, offsetY: 8, scale: 0.5, muzzleX: 23.5, muzzleY: 0, bobAmplitude: 1 },
-  [WeaponType.SMG]: { offsetX: 11.5, offsetY: 6.5, scale: 0.5, muzzleX: 14, muzzleY: -4.5, bobAmplitude: 1 },
-};
-
-const CHARACTER_ANIMS = [
-  { key: "idle", frames: 11, repeat: -1, rate: 20 },
-  { key: "run", frames: 12, repeat: -1, rate: 20 },
-  { key: "jump", frames: 1, repeat: 0, rate: 20 },
-  { key: "double-jump", frames: 6, repeat: 0, rate: 20 },
-  { key: "fall", frames: 1, repeat: 0, rate: 20 },
-  { key: "hit", frames: 7, repeat: 0, rate: 20 },
-  { key: "wall-jump", frames: 5, repeat: -1, rate: 20 },
-] as const;
-
-// Per-character crouch/taunt sound, indexed by CHARACTER_SLUGS
-const CROUCH_SOUNDS: Record<string, string> = {
-  "ninja-frog": "frog-croak",
-  "mask-dude": "ooga",
-  "pink-man": "wub",
-  "virtual-guy": "pop",
-};
-
-/** Compute the spritesheet frame index for a tile at (tx,ty) in a platform grid. */
-function getTerrainFrame(tx: number, ty: number, tilesW: number, tilesH: number): number {
-  // Single-height platforms use dedicated thin platform tiles
-  if (tilesH === 1) {
-    const p = THIN_PLATFORM;
-    const cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
-    return p.row * TERRAIN_COLS + (p.col + cx);
-  }
-  // Multi-height platforms use green grass 9-slice
-  const t = GRASS_TERRAIN;
-  const cx = tx === 0 ? 0 : tx === tilesW - 1 ? 2 : 1;
-  const cy = ty === 0 ? 0 : ty === tilesH - 1 ? 2 : 1;
-  return (t.row + cy) * TERRAIN_COLS + (t.col + cx);
-}
-
-const BG_KEYS = ["bg-blue", "bg-brown", "bg-gray", "bg-green", "bg-pink", "bg-purple", "bg-yellow"];
-const PIXEL_FONT = '"Silkscreen", monospace';
-
-const announceEl = document.getElementById("announce-text")!;
-const announceOverlay = document.getElementById("announce-overlay")!;
-
-function showAnnounce(text: string) {
-  announceEl.textContent = text;
-  announceOverlay.classList.add("visible");
-}
-function hideAnnounce() {
-  announceOverlay.classList.remove("visible");
-  announceEl.textContent = "";
-}
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
-/** Frame-rate independent smoothing: factor is the convergence rate at 60fps (16.667ms). */
-function smoothLerp(a: number, b: number, factor: number, dt: number): number {
-  return a + (b - a) * (1 - Math.pow(1 - factor, dt / 16.667));
-}
+import {
+  PLAYER_COLORS,
+  WALL_COLOR,
+  TERRAIN_COLS,
+  CHARACTER_SLUGS,
+  CHARACTER_ANIMS,
+  GUN_TEXTURES,
+  GUN_CONFIG,
+  CROUCH_SOUNDS,
+  BG_KEYS,
+  PIXEL_FONT,
+  TUTORIAL_MAP,
+  getTerrainFrame,
+  smoothLerp,
+  showAnnounce,
+  hideAnnounce,
+} from "./constants";
+import type { TickInputPair } from "./constants";
+import { AudioManager } from "./AudioManager";
+import { CameraSystem } from "./CameraSystem";
 
 export class GameScene extends Phaser.Scene {
   private prevState: GameStateData | null = null;
@@ -214,26 +123,14 @@ export class GameScene extends Phaser.Scene {
     initialized: false,
   };
 
-  // Camera
-  private currentZoom = 1.0;
-  private cameraX = 480;
-  private cameraY = 270;
-  private hudCamera!: Phaser.Cameras.Scene2D.Camera;
+  // Camera system
+  private camera: CameraSystem;
 
   // Netcode: tick ordering
   private lastServerTick = 0;
 
-  // Audio
-  private musicMuted = false;
-  private bgm: Phaser.Sound.BaseSound | null = null;
-  private bgmLoading = false; // true while a BGM track is being lazy-loaded
-  private audioLoaded = false;
-  private bgmVolume = 0.1;
-  private sfxVolume = 0.8;
-  private lastBgmTrack = 0;
-
-  // Display settings
-  private dynamicZoom = true;
+  // Audio system
+  audio: AudioManager;
 
   // Warmup mode (waiting room with jumping)
   private warmupMode = false;
@@ -313,6 +210,8 @@ export class GameScene extends Phaser.Scene {
 
   constructor() {
     super({ key: "GameScene" });
+    this.audio = new AudioManager(this);
+    this.camera = new CameraSystem(this);
   }
 
   preload() {
@@ -353,19 +252,19 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.load.on("complete", () => {
-      this.audioLoaded = true;
+      this.audio.setAudioLoaded();
       // Try to start BGM now that audio is loaded (requires prior user gesture)
-      this.startBGM();
+      this.audio.startBGM();
     });
 
     // Load persisted settings
     const storedBGM = localStorage.getItem("chickenz-bgm-volume");
-    if (storedBGM !== null) this.bgmVolume = parseInt(storedBGM, 10) / 100;
+    if (storedBGM !== null) this.audio.bgmVolume = parseInt(storedBGM, 10) / 100;
     const storedSFX = localStorage.getItem("chickenz-sfx-volume");
-    if (storedSFX !== null) this.sfxVolume = parseInt(storedSFX, 10) / 100;
+    if (storedSFX !== null) this.audio.sfxVolume = parseInt(storedSFX, 10) / 100;
     const storedZoom = localStorage.getItem("chickenz-dynamic-zoom");
-    if (storedZoom !== null) this.dynamicZoom = storedZoom !== "false";
-    this.musicMuted = localStorage.getItem("chickenz-music-muted") !== "false";
+    if (storedZoom !== null) this.camera.dynamicZoom = storedZoom !== "false";
+    this.audio.setMusicMuted(localStorage.getItem("chickenz-music-muted") !== "false");
   }
 
   create() {
@@ -498,14 +397,14 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.setZoom(DPR);
 
     // HUD camera: fixed zoom at DPR, covers full canvas viewport
-    this.hudCamera = this.cameras.add(0, 0, Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
-    this.hudCamera.setScroll(0, 0);
-    this.hudCamera.setZoom(DPR);
+    this.camera.hudCamera = this.cameras.add(0, 0, Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
+    this.camera.hudCamera.setScroll(0, 0);
+    this.camera.hudCamera.setZoom(DPR);
 
     // Collect HUD elements (rendered only on hudCamera)
     const hudElements = [this.timerText, this.suddenDeathText, this.controlsText, this.roundText, this.replayInfoText];
     // stompAlertTexts are world-space (not HUD) — HUD camera should ignore them
-    for (const at of this.stompAlertTexts) this.hudCamera.ignore(at);
+    for (const at of this.stompAlertTexts) this.camera.hudCamera.ignore(at);
 
     // Main camera ignores HUD texts
     for (const el of hudElements) {
@@ -513,10 +412,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     // HUD camera ignores game graphics and name texts
-    this.hudCamera.ignore(this.gfx);
-    this.hudCamera.ignore(this.gfxOverlay);
+    this.camera.hudCamera.ignore(this.gfx);
+    this.camera.hudCamera.ignore(this.gfxOverlay);
     for (const nt of this.nameTexts) {
-      this.hudCamera.ignore(nt);
+      this.camera.hudCamera.ignore(nt);
     }
 
     // Dark blue background outside arena (scene background color)
@@ -548,12 +447,12 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < 2; i++) {
       const slug = CHARACTER_SLUGS[this.characterSlots[i] ?? 0];
       const sprite = this.add.sprite(0, 0, `${slug}-idle`).setDepth(20).setVisible(false);
-      this.hudCamera.ignore(sprite);
+      this.camera.hudCamera.ignore(sprite);
       this.playerSprites.push(sprite);
 
       // Gun sprite (rendered on top of character, scale set per-weapon in drawPlayers)
       const gun = this.add.image(0, 0, "gun-pistol").setDepth(21).setVisible(false);
-      this.hudCamera.ignore(gun);
+      this.camera.hudCamera.ignore(gun);
       this.gunSprites.push(gun);
     }
 
@@ -568,7 +467,7 @@ export class GameScene extends Phaser.Scene {
       emitting: false,
     });
     this.dustEmitter.setDepth(19);
-    this.hudCamera.ignore(this.dustEmitter);
+    this.camera.hudCamera.ignore(this.dustEmitter);
 
     // Dust emitters for ground effects — one spreads left, one spreads right
     this.dustGroundEmitL = this.add.particles(0, 0, "dust", {
@@ -581,7 +480,7 @@ export class GameScene extends Phaser.Scene {
       emitting: false,
     });
     this.dustGroundEmitL.setDepth(19);
-    this.hudCamera.ignore(this.dustGroundEmitL);
+    this.camera.hudCamera.ignore(this.dustGroundEmitL);
 
     this.dustGroundEmitR = this.add.particles(0, 0, "dust", {
       speed: { min: 25, max: 55 },
@@ -593,7 +492,7 @@ export class GameScene extends Phaser.Scene {
       emitting: false,
     });
     this.dustGroundEmitR.setDepth(19);
-    this.hudCamera.ignore(this.dustGroundEmitR);
+    this.camera.hudCamera.ignore(this.dustGroundEmitR);
 
     // Pickup collection animation
     this.anims.create({
@@ -614,38 +513,14 @@ export class GameScene extends Phaser.Scene {
       emitting: false,
     });
     this.pickupGlowEmitter.setDepth(14);
-    this.hudCamera.ignore(this.pickupGlowEmitter);
+    this.camera.hudCamera.ignore(this.pickupGlowEmitter);
 
     // Disable Phaser's default audio pause-on-blur (abrupt stop/start).
     // We handle it manually with a fade below.
     this.sound.pauseOnBlur = false;
 
     // Fade BGM out/in on window/tab focus change instead of abrupt pause.
-    // Use a single flag to prevent visibilitychange and blur/focus from racing.
-    let bgmFadedOut = false;
-    const fadeOut = () => {
-      if (bgmFadedOut) return;
-      bgmFadedOut = true;
-      if (!this.bgm || !this.bgm.isPlaying) return;
-      this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, (this.bgm as Phaser.Sound.WebAudioSound).volume, 0, 400);
-    };
-    const fadeIn = () => {
-      if (!bgmFadedOut) return;
-      // Only fade in if the page is actually visible and the window is focused
-      if (document.hidden || !document.hasFocus()) return;
-      bgmFadedOut = false;
-      if (!this.bgm) return;
-      const ctx = (this.sound as Phaser.Sound.WebAudioSoundManager).context;
-      if (ctx.state === "suspended") void ctx.resume();
-      this.fadeVolume(this.bgm as Phaser.Sound.WebAudioSound, 0, this.bgmVolume, 400);
-    };
-    // Listeners persist for app lifetime — GameScene is never destroyed
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) fadeOut();
-      else fadeIn();
-    });
-    window.addEventListener("blur", fadeOut);
-    window.addEventListener("focus", fadeIn);
+    this.audio.setupFocusFade();
 
     this.sceneReady = true;
 
@@ -727,9 +602,9 @@ export class GameScene extends Phaser.Scene {
     this.prediction = null;
     hideAnnounce();
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
-    this.currentZoom = 1.0;
-    this.cameraX = 480;
-    this.cameraY = 270;
+    this.camera.currentZoom = 1.0;
+    this.camera.cameraX = 480;
+    this.camera.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.explosions = [];
@@ -826,9 +701,9 @@ export class GameScene extends Phaser.Scene {
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     const whTut = document.getElementById("weapon-hud");
     if (whTut) whTut.style.display = "none";
-    this.currentZoom = 1.0;
-    this.cameraX = 480;
-    this.cameraY = 270;
+    this.camera.currentZoom = 1.0;
+    this.camera.cameraX = 480;
+    this.camera.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.explosions = [];
@@ -907,11 +782,11 @@ export class GameScene extends Phaser.Scene {
         this.predictionAccum = 0;
         this.playing = true;
         this.showRoundPopup(1);
-        this.playSound("match-start");
+        this.audio.playSound("match-start");
       });
     });
 
-    this.startBGM();
+    this.audio.startBGM();
   }
 
   /** Start a new round with the given seed and map. */
@@ -932,7 +807,7 @@ export class GameScene extends Phaser.Scene {
         this.predictionAccum = 0;
         this.playing = true;
         this.showRoundPopup(round + 1);
-        this.playSound("match-start");
+        this.audio.playSound("match-start");
       });
     });
   }
@@ -1112,22 +987,22 @@ export class GameScene extends Phaser.Scene {
     const p0 = initial.players[0];
     const p1 = initial.players[1];
     if (p0 && p1) {
-      this.cameraX = (p0.x + p1.x) / 2 + PLAYER_WIDTH / 2;
-      this.cameraY = (p0.y + p1.y) / 2 + PLAYER_HEIGHT / 2;
+      this.camera.cameraX = (p0.x + p1.x) / 2 + PLAYER_WIDTH / 2;
+      this.camera.cameraY = (p0.y + p1.y) / 2 + PLAYER_HEIGHT / 2;
       // Start at correct zoom for narrow viewports
       const PAD = 80;
       const needW = Math.abs(p0.x - p1.x) + PLAYER_WIDTH + PAD * 2;
       const needH = Math.abs(p0.y - p1.y) + PLAYER_HEIGHT + PAD * 2;
       const fitZoom = Math.min(VIEW_W / needW, VIEW_H / needH);
-      this.currentZoom = Math.min(1.0, fitZoom);
+      this.camera.currentZoom = Math.min(1.0, fitZoom);
     } else if (p0) {
-      this.cameraX = p0.x + PLAYER_WIDTH / 2;
-      this.cameraY = p0.y + PLAYER_HEIGHT / 2;
-      this.currentZoom = 1.0;
+      this.camera.cameraX = p0.x + PLAYER_WIDTH / 2;
+      this.camera.cameraY = p0.y + PLAYER_HEIGHT / 2;
+      this.camera.currentZoom = 1.0;
     } else {
-      this.cameraX = 480;
-      this.cameraY = 270;
-      this.currentZoom = 1.0;
+      this.camera.cameraX = 480;
+      this.camera.cameraY = 270;
+      this.camera.currentZoom = 1.0;
     }
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
@@ -1137,7 +1012,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Create tile sprites for all platforms in the map using 9-slice terrain tiles. */
   private createMapTiles(map: GameMap, seed: number) {
-    if (!this.hudCamera) console.warn(`[createMapTiles] hudCamera not set — tiles will render on both cameras!`);
+    if (!this.camera.hudCamera) console.warn(`[createMapTiles] hudCamera not set — tiles will render on both cameras!`);
     // Destroy previous round's tiles
     for (const t of this.platformTiles) t.destroy();
     this.platformTiles = [];
@@ -1162,7 +1037,7 @@ export class GameScene extends Phaser.Scene {
     // Create/update background tileSprite clipped to arena bounds
     if (this.bgTile) this.bgTile.destroy();
     this.bgTile = this.add.tileSprite(map.width / 2, map.height / 2, map.width, map.height, bgKey).setDepth(-100);
-    this.hudCamera?.ignore(this.bgTile);
+    this.camera.hudCamera?.ignore(this.bgTile);
 
     for (const plat of map.platforms) {
       const tilesW = Math.max(1, Math.round(plat.width / 16));
@@ -1178,7 +1053,7 @@ export class GameScene extends Phaser.Scene {
               frame,
             )
             .setDepth(0);
-          this.hudCamera?.ignore(img);
+          this.camera.hudCamera?.ignore(img);
           this.platformTiles.push(img);
         }
       }
@@ -1200,7 +1075,7 @@ export class GameScene extends Phaser.Scene {
       const tileY = platformTop + 5;
       for (let i = 0; i < 3; i++) {
         const img = this.add.image(sp.x + (i - 1) * 16, tileY, "terrain", PEDESTAL_FRAMES[i]!).setDepth(0);
-        this.hudCamera?.ignore(img);
+        this.camera.hudCamera?.ignore(img);
         this.platformTiles.push(img);
       }
     }
@@ -1222,7 +1097,7 @@ export class GameScene extends Phaser.Scene {
 
     const addBorder = (x: number, y: number, frame: number) => {
       const img = this.add.image(x, y, "terrain", frame).setDepth(11);
-      this.hudCamera?.ignore(img);
+      this.camera.hudCamera?.ignore(img);
       this.borderTiles.push(img);
     };
 
@@ -1297,9 +1172,9 @@ export class GameScene extends Phaser.Scene {
     hideAnnounce();
     document.getElementById("sudden-death-overlay")?.classList.remove("visible");
     this.explosions = [];
-    this.currentZoom = 1.0;
-    this.cameraX = 480;
-    this.cameraY = 270;
+    this.camera.currentZoom = 1.0;
+    this.camera.cameraX = 480;
+    this.camera.cameraY = 270;
     this.localSmooth = { x: 0, y: 0, velX: 0, velY: 0, initialized: false };
     this.remoteSmooth = { x: 0, y: 0, vx: 0, vy: 0, initialized: false };
     this.resetRagdolls();
@@ -1426,7 +1301,7 @@ export class GameScene extends Phaser.Scene {
         showAnnounce(name ? `${name} wins!` : `Player ${winner + 1} wins!`);
       }
     }
-    this.playSound("match-end");
+    this.audio.playSound("match-end");
     this.pendingServerState = null;
     this.pendingServerButtons = undefined;
     this.lastServerTick = 0;
@@ -1480,7 +1355,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.currState) {
-      this.detectAudioEvents(this.currState, state);
+      this.audio.detectAudioEvents(this.currState, state);
     }
 
     this.prevState = this.currState;
@@ -1511,36 +1386,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   setMuted(muted: boolean) {
-    this.setMusicMuted(muted);
+    this.audio.setMusicMuted(muted);
   }
 
   setMusicMuted(muted: boolean) {
-    this.musicMuted = muted;
-    if (muted) {
-      this.bgmLoading = false;
-      if (this.bgm) {
-        this.bgm.stop();
-        this.bgm.destroy();
-        this.bgm = null;
-      }
-    } else {
-      this.startBGM();
-    }
+    this.audio.setMusicMuted(muted);
   }
 
   setBGMVolume(vol: number) {
-    this.bgmVolume = vol;
-    if (this.bgm && "volume" in this.bgm) {
-      (this.bgm as Phaser.Sound.WebAudioSound).volume = vol;
-    }
+    this.audio.setBGMVolume(vol);
   }
 
   setSFXVolume(vol: number) {
-    this.sfxVolume = vol;
+    this.audio.setSFXVolume(vol);
   }
 
   setDynamicZoom(enabled: boolean) {
-    this.dynamicZoom = enabled;
+    this.camera.dynamicZoom = enabled;
   }
 
   setControlsHint(text: string) {
@@ -1555,19 +1417,7 @@ export class GameScene extends Phaser.Scene {
     this.controlsText.setPosition(10, VIEW_H - 25).setResolution(DPR);
     this.roundText.setResolution(DPR);
     this.replayInfoText.setPosition(VIEW_W / 2, VIEW_H - 10).setResolution(DPR);
-    // Update main camera bounds and zoom
-    const mapW = this.config?.map?.width ?? 960;
-    const mapH = this.config?.map?.height ?? 540;
-    const padX = VIEW_W / 2;
-    const padY = VIEW_H / 2;
-    this.cameras.main.setBounds(-padX, -padY, mapW + padX * 2, mapH + padY * 2);
-    this.cameras.main.setZoom(this.currentZoom * DPR);
-
-    // Update HUD camera viewport and zoom
-    if (this.hudCamera) {
-      this.hudCamera.setSize(Math.round(VIEW_W * DPR), Math.round(VIEW_H * DPR));
-      this.hudCamera.setZoom(DPR);
-    }
+    this.camera.handleResize(this.config);
 
     // bgTile is arena-sized (clipped to border), no resize needed
   }
@@ -1584,7 +1434,7 @@ export class GameScene extends Phaser.Scene {
         this.lastReceivedButtons = [...lastButtons] as [number, number];
       }
       if (this.currState) {
-        this.detectAudioEvents(this.currState, state);
+        this.audio.detectAudioEvents(this.currState, state);
       }
       this.prevState = this.currState;
       this.currState = state;
@@ -1621,7 +1471,7 @@ export class GameScene extends Phaser.Scene {
           result.modifyState(this.warmupState!);
         }
         this.warmupWasm.import_state(this.warmupState);
-        this.detectAudioEvents(prevWarmup!, this.warmupState!);
+        this.audio.detectAudioEvents(prevWarmup!, this.warmupState!);
       }
       if (this.warmupAccum > TICK_DT_MS * 2) this.warmupAccum = 0;
       this.currState = this.warmupState;
@@ -1648,7 +1498,7 @@ export class GameScene extends Phaser.Scene {
         this.banishWarmupPlayer2(this.warmupState!);
         // Import banished state back so WASM sim has P2 off-screen (prevents bullet absorption)
         this.warmupWasm.import_state(this.warmupState);
-        this.detectAudioEvents(prevWarmup!, this.warmupState!);
+        this.audio.detectAudioEvents(prevWarmup!, this.warmupState!);
       }
       if (this.warmupAccum > TICK_DT_MS * 2) this.warmupAccum = 0;
       this.currState = this.warmupState;
@@ -1838,7 +1688,7 @@ export class GameScene extends Phaser.Scene {
     for (const [id, pos] of this.prevRockets) {
       if (!currentRocketIds.has(id)) {
         this.explosions.push({ x: pos.x, y: pos.y, timer: 15 });
-        this.playSound("explosion");
+        this.audio.playSound("explosion");
       }
     }
     this.prevRockets.clear();
@@ -1852,7 +1702,14 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    this.updateCamera(curr, predicted, delta);
+    this.camera.updateCamera(curr, predicted, delta, {
+      config: this.config,
+      warmupConfig: this.warmupConfig,
+      warmupMode: this.warmupMode,
+      tutorialMode: this.tutorialMode,
+      localPlayerId: this.localPlayerId,
+      roundTransition: this.roundTransition,
+    });
     this.drawArena(g, displayState);
     this.drawPickups(g, curr);
     this.drawPlayers(g, curr, predicted, delta);
@@ -1891,7 +1748,7 @@ export class GameScene extends Phaser.Scene {
             .sprite(pickup.x, pickup.y + 20, "collected")
             .setDepth(25)
             .setScale(1);
-          this.hudCamera.ignore(fx);
+          this.camera.hudCamera.ignore(fx);
           fx.play("collected");
           fx.once("animationcomplete", () => fx.destroy());
         }
@@ -1910,7 +1767,7 @@ export class GameScene extends Phaser.Scene {
           .image(pickup.x, py, tex ?? "gun-pistol")
           .setDepth(15)
           .setScale(0.6);
-        this.hudCamera.ignore(sprite);
+        this.camera.hudCamera.ignore(sprite);
         this.pickupSprites.set(pickup.id, sprite);
       }
       if (tex && sprite.texture.key !== tex) {
@@ -2280,7 +2137,7 @@ export class GameScene extends Phaser.Scene {
           // Restart animation + sound immediately (interrupts previous)
           sprite.play(`${slug}-crouch`);
           const soundKey = CROUCH_SOUNDS[slug!];
-          if (soundKey) this.playSoundInterrupt(soundKey);
+          if (soundKey) this.audio.playSoundInterrupt(soundKey);
           animKey = `${slug}-crouch`;
         } else if (tauntPlaying) {
           animKey = `${slug}-crouch`;
@@ -2624,256 +2481,4 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private applyCam(cam: Phaser.Cameras.Scene2D.Camera) {
-    cam.setZoom(this.currentZoom * DPR);
-    cam.centerOn(this.cameraX, this.cameraY);
-    cam.scrollX = Math.round(cam.scrollX);
-    cam.scrollY = Math.round(cam.scrollY);
-  }
-
-  private updateCamera(curr: GameStateData, predicted: GameStateData | null, delta: number) {
-    const cam = this.cameras.main;
-
-    // Fixed zoom mode: show whole arena, centered (with padding so edges aren't clipped)
-    if (!this.dynamicZoom && !this.warmupMode && !this.tutorialMode) {
-      const mapW = this.config?.map.width ?? 960;
-      const mapH = this.config?.map.height ?? 540;
-      const PAD = 40;
-      const fitZoom = Math.min(VIEW_W / (mapW + PAD * 2), VIEW_H / (mapH + PAD * 2));
-      this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.1, delta);
-      this.cameraX = smoothLerp(this.cameraX, mapW / 2, 0.15, delta);
-      this.cameraY = smoothLerp(this.cameraY, mapH / 2, 0.15, delta);
-      this.applyCam(cam);
-      return;
-    }
-
-    // Local player from predicted state, remote from server state (curr)
-    const localP = (predicted ?? curr).players[this.localPlayerId];
-    const remoteP = curr.players[1 - this.localPlayerId];
-
-    // Warmup or single-player
-    if (!localP || !remoteP || this.warmupMode || this.tutorialMode) {
-      if ((this.warmupMode || this.tutorialMode) && this.dynamicZoom && localP) {
-        // Dynamic zoom in warmup: follow the player
-        const aliveLocal = !!(localP.stateFlags & PlayerStateFlag.Alive);
-        const targetX = aliveLocal ? localP.x + PLAYER_WIDTH / 2 : 480;
-        const targetY = aliveLocal ? localP.y + PLAYER_HEIGHT / 2 : 270;
-        this.currentZoom = smoothLerp(this.currentZoom, 1.3, 0.05, delta);
-        this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
-        this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
-      } else {
-        // Static zoom: show full arena
-        const mapW =
-          (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.width : this.config?.map.width) ?? 960;
-        const mapH =
-          (this.warmupMode || this.tutorialMode ? this.warmupConfig?.map.height : this.config?.map.height) ?? 540;
-        const PAD = 40;
-        const fitZoom = Math.min(VIEW_W / (mapW + PAD * 2), VIEW_H / (mapH + PAD * 2));
-        this.currentZoom = smoothLerp(this.currentZoom, fitZoom, 0.05, delta);
-        this.cameraX = smoothLerp(this.cameraX, mapW / 2, 0.15, delta);
-        this.cameraY = smoothLerp(this.cameraY, mapH / 2, 0.15, delta);
-      }
-      this.applyCam(cam);
-      return;
-    }
-
-    const aliveLocal = !!(localP.stateFlags & PlayerStateFlag.Alive);
-    const aliveRemote = !!(remoteP.stateFlags & PlayerStateFlag.Alive);
-
-    let targetZoom: number;
-    let targetX: number;
-    let targetY: number;
-
-    // During round transition, stay zoomed on the winner
-    const killZoom = this.roundTransition || (predicted ?? curr).deathLingerTimer > 0;
-
-    if (aliveLocal && aliveRemote) {
-      const dist = Math.hypot(localP.x - remoteP.x, localP.y - remoteP.y);
-      targetZoom = dist < 250 ? 1.3 : dist > 500 ? 1.0 : lerp(1.3, 1.0, (dist - 250) / 250);
-      targetX = (localP.x + remoteP.x) / 2 + PLAYER_WIDTH / 2;
-      targetY = (localP.y + remoteP.y) / 2 + PLAYER_HEIGHT / 2;
-
-      // Ensure both players fit in viewport (critical for narrow windows)
-      const PAD = 80; // pixels of padding around players
-      const needW = Math.abs(localP.x - remoteP.x) + PLAYER_WIDTH + PAD * 2;
-      const needH = Math.abs(localP.y - remoteP.y) + PLAYER_HEIGHT + PAD * 2;
-      const fitZoom = Math.min(VIEW_W / needW, VIEW_H / needH);
-      if (fitZoom < targetZoom) targetZoom = fitZoom;
-    } else if (aliveLocal) {
-      targetZoom = killZoom ? 1.5 : 1.0;
-      targetX = localP.x + PLAYER_WIDTH / 2;
-      targetY = localP.y + PLAYER_HEIGHT / 2;
-    } else if (aliveRemote) {
-      targetZoom = killZoom ? 1.5 : 1.0;
-      targetX = remoteP.x + PLAYER_WIDTH / 2;
-      targetY = remoteP.y + PLAYER_HEIGHT / 2;
-    } else {
-      targetZoom = killZoom ? 1.5 : 1.0;
-      targetX = 480;
-      targetY = 270;
-    }
-
-    this.currentZoom = smoothLerp(this.currentZoom, targetZoom, 0.05, delta);
-    this.cameraX = smoothLerp(this.cameraX, targetX, 0.15, delta);
-    this.cameraY = smoothLerp(this.cameraY, targetY, 0.15, delta);
-    this.applyCam(cam);
-  }
-
-  // ── Audio ──────────────────────────────────────────────────────────────────
-
-  private playSound(key: string) {
-    if (this.sfxVolume === 0) return;
-    // Try Phaser audio first (check asset cache, not sound manager), fall back to Web Audio synth
-    if (this.audioLoaded && this.cache.audio.exists(key)) {
-      try {
-        this.sound.play(key, { volume: this.sfxVolume });
-        return;
-      } catch {
-        /* fall through */
-      }
-    }
-    playSFX(key, this.sfxVolume);
-  }
-
-  /** Play a sound, stopping any previous instance first (for spammable SFX like taunt). */
-  private playSoundInterrupt(key: string) {
-    if (this.sfxVolume === 0) return;
-    if (this.audioLoaded && this.cache.audio.exists(key)) {
-      try {
-        // Stop all existing instances of this sound
-        this.sound.stopByKey(key);
-        this.sound.play(key, { volume: this.sfxVolume });
-        return;
-      } catch {
-        /* fall through */
-      }
-    }
-    playSFX(key, this.sfxVolume);
-  }
-
-  /** Smoothly fade a WebAudio track's volume from `from` to `to` over `ms` milliseconds. */
-  private fadeTimers: ReturnType<typeof setInterval>[] = [];
-
-  private fadeVolume(track: Phaser.Sound.WebAudioSound, from: number, to: number, ms: number) {
-    const steps = 20;
-    const interval = ms / steps;
-    let step = 0;
-    const timer = setInterval(() => {
-      step++;
-      try {
-        track.volume = from + (to - from) * (step / steps);
-      } catch {
-        clearInterval(timer);
-        this.fadeTimers = this.fadeTimers.filter((t) => t !== timer);
-        return;
-      }
-      if (step >= steps) {
-        clearInterval(timer);
-        this.fadeTimers = this.fadeTimers.filter((t) => t !== timer);
-      }
-    }, interval);
-    this.fadeTimers.push(timer);
-  }
-
-  /** Clear all pending fade intervals (for cleanup). */
-  private clearFadeTimers() {
-    for (const t of this.fadeTimers) clearInterval(t);
-    this.fadeTimers = [];
-  }
-
-  private pickBgmTrack(): string {
-    const TRACK_COUNT = 5;
-    let track: number;
-    do {
-      track = 1 + Math.floor(Math.random() * TRACK_COUNT);
-    } while (track === this.lastBgmTrack && TRACK_COUNT > 1);
-    this.lastBgmTrack = track;
-    return `bgm-${track}`;
-  }
-
-  /** Start BGM if not already playing. Idempotent — safe to call multiple times. */
-  startBGM() {
-    if (this.bgmVolume === 0 || !this.audioLoaded || this.musicMuted) return;
-    if (this.bgm?.isPlaying || this.bgmLoading) return; // already playing or loading
-    this.playNextTrack();
-  }
-
-  private playNextTrack() {
-    if (this.bgmVolume === 0 || !this.audioLoaded || this.musicMuted) return;
-    try {
-      const key = this.pickBgmTrack();
-      // Lazy load BGM: if track isn't cached yet, load it first
-      if (!this.cache.audio.exists(key)) {
-        this.bgmLoading = true;
-        this.load.audio(key, `/audio/${key}.mp3`);
-        this.load.once("complete", () => {
-          this.bgmLoading = false;
-          this.startTrack(key);
-        });
-        this.load.start();
-        return;
-      }
-      this.startTrack(key);
-    } catch {
-      // BGM not available
-    }
-  }
-
-  private startTrack(key: string) {
-    try {
-      const newTrack = this.sound.add(key, { loop: false, volume: this.bgmVolume }) as Phaser.Sound.WebAudioSound;
-      // Crossfade: fade out old track over 1s, then destroy it
-      if (this.bgm?.isPlaying && "volume" in this.bgm) {
-        const oldTrack = this.bgm as Phaser.Sound.WebAudioSound;
-        this.fadeVolume(oldTrack, oldTrack.volume, 0, 1000);
-        setTimeout(() => {
-          oldTrack.stop();
-          oldTrack.destroy();
-        }, 1050);
-      } else if (this.bgm) {
-        this.bgm.destroy();
-      }
-      this.bgm = newTrack;
-      newTrack.on("complete", () => this.playNextTrack());
-      newTrack.play();
-    } catch {
-      // BGM not available
-    }
-  }
-
-  private detectAudioEvents(prev: GameStateData, curr: GameStateData) {
-    // New projectiles → shoot sound (detect by ID, not count, since old ones expire)
-    const prevIds = new Set(prev.projectiles.map((p) => p.id));
-    for (const proj of curr.projectiles) {
-      if (!prevIds.has(proj.id)) {
-        if (proj.weapon === WeaponType.SMG) {
-          this.playSound("shoot-smg");
-        } else {
-          this.playSoundInterrupt("shoot");
-        }
-        break; // one sound per frame is enough
-      }
-    }
-
-    // Per-player events
-    for (let i = 0; i < curr.players.length; i++) {
-      const pp = prev.players[i];
-      const cp = curr.players[i];
-      if (pp && cp) {
-        if (cp.health < pp.health && cp.health > 0) {
-          this.playSound("hit");
-        }
-        if (pp.stateFlags & PlayerStateFlag.Alive && !(cp.stateFlags & PlayerStateFlag.Alive)) {
-          this.playSound("death");
-        }
-        if (cp.weapon !== null && cp.weapon >= 0 && cp.weapon !== pp.weapon) {
-          this.playSound("pickup");
-        }
-        // Jump: jumpsLeft decreased while alive
-        if (cp.jumpsLeft < pp.jumpsLeft && cp.stateFlags & PlayerStateFlag.Alive) {
-          this.playSound("jump");
-        }
-      }
-    }
-  }
 }

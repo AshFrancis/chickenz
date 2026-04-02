@@ -2,6 +2,9 @@ import { spawn } from "child_process";
 import { writeFile, readFile, unlink, mkdir, rmdir } from "fs/promises";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
+import { createLogger } from "./logger";
+
+const log = createLogger("prover");
 const PROVER_BINARY =
   process.env.PROVER_BINARY || resolve(import.meta.dir, "../../prover/target/release/chickenz-host");
 const WORKER_TIMEOUT_MS = 60_000; // worker considered offline after 60s without poll
@@ -46,7 +49,7 @@ export function queueProof(
   // Prevent duplicate queue entries for the same match
   const existing = proofQueue.find((j) => j.matchId === matchId);
   if (existing) {
-    console.log(`[prover] Job for ${matchId} already in queue (status: ${existing.status}), skipping`);
+    log.info("Job already in queue, skipping", { matchId, status: existing.status });
     return existing;
   }
   // Enforce max queue size — evict oldest done/queued jobs
@@ -58,7 +61,7 @@ export function queueProof(
       // Drop oldest queued job
       const queuedIdx = proofQueue.findIndex((j) => j.status === "queued");
       if (queuedIdx >= 0) {
-        console.log(`[prover] Queue full, dropping oldest job: ${proofQueue[queuedIdx]!.matchId}`);
+        log.warn("Queue full, dropping oldest job", { matchId: proofQueue[queuedIdx]!.matchId });
         proofQueue.splice(queuedIdx, 1);
       } else {
         break; // All jobs are claimed — can't evict
@@ -67,7 +70,7 @@ export function queueProof(
   }
   const job: ProofJob = { matchId, transcript, status: "queued", onResult };
   proofQueue.push(job);
-  console.log(`[prover] Queued proof for ${matchId} (queue size: ${proofQueue.length})`);
+  log.info("Queued proof", { matchId, queueSize: proofQueue.length });
   return job;
 }
 
@@ -79,7 +82,7 @@ export function claimNextJob(): ProofJob | null {
   if (job) {
     job.status = "claimed";
     job.claimedAt = Date.now();
-    console.log(`[prover] Job ${job.matchId} claimed by worker`);
+    log.info("Job claimed by worker", { matchId: job.matchId });
   }
   return job ?? null;
 }
@@ -96,13 +99,13 @@ export function submitJobResult(matchId: string, artifacts: ProofArtifacts): Pro
   if (!job) return null;
   job.artifacts = artifacts;
   job.status = "done";
-  console.log(`[prover] Proof received for ${matchId}`);
+  log.info("Proof received", { matchId });
   // Invoke onResult callback if registered
   if (job.onResult) {
     try {
       job.onResult(artifacts, "worker");
     } catch (e) {
-      console.error(`[prover] onResult callback error for ${matchId}:`, e);
+      log.error("onResult callback error", { matchId, error: (e as Error).message });
     }
   }
   return job;
@@ -120,7 +123,7 @@ function pruneJobs() {
     }
     // Reset claimed jobs stuck >5 min back to queued
     if (job.status === "claimed" && job.claimedAt && now - job.claimedAt > JOB_TIMEOUT_MS) {
-      console.log(`[prover] Job ${job.matchId} timed out, re-queuing`);
+      log.warn("Job timed out, re-queuing", { matchId: job.matchId });
       job.status = "queued";
       job.claimedAt = undefined;
     }
@@ -153,7 +156,7 @@ export async function proveBoundless(
   try {
     await mkdir(workDir, { recursive: true });
     await writeFile(inputPath, JSON.stringify(transcript));
-    console.log(`[prover] Starting Boundless proof for ${matchId}...`);
+    log.info("Starting Boundless proof", { matchId });
 
     let stdout = "";
     let stderr = "";
@@ -182,7 +185,7 @@ export async function proveBoundless(
           const reqIdMatch = chunk.match(/Request ID:\s*([0-9a-fA-Fx]+)/);
           if (reqIdMatch) {
             capturedRequestId = reqIdMatch[1]!;
-            console.log(`[prover] Boundless request ID for ${matchId}: ${capturedRequestId}`);
+            log.info("Boundless request ID", { matchId, requestId: capturedRequestId });
             onRequestId?.(capturedRequestId);
           }
         }
@@ -191,20 +194,20 @@ export async function proveBoundless(
           const txMatch = chunk.match(/Broadcasting tx (0x)?([0-9a-fA-F]{64})/);
           if (txMatch) {
             capturedTxHash = `0x${txMatch[2]!}`;
-            console.log(`[prover] Boundless tx hash for ${matchId}: ${capturedTxHash}`);
+            log.info("Boundless tx hash", { matchId, txHash: capturedTxHash });
             onTxHash?.(capturedTxHash);
           }
         }
       });
       proc.on("error", (err) => {
-        console.error(`[prover] Failed to spawn Boundless for ${matchId}:`, err.message);
+        log.error("Failed to spawn Boundless", { matchId, error: err.message });
         reject(err);
       });
       proc.on("close", (code) => {
         if (code !== 0) {
-          console.error(`[prover] Boundless exited with code ${code} for ${matchId}`);
-          if (stderr) console.error(`[prover] stderr: ${stderr.slice(-4000)}`);
-          if (stdout) console.log(`[prover] stdout: ${stdout.slice(-4000)}`);
+          log.error("Boundless exited with non-zero code", { matchId, exitCode: code });
+          if (stderr) log.error("Boundless stderr", { matchId, stderr: stderr.slice(-4000) });
+          if (stdout) log.info("Boundless stdout", { matchId, stdout: stdout.slice(-4000) });
         }
         resolve(code ?? 1);
       });
@@ -219,10 +222,10 @@ export async function proveBoundless(
       artifacts.boundlessRequestId = capturedRequestId;
     }
 
-    console.log(`[prover] Boundless proof generated for ${matchId}`);
+    log.info("Boundless proof generated", { matchId });
     return artifacts;
   } catch (err) {
-    console.error(`[prover] Error in Boundless proving ${matchId}:`, err);
+    log.error("Error in Boundless proving", { matchId, error: (err as Error).message });
     return null;
   } finally {
     try {
@@ -272,14 +275,13 @@ export function proveMatch(
     if (!artifacts) return;
     if (settled) {
       // Second prover finished — log comparison with the winner
-      console.log(`[prover] ${matchId} also proved by ${source} (winner was ${winnerSource})`);
-      console.log(`[prover]   ${source} seal (${artifacts.seal.length / 2} bytes): ${artifacts.seal.slice(0, 16)}...`);
+      log.info("Also proved by runner-up", { matchId, source, winner: winnerSource, sealBytes: artifacts.seal.length / 2 });
       if (winnerArtifacts) {
         const journalMatch = artifacts.journal === winnerArtifacts.journal;
-        console.log(`[prover]   journal match: ${journalMatch}`);
-        if (!journalMatch) {
-          console.error(`[prover]   MISMATCH! ${source} journal: ${artifacts.journal}`);
-          console.error(`[prover]   MISMATCH! ${winnerSource} journal: ${winnerArtifacts.journal}`);
+        if (journalMatch) {
+          log.info("Runner-up journal matches winner", { matchId, source });
+        } else {
+          log.error("Journal MISMATCH between provers", { matchId, source, sourceJournal: artifacts.journal, winnerSource, winnerJournal: winnerArtifacts.journal });
         }
       }
       return;
@@ -289,11 +291,11 @@ export function proveMatch(
     winnerSource = source;
     winnerArtifacts = artifacts;
     markJobDone(); // Prevent workers from re-claiming
-    console.log(`[prover] ${matchId} proved by ${source}`);
+    log.info("Match proved", { matchId, source });
     try {
       onResult(artifacts, source);
     } catch (err) {
-      console.error(`[prover] ${matchId} onResult threw:`, err);
+      log.error("onResult threw", { matchId, error: (err as Error).message });
     }
   };
 
@@ -304,7 +306,7 @@ export function proveMatch(
       if (!settled) {
         settled = true;
         markJobDone(); // Clean up stale job
-        console.log(`[prover] ${matchId} timed out after 20 minutes`);
+        log.warn("Match timed out after 20 minutes", { matchId });
         onResult(null);
       }
     },
@@ -313,17 +315,17 @@ export function proveMatch(
 
   // Always queue for worker (gaming PC polls these)
   queueProof(matchId, transcript, settleOnce("worker"));
-  console.log(`[prover] Queued ${matchId} for worker`);
+  log.info("Queued for worker", { matchId });
 
   // Also submit to Boundless in parallel
   if (process.env.BOUNDLESS_RPC_URL && process.env.BOUNDLESS_PRIVATE_KEY) {
-    console.log(`[prover] Submitting ${matchId} to Boundless in parallel`);
+    log.info("Submitting to Boundless in parallel", { matchId });
     proveBoundless(matchId, transcript, onBoundlessRequestId, onBoundlessTxHash)
       .then((artifacts) => {
         if (artifacts) {
           settleOnce("boundless")(artifacts);
         } else {
-          console.log(`[prover] Boundless failed for ${matchId}`);
+          log.warn("Boundless failed", { matchId });
           // If worker job is also gone (pruned/not claimed), give up
           if (!settled && !proofQueue.find((j) => j.matchId === matchId && j.status !== "done")) {
             settled = true;
@@ -332,13 +334,13 @@ export function proveMatch(
         }
       })
       .catch(() => {
-        console.log(`[prover] Boundless error for ${matchId}`);
+        log.warn("Boundless error", { matchId });
         if (!settled && !proofQueue.find((j) => j.matchId === matchId && j.status !== "done")) {
           settled = true;
           onResult(null);
         }
       });
   } else {
-    console.log(`[prover] No Boundless config — ${matchId} relies on worker only`);
+    log.info("No Boundless config, relies on worker only", { matchId });
   }
 }
