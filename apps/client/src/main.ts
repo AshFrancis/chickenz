@@ -293,45 +293,14 @@ function deferBGMStart() {
   window.addEventListener("keydown", startBGMOnce);
 }
 
+// Check for join URL param now (URL gets cleared later by deep link code)
+const hasJoinParam = new URLSearchParams(window.location.search).has("join");
+
 // Init gate — returning users go straight to lobby, new users get tutorial first
 {
   const name = getOrCreateUsername();
   session.currentUsername = name;
   topBarUsername.textContent = name;
-
-  // Init regions: connect to cached region instantly, measure pings in background
-  // Check for join URL param BEFORE first await (URL gets cleared later by deep link code)
-  const hasJoinParam = new URLSearchParams(window.location.search).has("join");
-
-  void (async () => {
-    // 1. Try cached home region for instant connect
-    const cached = regionManager.getCachedHomeRegion();
-    if (cached) {
-      session.activeRegionId = cached.id;
-      regionManager.activeRegionId = cached.id;
-      await connectToServer(cached.wsUrl, connectorDeps!);
-      flushPendingActions();
-    }
-
-    // 2. Measure pings in background (all regions in parallel)
-    await regionManager.measurePings();
-
-    // 3. If best region differs from cached (or no cache), switch —
-    //    UNLESS a ?join= URL param is present (the deep link handler will
-    //    switch to the correct region; switching here would kill the game connection)
-    if (!hasJoinParam) {
-      const bestRegion = regionManager.getBestRegion();
-      if (bestRegion.id !== session.activeRegionId) {
-        session.activeRegionId = bestRegion.id;
-        regionManager.activeRegionId = bestRegion.id;
-        await connectToServer(bestRegion.wsUrl, connectorDeps!);
-        if (!cached) flushPendingActions();
-      }
-    }
-
-    regionManager.connectLobbyStreams();
-    regionManager.startPingRefresh();
-  })();
 
   deferBGMStart();
 
@@ -643,6 +612,38 @@ connectorDeps = {
   touchControls,
   switchToRegion,
 };
+
+// ── Region connect flow (runs after all deps are ready) ──────────────────────
+
+void (async () => {
+  // 1. Try cached home region for instant connect
+  const cached = regionManager.getCachedHomeRegion();
+  if (cached) {
+    session.activeRegionId = cached.id;
+    regionManager.activeRegionId = cached.id;
+    await connectToServer(cached.wsUrl, connectorDeps!);
+    flushPendingActions();
+  }
+
+  // 2. Measure pings in background (all regions in parallel)
+  await regionManager.measurePings();
+
+  // 3. If best region differs from cached (or no cache), switch —
+  //    UNLESS a ?join= URL param is present (the deep link handler will
+  //    switch to the correct region; switching here would kill the game connection)
+  if (!hasJoinParam) {
+    const bestRegion = regionManager.getBestRegion();
+    if (bestRegion.id !== session.activeRegionId) {
+      session.activeRegionId = bestRegion.id;
+      regionManager.activeRegionId = bestRegion.id;
+      await connectToServer(bestRegion.wsUrl, connectorDeps!);
+      if (!cached) flushPendingActions();
+    }
+  }
+
+  regionManager.connectLobbyStreams();
+  regionManager.startPingRefresh();
+})();
 
 // ── Match Actions (replay, download, detail, settle) ─────────────────────────
 
