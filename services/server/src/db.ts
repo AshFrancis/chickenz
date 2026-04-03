@@ -110,6 +110,8 @@ const migrations = [
   "ALTER TABLE matches ADD COLUMN bot_vs_bot INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN prover_transcript_data TEXT",
   "ALTER TABLE matches ADD COLUMN match_status TEXT DEFAULT 'completed'",
+  "CREATE INDEX IF NOT EXISTS idx_matches_timestamp ON matches(timestamp)",
+  "CREATE INDEX IF NOT EXISTS idx_player_stats_elo ON player_stats(elo)",
 ];
 
 {
