@@ -24,6 +24,7 @@
     "format": "prettier --write 'packages/sim/src/**/*.ts' 'apps/client/src/**/*.ts' 'services/server/src/**/*.ts' '*.json'",
     "format:check": "prettier --check 'packages/sim/src/**/*.ts' 'apps/client/src/**/*.ts' 'services/server/src/**/*.ts' '*.json'",
     "audit:security": "pnpm audit",
+    "test:e2e": "playwright test",
     "check:all": "pnpm typecheck && pnpm lint && pnpm lint:docs && pnpm format:check && pnpm test && pnpm build"
   },
   "pnpm": {
@@ -36,6 +37,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.59.1",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
     "markdownlint-cli2": "^0.22.0",

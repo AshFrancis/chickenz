@@ -65,7 +65,7 @@ deploy_to_server() {
   if [ "$MODE" = "client" ] || [ "$MODE" = "both" ]; then
     log "[$region] Uploading client dist..."
     ssh $SSH_OPTS "$server" "mkdir -p $REMOTE_DIR/services/server/public"
-    scp $SSH_OPTS -r "$PROJECT_ROOT/apps/client/dist/"* "$server:$REMOTE_DIR/services/server/public/"
+    scp $SSH_OPTS -r "$PROJECT_ROOT/services/server/public/"* "$server:$REMOTE_DIR/services/server/public/"
   fi
 
   if [ "$MODE" = "server" ] || [ "$MODE" = "both" ]; then

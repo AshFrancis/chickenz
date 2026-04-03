@@ -53,6 +53,8 @@ export default defineConfig({
     },
   },
   build: {
+    outDir: resolve(__dirname, "../../services/server/public"),
+    emptyOutDir: true,
     target: "esnext", // support top-level await for WASM init
     rollupOptions: {
       input: {

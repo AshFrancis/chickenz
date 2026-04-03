@@ -94,6 +94,7 @@ export function initLobbyPanel(deps: LobbyPanelDeps): LobbyPanelAPI {
 
   function open() {
     lobbyOverlay.classList.add("visible");
+    lobbyOverlay.dataset.ready = "1";
     lobbyStatus.textContent = "";
     joinCodeInput.value = "";
     setButtons(true);

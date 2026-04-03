@@ -62,6 +62,7 @@ export function connectToServer(url: string, deps: ServerConnectorDeps): Promise
         if (session.currentTournamentId) return;
         history.replaceState(null, "", "?join=" + joinCode);
         localStorage.setItem("chickenz-last-join-code", joinCode);
+        lobbyAPI.close();
         const botBtn = document.getElementById("btn-add-bot");
         if (botBtn) botBtn.style.display = session.currentMode === "ranked" ? "none" : "";
         const scene = getGameScene();
@@ -70,7 +71,6 @@ export function connectToServer(url: string, deps: ServerConnectorDeps): Promise
             joinCode,
             session.currentUsername,
             () => {
-              lobbyAPI.close();
               settingsAPI.applyAudioSettings(scene);
               if (isTouchDevice) touchControls.show();
             },
@@ -83,7 +83,10 @@ export function connectToServer(url: string, deps: ServerConnectorDeps): Promise
         if (session.currentTournamentId) return;
 
         const scene = getGameScene();
-        if (!scene) return;
+        if (!scene) {
+          lobbyAPI.close();
+          return;
+        }
 
         session.networkManager?.resetThrottle();
         const needCloseLobby = !scene.isWarmup;
