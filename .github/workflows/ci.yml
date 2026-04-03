@@ -126,6 +126,87 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [ts, e2e]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        server:
+          - { ip: "178.156.244.26", region: "us",   domain: "us.chickenz.io" }
+          - { ip: "89.167.92.60",   region: "eu",   domain: "eu.chickenz.io" }
+          - { ip: "5.223.61.107",   region: "asia", domain: "asia.chickenz.io" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo (wasm)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/prover/wasm/target
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('services/prover/wasm/Cargo.lock', 'services/prover/core/Cargo.toml', 'services/prover/wasm/Cargo.toml') }}
+          restore-keys: cargo-wasm-${{ runner.os }}-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build WASM
+        run: pnpm build:wasm
+
+      - name: Build client
+        run: pnpm --filter @chickenz/client build
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ matrix.server.ip }} >> ~/.ssh/known_hosts
+
+      - name: Upload client → ${{ matrix.server.region }}
+        run: |
+          ssh root@${{ matrix.server.ip }} "mkdir -p /root/chickenz/services/server/public"
+          scp -r services/server/public/* root@${{ matrix.server.ip }}:/root/chickenz/services/server/public/
+
+      - name: Upload WASM → ${{ matrix.server.region }}
+        run: |
+          ssh root@${{ matrix.server.ip }} "mkdir -p /root/chickenz/services/prover/wasm/pkg"
+          scp services/prover/wasm/pkg/chickenz_wasm_bg.wasm \
+              services/prover/wasm/pkg/chickenz_wasm.js \
+              services/prover/wasm/pkg/chickenz_wasm.d.ts \
+              root@${{ matrix.server.ip }}:/root/chickenz/services/prover/wasm/pkg/
+
+      - name: Pull & install → ${{ matrix.server.region }}
+        run: |
+          ssh root@${{ matrix.server.ip }} "cd /root/chickenz && git pull origin main 2>&1 | tail -3 && pnpm install --frozen-lockfile 2>&1 | tail -3"
+
+      - name: Restart → ${{ matrix.server.region }}
+        run: ssh root@${{ matrix.server.ip }} "systemctl restart chickenz"
+
+      - name: Verify ${{ matrix.server.region }} is up
+        run: |
+          sleep 4
+          curl --retry 8 --retry-delay 3 --retry-connrefused -sf https://${{ matrix.server.domain }}/api/ping
+
   rust:
     name: Rust
     runs-on: ubuntu-latest
