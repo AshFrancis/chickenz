@@ -1711,14 +1711,21 @@ pub fn run_streaming(data: &[u8]) -> StreamingResult {
 /// Format at offset: [tick_count: 4 LE] [ticks × 6 bytes]
 /// Returns: (final state, transcript_hash, new_offset past this round's data)
 pub fn replay_round(data: &[u8], offset: usize, seed: u32) -> (State, [u8; 32], usize) {
-    assert!(offset + 4 <= data.len(), "replay_round: data too short for tick_count header");
+    assert!(
+        offset + 4 <= data.len(),
+        "replay_round: data too short for tick_count header"
+    );
     let tick_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
 
     let round_end = offset
         .checked_add(4)
         .and_then(|x| x.checked_add(tick_count.checked_mul(6)?))
         .expect("replay_round: round_end overflow");
-    assert!(round_end <= data.len(), "replay_round: data too short for {} ticks", tick_count);
+    assert!(
+        round_end <= data.len(),
+        "replay_round: data too short for {} ticks",
+        tick_count
+    );
 
     let map = arena_map();
     let mut state = create_initial_state(seed, &map);
