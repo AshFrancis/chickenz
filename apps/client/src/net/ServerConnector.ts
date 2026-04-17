@@ -175,7 +175,7 @@ export function connectToServer(url: string, deps: ServerConnectorDeps): Promise
 
       // ── Tournament callbacks ──────────────────────────────
       onTournamentLobby(msg) {
-        const tlState = renderTournamentLobby(tournamentDeps, msg, session.currentTournamentSlot);
+        const tlState = renderTournamentLobby(tournamentDeps, msg);
         session.currentTournamentId = tlState.tournamentId;
         session.tournamentHostSlot = tlState.hostSlot;
         session.currentTournamentSlot = tlState.mySlot;

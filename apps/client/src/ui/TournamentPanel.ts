@@ -296,7 +296,6 @@ export function renderStandings(
 export function renderTournamentLobby(
   deps: TournamentPanelDeps,
   msg: TournamentLobbyMessage,
-  currentTournamentSlot: number,
 ): { tournamentId: string; hostSlot: number; mySlot: number } {
   const mySlot = msg.mySlot;
   const myRole = mySlot >= 0 ? msg.participants[mySlot]!.role : null;

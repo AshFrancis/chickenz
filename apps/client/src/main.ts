@@ -112,6 +112,7 @@ const tournamentResults = document.getElementById("tournament-results") as HTMLD
 const standingsList = document.getElementById("standings-list") as HTMLDivElement;
 
 // Assigned after lobbyAPI/settingsAPI are initialized below; called only from switchToRegion and init flow.
+// eslint-disable-next-line prefer-const
 let connectorDeps: ServerConnectorDeps | undefined;
 
 // Tournament panel dependency object (lazily captures session.networkManager via closures)
@@ -592,9 +593,6 @@ const lobbyAPI = initLobbyPanel({
   switchToRegion,
   onFetchLeaderboard: (container) => fetchLeaderboard(container, session.currentUsername),
   onFetchMatchHistory: (container) => fetchMatchHistory(container, matchHistoryCallbacks()),
-  onJoinRoom: (_roomId, _regionId) => {
-    /* handled inside createRoomElement via sendJoinRoom */
-  },
   ensureRankedReady: (force) => walletAPI.ensureRankedReady(force),
   getConnectedAddress,
 });

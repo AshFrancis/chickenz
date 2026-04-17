@@ -24,7 +24,6 @@ export interface LobbyPanelDeps {
   switchToRegion: (region: RegionConfig) => Promise<void>;
   onFetchLeaderboard: (container: HTMLElement) => void;
   onFetchMatchHistory: (container: HTMLElement) => void;
-  onJoinRoom: (roomId: string, regionId?: string) => void;
   ensureRankedReady: (force?: boolean) => Promise<boolean>;
   getConnectedAddress: () => string | null;
 }
@@ -59,7 +58,6 @@ export function initLobbyPanel(deps: LobbyPanelDeps): LobbyPanelAPI {
     ensureRankedReady,
     getConnectedAddress,
     switchToRegion,
-    onJoinRoom,
   } = deps;
 
   // ── Local state ───────────────────────────────────────────────────────────────

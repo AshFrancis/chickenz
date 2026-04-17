@@ -37,7 +37,14 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["node_modules/", "dist/", "build/", "**/pkg/"],
+    ignores: [
+      "node_modules/",
+      "dist/",
+      "build/",
+      "**/pkg/",
+      "**/__tests__/**",
+      "**/*.test.ts",
+    ],
   },
   prettier,
 );
