@@ -1,11 +1,5 @@
 import { session } from "../session";
-import {
-  getConnectedAddress,
-  disconnectWallet,
-  promptConnect,
-  createWallet,
-  getLastAuthProof,
-} from "../stellar";
+import { getConnectedAddress, disconnectWallet, promptConnect, createWallet, getLastAuthProof } from "../stellar";
 import { truncateAddress } from "./format";
 import { getOrCreateUsername } from "./AnimalNameGenerator";
 import type { GameMode } from "../net/NetworkManager";

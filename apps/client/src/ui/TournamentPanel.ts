@@ -1,10 +1,5 @@
 import { escapeHtml } from "./format";
-import type {
-  TournamentBracket,
-  BracketMatch,
-  TournamentLobbyMessage,
-  TournamentConfig,
-} from "../net/NetworkManager";
+import type { TournamentBracket, BracketMatch, TournamentLobbyMessage, TournamentConfig } from "../net/NetworkManager";
 
 export interface TournamentPanelDeps {
   tournamentOverlay: HTMLElement;
@@ -273,10 +268,7 @@ export function renderBracket(
   }
 }
 
-export function renderStandings(
-  deps: TournamentPanelDeps,
-  standings: { place: number; name: string }[],
-): void {
+export function renderStandings(deps: TournamentPanelDeps, standings: { place: number; name: string }[]): void {
   const ordinal = (n: number) => (n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`);
   // Count how many players share each place
   const placeCounts = new Map<number, number>();

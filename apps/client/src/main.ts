@@ -8,20 +8,13 @@ import { initChickenzWasm } from "./wasm";
 import { type GameMode } from "./net/NetworkManager";
 import { RegionManager, type RegionPing } from "./net/RegionManager";
 import { getRegions, type RegionConfig } from "./net/regions";
-import {
-  truncateAddress,
-  formatPing,
-  pingClass,
-} from "./ui/format";
+import { truncateAddress, formatPing, pingClass } from "./ui/format";
 import { buildTiledFrame } from "./ui/TiledFrame";
 import { getOrCreateUsername } from "./ui/AnimalNameGenerator";
 import { fetchLeaderboard } from "./ui/LeaderboardPanel";
 import { fetchMatchHistory } from "./ui/MatchHistoryPanel";
 import { initMatchActions } from "./ui/MatchActions";
-import {
-  hideAllTournamentOverlays,
-  type TournamentPanelDeps,
-} from "./ui/TournamentPanel";
+import { hideAllTournamentOverlays, type TournamentPanelDeps } from "./ui/TournamentPanel";
 import { session } from "./session";
 import { connectToServer, type ServerConnectorDeps } from "./net/ServerConnector";
 import { initSettingsPanel } from "./ui/SettingsPanel";
@@ -41,11 +34,7 @@ const NUM_CHARACTERS = 4;
   session.awayCharacter = a;
   session.pendingCharacter = h;
 }
-import {
-  initPasskeyKit,
-  connectWallet,
-  getConnectedAddress,
-} from "./stellar";
+import { initPasskeyKit, connectWallet, getConnectedAddress } from "./stellar";
 
 // Wallet verification state
 
@@ -662,7 +651,6 @@ function matchHistoryCallbacks() {
   return matchActions.buildCallbacks();
 }
 
-
 // ── Button handlers ────────────────────────────────────────────────────────────
 
 quickplayBtn.addEventListener("click", () => {
@@ -785,7 +773,6 @@ menuTutorial.addEventListener("click", () => {
     });
   }
 });
-
 
 // ── Replay exit handler ──────────────────────────────────────────────────────
 

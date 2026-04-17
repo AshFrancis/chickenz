@@ -279,13 +279,24 @@ export function proveMatch(
     if (!artifacts) return;
     if (settled) {
       // Second prover finished — log comparison with the winner
-      log.info("Also proved by runner-up", { matchId, source, winner: winnerSource, sealBytes: artifacts.seal.length / 2 });
+      log.info("Also proved by runner-up", {
+        matchId,
+        source,
+        winner: winnerSource,
+        sealBytes: artifacts.seal.length / 2,
+      });
       if (winnerArtifacts) {
         const journalMatch = artifacts.journal === winnerArtifacts.journal;
         if (journalMatch) {
           log.info("Runner-up journal matches winner", { matchId, source });
         } else {
-          log.error("Journal MISMATCH between provers", { matchId, source, sourceJournal: artifacts.journal, winnerSource, winnerJournal: winnerArtifacts.journal });
+          log.error("Journal MISMATCH between provers", {
+            matchId,
+            source,
+            sourceJournal: artifacts.journal,
+            winnerSource,
+            winnerJournal: winnerArtifacts.journal,
+          });
         }
       }
       return;

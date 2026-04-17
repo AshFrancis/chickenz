@@ -7,7 +7,9 @@ const storage = new Map<string, string>();
 (globalThis as unknown as { localStorage: Storage }).localStorage = {
   getItem: (k: string) => storage.get(k) ?? null,
   setItem: (k: string, v: string) => storage.set(k, v),
-  removeItem: (k: string) => { storage.delete(k); },
+  removeItem: (k: string) => {
+    storage.delete(k);
+  },
   clear: () => storage.clear(),
   key: () => null,
   length: 0,
@@ -20,9 +22,15 @@ class MockLobbyWs {
   onopen: (() => void) | null = null;
   onclose: (() => void) | null = null;
   sent: string[] = [];
-  constructor(public url: string) { lastWs = this; }
-  send(d: string) { this.sent.push(d); }
-  close() { this.readyState = 3; }
+  constructor(public url: string) {
+    lastWs = this;
+  }
+  send(d: string) {
+    this.sent.push(d);
+  }
+  close() {
+    this.readyState = 3;
+  }
 }
 (globalThis as unknown as { WebSocket: typeof MockLobbyWs }).WebSocket = MockLobbyWs;
 
@@ -52,8 +60,12 @@ function makeManager(regions = ALL_REGIONS, homeId = "") {
   const rooms: unknown[] = [];
   const pings: unknown[] = [];
   return new RegionManager(regions, {
-    onRoomsChanged: (r) => { rooms.push(r); },
-    onPingsUpdated: (p) => { pings.push(p); },
+    onRoomsChanged: (r) => {
+      rooms.push(r);
+    },
+    onPingsUpdated: (p) => {
+      pings.push(p);
+    },
   });
 }
 
@@ -166,10 +178,26 @@ describe("RegionManager", () => {
     it("merges rooms from multiple regions", () => {
       const rm = makeManager(ALL_REGIONS, "us");
       rm.updateRoomsForRegion("us", [
-        { id: "r1", name: "Match 1", status: "waiting", joinCode: "AAAAA", isPrivate: false, players: 1, mode: "casual" },
+        {
+          id: "r1",
+          name: "Match 1",
+          status: "waiting",
+          joinCode: "AAAAA",
+          isPrivate: false,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       rm.updateRoomsForRegion("eu", [
-        { id: "r2", name: "Match 2", status: "waiting", joinCode: "BBBBB", isPrivate: false, players: 1, mode: "casual" },
+        {
+          id: "r2",
+          name: "Match 2",
+          status: "waiting",
+          joinCode: "BBBBB",
+          isPrivate: false,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       const merged = rm.getMergedRooms();
       expect(merged).toHaveLength(2);
@@ -178,10 +206,26 @@ describe("RegionManager", () => {
     it("puts home region rooms first", () => {
       const rm = makeManager(ALL_REGIONS, "eu");
       rm.updateRoomsForRegion("us", [
-        { id: "us1", name: "US Room", status: "waiting", joinCode: "USAAA", isPrivate: false, players: 1, mode: "casual" },
+        {
+          id: "us1",
+          name: "US Room",
+          status: "waiting",
+          joinCode: "USAAA",
+          isPrivate: false,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       rm.updateRoomsForRegion("eu", [
-        { id: "eu1", name: "EU Room", status: "waiting", joinCode: "EUAAA", isPrivate: false, players: 1, mode: "casual" },
+        {
+          id: "eu1",
+          name: "EU Room",
+          status: "waiting",
+          joinCode: "EUAAA",
+          isPrivate: false,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       const merged = rm.getMergedRooms();
       expect(merged[0]!.regionId).toBe("eu");
@@ -190,8 +234,24 @@ describe("RegionManager", () => {
     it("sorts waiting rooms before playing rooms within a region", () => {
       const rm = makeManager(ALL_REGIONS, "us");
       rm.updateRoomsForRegion("us", [
-        { id: "r2", name: "Playing", status: "playing", joinCode: "PPPPP", isPrivate: false, players: 2, mode: "casual" },
-        { id: "r1", name: "Waiting", status: "waiting", joinCode: "WWWWW", isPrivate: false, players: 1, mode: "casual" },
+        {
+          id: "r2",
+          name: "Playing",
+          status: "playing",
+          joinCode: "PPPPP",
+          isPrivate: false,
+          players: 2,
+          mode: "casual",
+        },
+        {
+          id: "r1",
+          name: "Waiting",
+          status: "waiting",
+          joinCode: "WWWWW",
+          isPrivate: false,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       const merged = rm.getMergedRooms();
       expect(merged[0]!.room.id).toBe("r1"); // waiting first
@@ -210,7 +270,9 @@ describe("RegionManager", () => {
     it("triggers onRoomsChanged callback on update", () => {
       let callCount = 0;
       const rm = new RegionManager(ALL_REGIONS, {
-        onRoomsChanged: () => { callCount++; },
+        onRoomsChanged: () => {
+          callCount++;
+        },
       });
       rm.updateRoomsForRegion("us", []);
       rm.updateRoomsForRegion("eu", []);
@@ -222,7 +284,15 @@ describe("RegionManager", () => {
     it("finds a region that has a waiting room with the given code", () => {
       const rm = makeManager(ALL_REGIONS, "us");
       rm.updateRoomsForRegion("eu", [
-        { id: "r1", name: "Private", status: "waiting", joinCode: "FINDX", isPrivate: true, players: 1, mode: "casual" },
+        {
+          id: "r1",
+          name: "Private",
+          status: "waiting",
+          joinCode: "FINDX",
+          isPrivate: true,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       const region = rm.findRegionWithCode("FINDX");
       expect(region?.id).toBe("eu");
@@ -244,7 +314,15 @@ describe("RegionManager", () => {
     it("does not match rooms with non-waiting status", () => {
       const rm = makeManager(ALL_REGIONS, "us");
       rm.updateRoomsForRegion("us", [
-        { id: "r1", name: "Playing", status: "playing", joinCode: "PLAYN", isPrivate: false, players: 2, mode: "casual" },
+        {
+          id: "r1",
+          name: "Playing",
+          status: "playing",
+          joinCode: "PLAYN",
+          isPrivate: false,
+          players: 2,
+          mode: "casual",
+        },
       ]);
       expect(rm.findRegionWithCode("PLAYN")).toBeUndefined();
     });
@@ -277,7 +355,15 @@ describe("RegionManager", () => {
         { id: "r1", name: "Room", status: "waiting", joinCode: "AAAAA", isPrivate: false, players: 1, mode: "casual" },
       ]);
       rm.updateRoomsForRegion("eu", [
-        { id: "r2", name: "EU Room", status: "waiting", joinCode: "BBBBB", isPrivate: false, players: 1, mode: "casual" },
+        {
+          id: "r2",
+          name: "EU Room",
+          status: "waiting",
+          joinCode: "BBBBB",
+          isPrivate: false,
+          players: 1,
+          mode: "casual",
+        },
       ]);
       rm.disconnectLobbyStreams();
       const merged = rm.getMergedRooms();

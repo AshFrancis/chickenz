@@ -2292,5 +2292,4 @@ export class GameScene extends Phaser.Scene {
       this.replayInfoText.setText(`REPLAY ${status} ${this.replaySpeed}x | Space: Pause | Up/Down: Speed | Esc: Exit`);
     }
   }
-
 }

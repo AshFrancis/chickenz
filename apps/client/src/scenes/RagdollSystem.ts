@@ -12,7 +12,18 @@ export interface RagdollState {
 }
 
 export function makeRagdoll(): RagdollState {
-  return { active: false, settled: false, x: 0, y: 0, vx: 0, vy: 0, rotation: 0, angularVel: 0, bounces: 0, wasAlive: false };
+  return {
+    active: false,
+    settled: false,
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    rotation: 0,
+    angularVel: 0,
+    bounces: 0,
+    wasAlive: false,
+  };
 }
 
 export function resetRagdoll(r: RagdollState): void {

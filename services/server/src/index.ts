@@ -345,7 +345,18 @@ function onMatchStarted(room: GameRoom) {
     room.matchRecordId = matchId;
     const [p1, p2] = room.playerNames;
     const [w1addr, w2addr] = room.walletAddresses;
-    insertMatchDraft(matchId, p1, p2, w1addr, w2addr, room.id, room.name, room.sessionId, room.mode, room.matchStartTime ?? Date.now());
+    insertMatchDraft(
+      matchId,
+      p1,
+      p2,
+      w1addr,
+      w2addr,
+      room.id,
+      room.name,
+      room.sessionId,
+      room.mode,
+      room.matchStartTime ?? Date.now(),
+    );
   }
 
   if (room.mode !== "ranked" || room.isBotMatch) return;

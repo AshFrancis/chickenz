@@ -119,9 +119,16 @@ describe("NetworkManager", () => {
 
   describe("message routing", () => {
     it("routes lobby message to onLobby", () => {
-      const rooms = [{ id: "r1", name: "Match", status: "waiting", joinCode: "AAAAA", isPrivate: false, players: 1, mode: "casual" }];
+      const rooms = [
+        { id: "r1", name: "Match", status: "waiting", joinCode: "AAAAA", isPrivate: false, players: 1, mode: "casual" },
+      ];
       let received: unknown = null;
-      const nm = new NetworkManager({ ...makeCallbacks(), onLobby: (r) => { received = r; } });
+      const nm = new NetworkManager({
+        ...makeCallbacks(),
+        onLobby: (r) => {
+          received = r;
+        },
+      });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
       lastWs!.simulateMessage({ type: "lobby", rooms });
@@ -132,7 +139,9 @@ describe("NetworkManager", () => {
       let result: unknown = null;
       const nm = new NetworkManager({
         ...makeCallbacks(),
-        onWaiting: (id, name, code) => { result = { id, name, code }; },
+        onWaiting: (id, name, code) => {
+          result = { id, name, code };
+        },
       });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
@@ -142,7 +151,12 @@ describe("NetworkManager", () => {
 
     it("routes error message to onError", () => {
       let errMsg = "";
-      const nm = new NetworkManager({ ...makeCallbacks(), onError: (m) => { errMsg = m; } });
+      const nm = new NetworkManager({
+        ...makeCallbacks(),
+        onError: (m) => {
+          errMsg = m;
+        },
+      });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
       lastWs!.simulateMessage({ type: "error", message: "Test error" });
@@ -153,7 +167,9 @@ describe("NetworkManager", () => {
       let result: unknown = null;
       const nm = new NetworkManager({
         ...makeCallbacks(),
-        onRoundEnd: (r, w, rw) => { result = { r, w, rw }; },
+        onRoundEnd: (r, w, rw) => {
+          result = { r, w, rw };
+        },
       });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
@@ -165,7 +181,9 @@ describe("NetworkManager", () => {
       let result: unknown = null;
       const nm = new NetworkManager({
         ...makeCallbacks(),
-        onRoundStart: (r, s, m) => { result = { r, s, m }; },
+        onRoundStart: (r, s, m) => {
+          result = { r, s, m };
+        },
       });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
@@ -177,11 +195,21 @@ describe("NetworkManager", () => {
       let received: unknown = null;
       const nm = new NetworkManager({
         ...makeCallbacks(),
-        onTournamentLobby: (msg) => { received = msg; },
+        onTournamentLobby: (msg) => {
+          received = msg;
+        },
       });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
-      const lobbyMsg = { type: "tournament_lobby", tournamentId: "t1", joinCode: "TCODE", participants: [], status: "waiting", config: { bracketType: "winners_only", matchFormat: "bo3" }, hostSlot: 0 };
+      const lobbyMsg = {
+        type: "tournament_lobby",
+        tournamentId: "t1",
+        joinCode: "TCODE",
+        participants: [],
+        status: "waiting",
+        config: { bracketType: "winners_only", matchFormat: "bo3" },
+        hostSlot: 0,
+      };
       lastWs!.simulateMessage(lobbyMsg);
       expect((received as { tournamentId: string }).tournamentId).toBe("t1");
     });
@@ -268,7 +296,12 @@ describe("NetworkManager", () => {
   describe("disconnect()", () => {
     it("closes the WebSocket intentionally (no reconnect callback)", () => {
       let disconnectCalled = false;
-      const nm = new NetworkManager({ ...makeCallbacks(), onDisconnect: () => { disconnectCalled = true; } });
+      const nm = new NetworkManager({
+        ...makeCallbacks(),
+        onDisconnect: () => {
+          disconnectCalled = true;
+        },
+      });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
       nm.disconnect();
@@ -278,7 +311,12 @@ describe("NetworkManager", () => {
 
     it("fires onDisconnect on unexpected close", () => {
       let disconnectCalled = false;
-      const nm = new NetworkManager({ ...makeCallbacks(), onDisconnect: () => { disconnectCalled = true; } });
+      const nm = new NetworkManager({
+        ...makeCallbacks(),
+        onDisconnect: () => {
+          disconnectCalled = true;
+        },
+      });
       nm.connect("ws://localhost/ws");
       lastWs!.simulateOpen();
       lastWs!.simulateClose(); // unexpected close

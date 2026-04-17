@@ -156,14 +156,12 @@ export function initMatchActions(deps: MatchActionsDeps) {
       onSettle: (matchId, regionUrl) => void handleSettleMatch(matchId, regionUrl),
       onDetail: (matchId, regionUrl) => openMatchDetail(matchId, regionUrl),
       onShare: (roomId, region, buttonEl) => {
-        void navigator.clipboard
-          .writeText(`${window.location.origin}/?replay=${roomId}&region=${region}`)
-          .then(() => {
-            buttonEl.textContent = "Copied!";
-            setTimeout(() => {
-              buttonEl.textContent = "Share";
-            }, 1500);
-          });
+        void navigator.clipboard.writeText(`${window.location.origin}/?replay=${roomId}&region=${region}`).then(() => {
+          buttonEl.textContent = "Copied!";
+          setTimeout(() => {
+            buttonEl.textContent = "Share";
+          }, 1500);
+        });
       },
       getActiveRegionId: () => session.activeRegionId,
       getConnectedAddress: () => getConnectedAddress(),
