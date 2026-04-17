@@ -14,6 +14,14 @@ try {
 
 const env = loadEnv("development", resolve(__dirname, "../.."), "VITE_");
 
+// Local dev HTTPS certs — absent in CI/prod builds; Vite tolerates `https: undefined`
+const keyPath = resolve(__dirname, "certs/chickenz.local-key.pem");
+const certPath = resolve(__dirname, "certs/chickenz.local.pem");
+const httpsConfig =
+  fs.existsSync(keyPath) && fs.existsSync(certPath)
+    ? { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) }
+    : undefined;
+
 export default defineConfig({
   envDir: resolve(__dirname, "../.."), // load .env from monorepo root
   define: {
@@ -24,10 +32,7 @@ export default defineConfig({
     host: true,
     open: true,
     allowedHosts: ["chickenz.local"],
-    https: {
-      key: fs.readFileSync(resolve(__dirname, "certs/chickenz.local-key.pem")),
-      cert: fs.readFileSync(resolve(__dirname, "certs/chickenz.local.pem")),
-    },
+    https: httpsConfig,
     proxy: {
       "/ws": {
         target: "ws://localhost:3000",
