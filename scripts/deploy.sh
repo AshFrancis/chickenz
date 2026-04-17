@@ -82,8 +82,10 @@ deploy_to_server() {
   fi
 
   if [ "$MODE" = "server" ] || [ "$MODE" = "both" ]; then
-    log "[$region] Restarting server..."
-    ssh $SSH_OPTS "$server" "pkill -f 'bun.*index.ts' 2>/dev/null || true; sleep 0.5; cd $REMOTE_DIR && set -a && source .env && set +a && nohup bun run services/server/src/index.ts > /tmp/chickenz-server.log 2>&1 & sleep 2; if pgrep -f 'bun.*index.ts' > /dev/null 2>&1; then echo 'SERVER UP'; else echo 'FAILED'; cat /tmp/chickenz-server.log; exit 1; fi"
+    log "[$region] Restarting chickenz systemd unit..."
+    # systemctl targets the unit's MainPID — does not affect other bun processes
+    # on shared hosts. Never use pkill -f 'bun.*' here.
+    ssh $SSH_OPTS "$server" "systemctl restart chickenz && sleep 2 && systemctl is-active chickenz && tail -5 /var/log/chickenz/server.log"
   fi
 
   log "[$region] Done."
