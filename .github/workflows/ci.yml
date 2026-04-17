@@ -180,7 +180,7 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          # printf preserves newlines exactly; echo with ${{ }} can corrupt the key
+          # printf preserves newlines exactly (echo with expansion can corrupt the key)
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           # Verify key is well-formed before proceeding (fails fast with clear message)
