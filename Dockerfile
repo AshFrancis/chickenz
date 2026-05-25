@@ -1,8 +1,8 @@
 FROM oven/bun:1 AS builder
 WORKDIR /app
 
-# Copy workspace config and lockfiles
-COPY package.json pnpm-lock.yaml ./
+# Copy workspace config + root tsconfig (apps/client/tsconfig.json extends it)
+COPY package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY packages/sim/package.json packages/sim/
 COPY apps/client/package.json apps/client/
 COPY services/server/package.json services/server/
@@ -24,22 +24,26 @@ RUN cd apps/client && bun run build
 # ── Production stage ──────────────────────────────────────
 FROM oven/bun:1
 WORKDIR /app
+# /app is created by WORKDIR as root; chown so the `bun` user can mkdir/ln in it.
+RUN chown bun:bun /app
+# Run as the built-in non-root `bun` user (uid 1000) from the oven/bun image.
+USER bun
 
-# Run as non-root user
-RUN adduser --disabled-password --gecos "" chickenz
-USER chickenz
+# Copy the workspace-hoisted node_modules (bun install put everything at /app/node_modules)
+COPY --from=builder --chown=bun:bun /app/node_modules node_modules
 
 # Copy sim (pure TS, zero deps)
-COPY --from=builder --chown=chickenz /app/packages/sim packages/sim
+COPY --from=builder --chown=bun:bun /app/packages/sim packages/sim
 
 # Copy server source
-COPY --from=builder --chown=chickenz /app/services/server services/server
+COPY --from=builder --chown=bun:bun /app/services/server services/server
 
 # Copy WASM pkg (server loads from services/prover/wasm/pkg/)
-COPY --from=builder --chown=chickenz /app/services/prover/wasm/pkg services/prover/wasm/pkg
+COPY --from=builder --chown=bun:bun /app/services/prover/wasm/pkg services/prover/wasm/pkg
 
-# Copy built client into server's public dir
-COPY --from=builder --chown=chickenz /app/apps/client/dist services/server/public
+# NOTE: vite builds the client directly into ../../services/server/public
+# (see apps/client/vite.config.ts), so the COPY of services/server above
+# already includes the built client.
 
 # Symlink workspace package (sim has zero npm deps, no install needed)
 RUN mkdir -p node_modules/@chickenz && ln -s /app/packages/sim node_modules/@chickenz/sim

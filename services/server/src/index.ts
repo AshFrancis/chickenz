@@ -884,6 +884,12 @@ const server = Bun.serve<SocketData>({
       if (record.proofStatus === "settled") {
         return Response.json({ error: "Match already settled" }, { status: 400, headers: corsHeaders });
       }
+      // M2 hardening: refuse to requeue an in-flight prove. Without this, a
+      // leaked WORKER_API_KEY can spam reprove on the same matchId during the
+      // 5-min claim timeout and burn Boundless mainnet ETH each iteration.
+      if (record.proofStatus === "proving" || getJob(matchId)) {
+        return Response.json({ error: "Already proving" }, { status: 409, headers: corsHeaders });
+      }
       const transcript = getProverTranscript(matchId);
       if (!transcript)
         return Response.json({ error: "No prover transcript stored for match" }, { status: 404, headers: corsHeaders });
