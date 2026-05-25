@@ -12,9 +12,12 @@ playwright-report/
 # Rust
 target/
 
-# WASM (built locally, copied to server)
-*.wasm
-!services/prover/wasm/pkg/.gitkeep
+# WASM source build artifacts (Rust target dir, not the pkg output)
+# The wasm-pack output at services/prover/wasm/pkg/ IS tracked — see that
+# dir's own .gitignore (empty, all artifacts kept) — so deploy-from-git
+# can ship it without needing wasm-pack on the box. Rebuild via:
+#   cd services/prover/wasm && wasm-pack build --target web
+# before pushing if you changed prover Rust source.
 
 # Environment (secrets)
 .env

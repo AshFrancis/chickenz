@@ -1,0 +1,2 @@
+# Track everything in this directory — it's the wasm-pack output that
+# the chickenz Dockerfile COPYs into the image. See parent .gitignore.

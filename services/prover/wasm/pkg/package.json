@@ -1,0 +1,15 @@
+{
+  "name": "chickenz-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "chickenz_wasm_bg.wasm",
+    "chickenz_wasm.js",
+    "chickenz_wasm.d.ts"
+  ],
+  "main": "chickenz_wasm.js",
+  "types": "chickenz_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
