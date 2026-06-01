@@ -119,7 +119,7 @@ jobs:
           CI: true
 
       - name: Upload Playwright report on failure
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
