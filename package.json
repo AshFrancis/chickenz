@@ -29,15 +29,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@playwright/test": "^1.59.1",
-    "eslint": "^10.1.0",
+    "@playwright/test": "^1.60.0",
+    "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.1.8",
-    "js-yaml": "^4.1.1",
-    "markdownlint-cli2": "^0.22.0",
-    "prettier": "^3.8.1",
-    "sharp": "^0.34.5",
+    "js-yaml": "^4.2.0",
+    "markdownlint-cli2": "^0.22.1",
+    "prettier": "^3.8.4",
+    "sharp": "^0.35.1",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.58.0"
+    "typescript-eslint": "^8.61.0"
   },
   "overrides": {
     "rollup": ">=4.59.0",
